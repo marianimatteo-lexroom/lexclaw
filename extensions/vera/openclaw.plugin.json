@@ -1,0 +1,40 @@
+{
+  "id": "vera",
+  "categories": ["research"],
+  "activation": {
+    "onStartup": true
+  },
+  "name": "Vera",
+  "description": "Plans a lawyer's morning WhatsApp digest and calls Lexroom research and drafting.",
+  "skills": ["./skills"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "accessToken": {
+        "type": "string"
+      },
+      "baseUrl": {
+        "type": "string"
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 1000
+      }
+    }
+  },
+  "contracts": {
+    "tools": ["vera_plan_digest", "vera_research", "vera_draft"]
+  },
+  "toolMetadata": {
+    "vera_plan_digest": {
+      "optional": true
+    },
+    "vera_research": {
+      "optional": true
+    },
+    "vera_draft": {
+      "optional": true
+    }
+  }
+}
