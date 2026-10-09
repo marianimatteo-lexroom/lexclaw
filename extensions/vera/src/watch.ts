@@ -3,9 +3,26 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { openVeraMemoryFromApi } from "./memory.js";
 import { runVeraCollectPass } from "./service.js";
 
+function readNotifyToken(config: unknown): string | null {
+  if (!config || typeof config !== "object") {
+    return null;
+  }
+  const token = (config as { googleNotifyToken?: unknown }).googleNotifyToken;
+  return typeof token === "string" && token.trim().length >= 16 ? token.trim() : null;
+}
+
+function bearerMatches(req: IncomingMessage, expected: string): boolean {
+  const header = req.headers.authorization;
+  if (typeof header !== "string") {
+    return false;
+  }
+  const match = /^Bearer\s+(.+)$/iu.exec(header.trim());
+  return match?.[1] === expected;
+}
+
 /**
- * Google Pub/Sub push target for Gmail/Calendar watch.
- * Without a configured topic the 15-minute poll owns wakes.
+ * Google Pub/Sub push target. Requires `googleNotifyToken` (Bearer) so an open
+ * plugin route cannot trigger model turns. Without that token the route refuses.
  */
 export async function handleVeraGoogleNotify(
   req: IncomingMessage,
@@ -15,6 +32,12 @@ export async function handleVeraGoogleNotify(
   if (req.method !== "POST") {
     res.statusCode = 405;
     res.end("method not allowed");
+    return true;
+  }
+  const expected = readNotifyToken(api.pluginConfig);
+  if (!expected || !bearerMatches(req, expected)) {
+    res.statusCode = 401;
+    res.end("unauthorized");
     return true;
   }
   try {

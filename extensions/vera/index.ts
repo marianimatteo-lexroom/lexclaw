@@ -88,7 +88,13 @@ const tools = defineToolPlugin({
       googlePubSubTopic: Type.Optional(
         Type.String({
           description:
-            "Optional projects/.../topics/... for Gmail and Calendar watch. Without it, Vera polls every 15 minutes.",
+            "Optional projects/.../topics/... for Gmail watch. Without it, Vera polls every 15 minutes.",
+        }),
+      ),
+      googleNotifyToken: Type.Optional(
+        Type.String({
+          description:
+            "Bearer token required by POST /vera/google/notify. At least 16 characters. Do not commit it.",
         }),
       ),
     },
@@ -352,9 +358,15 @@ const entry = definePluginEntry({
     tools.register(api);
     registerVeraService({ api });
 
-    api.on("message_received", async () => {
+    api.on("message_received", async (event) => {
       try {
-        await recordLawyerInbound({ api, atMs: Date.now() });
+        const channelId =
+          typeof event.channelId === "string"
+            ? event.channelId
+            : typeof (event as { channel?: unknown }).channel === "string"
+              ? ((event as { channel: string }).channel)
+              : undefined;
+        await recordLawyerInbound({ api, atMs: Date.now(), channelId });
       } catch (error) {
         api.logger.error(
           `vera inbound wake record failed: ${error instanceof Error ? error.message : "unknown"}`,

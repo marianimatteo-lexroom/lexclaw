@@ -7,6 +7,7 @@ const GMAIL_PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profil
 const GMAIL_LIST_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages";
 const CALENDAR_EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 const GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send";
+const GMAIL_WATCH_URL = "https://gmail.googleapis.com/gmail/v1/users/me/watch";
 const ACCESS_SKEW_MS = 60_000;
 const EMAIL = /^[^\s@]+@[^\s@]+$/u;
 
@@ -466,4 +467,47 @@ export async function listUpcomingEvents(params: {
     return listed;
   }
   return { ok: true, events: parseCalendarEvents(listed.value) };
+}
+
+/** Renew Gmail push to a Pub/Sub topic. Calendar still uses the 15-minute poll. */
+export async function watchGmailInbox(params: {
+  accessToken: string;
+  topicName: string;
+  fetchImpl?: FetchLike;
+  signal?: AbortSignal;
+}): Promise<{ ok: true; expirationMs: number | null } | { ok: false; status: number }> {
+  const topicName = params.topicName.trim();
+  if (!topicName.startsWith("projects/") || !topicName.includes("/topics/")) {
+    return { ok: false, status: 400 };
+  }
+  const fetchImpl = params.fetchImpl ?? fetch;
+  let response: Response;
+  try {
+    response = await fetchImpl(GMAIL_WATCH_URL, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${params.accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ topicName, labelIds: ["INBOX"] }),
+      signal: params.signal ?? AbortSignal.timeout(20_000),
+    });
+  } catch {
+    return { ok: false, status: 0 };
+  }
+  const value = await readBody(response);
+  if (!response.ok) {
+    return { ok: false, status: response.status };
+  }
+  const expiration =
+    value && typeof value === "object" && "expiration" in value
+      ? (value as { expiration?: unknown }).expiration
+      : undefined;
+  const expirationMs =
+    typeof expiration === "string" && /^\d+$/u.test(expiration)
+      ? Number(expiration)
+      : typeof expiration === "number"
+        ? expiration
+        : null;
+  return { ok: true, expirationMs };
 }

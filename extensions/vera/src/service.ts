@@ -11,10 +11,19 @@ import {
   listInboxMessages,
   listUpcomingEvents,
   loadAccessToken,
+  watchGmailInbox,
 } from "./google-api.js";
 import { googleConnectConfigFrom, readGoogleConnectConfig } from "./google-connect.js";
 import { openVeraMemoryFromApi, type MemoryStore } from "./memory.js";
 import { buildDailyTimelineRecord, buildOnePagerRecord } from "./reconcile.js";
+
+function readPubSubTopic(config: unknown): string | null {
+  if (!config || typeof config !== "object") {
+    return null;
+  }
+  const topic = (config as { googlePubSubTopic?: unknown }).googlePubSubTopic;
+  return typeof topic === "string" && topic.trim().startsWith("projects/") ? topic.trim() : null;
+}
 
 const POLL_MS = 15 * 60 * 1000;
 const SELF_WAKE_TIMEOUT_SEC = 45;
@@ -55,6 +64,7 @@ export type VeraServiceDeps = {
     plan: DigestPlan;
     sessionKey: string;
     idempotencyKey: string;
+    connectOnly?: boolean;
   }) => Promise<{ ok: boolean; reason?: string }>;
 };
 
@@ -101,6 +111,7 @@ async function loadGoogleReads(api: OpenClawPluginApi, now: Date) {
   return {
     ok: true as const,
     email: account.email,
+    accessToken: token.accessToken,
     messages: inbox.messages,
     events: events.events,
   };
@@ -121,6 +132,21 @@ export async function runVeraCollectPass(params: {
 }> {
   const google = await loadGoogleReads(params.api, params.now);
   if (!google.ok) {
+    if (params.forceMorning && google.error === "not_connected") {
+      const day = dayKey(params.now, DEFAULT_TZ);
+      const dispatch = await params.dispatchDigestTurn({
+        plan: { deliver: false, reason: "nothing_cleared_the_bar" },
+        sessionKey: `hook:vera:connect:${day}`,
+        idempotencyKey: `vera-connect:${day}`,
+        connectOnly: true,
+      });
+      return {
+        collected: false,
+        delivered: dispatch.ok,
+        held: false,
+        reason: dispatch.ok ? "connect_dispatched" : (dispatch.reason ?? "connect_rejected"),
+      };
+    }
     return { collected: false, delivered: false, held: false, reason: google.error };
   }
 
@@ -133,20 +159,51 @@ export async function runVeraCollectPass(params: {
     params.memory.readProfile(),
   ]);
 
+  let previousOpenTodoIds: string[] = [];
+  if (wake.openTodoIdsJson) {
+    try {
+      const parsed: unknown = JSON.parse(wake.openTodoIdsJson);
+      if (Array.isArray(parsed)) {
+        previousOpenTodoIds = parsed.filter((id): id is string => typeof id === "string");
+      }
+    } catch {
+      previousOpenTodoIds = [];
+    }
+  }
+
   const timeZone = profile?.timezone ?? DEFAULT_TZ;
   const result = collectDigest({
     now: params.now,
+    forceMorning: params.forceMorning,
     inbox: google.messages,
     events: google.events,
     previousGmail,
     previousCalendar,
     aliases,
     todos,
+    previousOpenTodoIds,
   });
+
+  const openTodoIds = todos
+    .filter((todo) => todo.owner === "lawyer" && todo.status !== "done")
+    .map((todo) => todo.id);
 
   await params.memory.replaceGmailSnapshot(result.gmailSnapshot);
   await params.memory.replaceCalendarSnapshot(result.calendarSnapshot);
-  await params.memory.writeWake({ lastCollectAtMs: params.now.getTime() });
+
+  const topic = readPubSubTopic(params.api.pluginConfig);
+  if (
+    topic &&
+    (wake.watchExpirationMs === null || wake.watchExpirationMs < params.now.getTime() + 60 * 60 * 1000)
+  ) {
+    const watched = await watchGmailInbox({
+      accessToken: google.accessToken,
+      topicName: topic,
+    });
+    if (watched.ok && watched.expirationMs !== null) {
+      await params.memory.writeWake({ watchExpirationMs: watched.expirationMs });
+    }
+  }
 
   const decision = decideDigestDelivery({
     result,
@@ -156,14 +213,24 @@ export async function runVeraCollectPass(params: {
     lastLawyerInboundAtMs: wake.lastLawyerInboundAtMs,
   });
 
-  if (decision.action === "silent") {
-    return { collected: true, delivered: false, held: false, result };
-  }
-  if (decision.action === "batch") {
-    return { collected: true, delivered: false, held: false, result, reason: "batched_until_morning" };
+  if (decision.action === "silent" || decision.action === "batch") {
+    await params.memory.writeWake({
+      lastCollectAtMs: params.now.getTime(),
+      openTodoIdsJson: JSON.stringify(openTodoIds),
+      heldPlanJson: null,
+    });
+    return {
+      collected: true,
+      delivered: false,
+      held: false,
+      result,
+      ...(decision.action === "batch" ? { reason: "batched_until_morning" } : {}),
+    };
   }
   if (decision.action === "hold") {
     await params.memory.writeWake({
+      lastCollectAtMs: params.now.getTime(),
+      openTodoIdsJson: JSON.stringify(openTodoIds),
       heldPlanJson: JSON.stringify(decision.plan),
     });
     return { collected: true, delivered: false, held: true, result, reason: "whatsapp_window_closed" };
@@ -185,7 +252,11 @@ export async function runVeraCollectPass(params: {
       reason: dispatch.reason ?? "dispatch_rejected",
     };
   }
-  await params.memory.writeWake({ heldPlanJson: null });
+  await params.memory.writeWake({
+    lastCollectAtMs: params.now.getTime(),
+    openTodoIdsJson: JSON.stringify(openTodoIds),
+    heldPlanJson: null,
+  });
   return { collected: true, delivered: true, held: false, result };
 }
 
@@ -256,16 +327,19 @@ export function registerVeraService(deps: VeraServiceDeps): void {
       if (!hooks?.dispatchHookAgentTurn) {
         return { ok: false, reason: "hooks_unavailable" };
       }
+      const message = params.connectOnly
+        ? "Follow the vera-google-connect skill now. Do not invent a digest."
+        : [
+            "Run the vera-morning-digest skill phrasing only.",
+            "The collector already ranked the plan. Do not invent signals.",
+            "Write exactly one WhatsApp message from this plan JSON, or NO_REPLY if deliver is false:",
+            JSON.stringify(params.plan),
+          ].join("\n");
       const result = await hooks.dispatchHookAgentTurn({
-        name: "Vera digest",
+        name: params.connectOnly ? "Vera Google connect" : "Vera digest",
         agentId: "main",
         sessionKey: params.sessionKey,
-        message: [
-          "Run the vera-morning-digest skill phrasing only.",
-          "The collector already ranked the plan. Do not invent signals.",
-          "Write exactly one WhatsApp message from this plan JSON, or NO_REPLY if deliver is false:",
-          JSON.stringify(params.plan),
-        ].join("\n"),
+        message,
         externalContentSource: "email",
         deliver: true,
         timeoutSeconds: SELF_WAKE_TIMEOUT_SEC,
@@ -340,44 +414,44 @@ export function registerVeraService(deps: VeraServiceDeps): void {
 export async function recordLawyerInbound(params: {
   api: OpenClawPluginApi;
   atMs: number;
+  /** Only Kapso WhatsApp from the lawyer should open the Cloud API window. */
+  channelId?: string;
 }): Promise<void> {
+  if (params.channelId && params.channelId !== "kapso-whatsapp") {
+    return;
+  }
   const memory = await openVeraMemoryFromApi(params.api);
   const wake = await memory.readWake();
   await memory.writeWake({ lastLawyerInboundAtMs: params.atMs });
   if (!wake.heldPlanJson) {
     return;
   }
-  let plan: DigestPlan;
-  try {
-    plan = JSON.parse(wake.heldPlanJson) as DigestPlan;
-  } catch {
-    await memory.writeWake({ heldPlanJson: null });
-    return;
-  }
-  if (!plan || plan.deliver !== true) {
-    await memory.writeWake({ heldPlanJson: null });
-    return;
-  }
-  const hooks = params.api.runtime.hooks;
-  if (!hooks?.dispatchHookAgentTurn) {
-    return;
-  }
-  const day = dayKey(new Date(params.atMs), DEFAULT_TZ);
-  const result = await hooks.dispatchHookAgentTurn({
-    name: "Vera held digest",
-    agentId: "main",
-    sessionKey: `hook:vera:held:${day}`,
-    message: [
-      "Run the vera-morning-digest skill phrasing only.",
-      "Deliver this held plan now that the lawyer texted:",
-      JSON.stringify(plan),
-    ].join("\n"),
-    externalContentSource: "email",
-    deliver: true,
-    timeoutSeconds: SELF_WAKE_TIMEOUT_SEC,
-    idempotencyKey: `vera-held:${day}`,
+  // Re-collect so a stale held plan cannot fire after the calendar moved on.
+  await runVeraCollectPass({
+    api: params.api,
+    memory,
+    now: new Date(params.atMs),
+    forceMorning: true,
+    dispatchDigestTurn: async (dispatchParams) => {
+      const hooks = params.api.runtime.hooks;
+      if (!hooks?.dispatchHookAgentTurn) {
+        return { ok: false, reason: "hooks_unavailable" };
+      }
+      const result = await hooks.dispatchHookAgentTurn({
+        name: "Vera held digest",
+        agentId: "main",
+        sessionKey: dispatchParams.sessionKey,
+        message: [
+          "Run the vera-morning-digest skill phrasing only.",
+          "The lawyer just texted; deliver this fresh plan if deliver is true:",
+          JSON.stringify(dispatchParams.plan),
+        ].join("\n"),
+        externalContentSource: "email",
+        deliver: true,
+        timeoutSeconds: SELF_WAKE_TIMEOUT_SEC,
+        idempotencyKey: `vera-held:${dispatchParams.idempotencyKey}`,
+      });
+      return result.ok ? { ok: true } : { ok: false, reason: result.reason };
+    },
   });
-  if (result.ok) {
-    await memory.writeWake({ heldPlanJson: null });
-  }
 }

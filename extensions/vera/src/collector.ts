@@ -12,12 +12,16 @@ export type MatterAlias = { matterId: string; alias: string; title: string };
 
 export type CollectInput = {
   now: Date;
+  /** When true, re-emit current deadlines and open lawyer todos for the morning pass. */
+  forceMorning: boolean;
   inbox: readonly InboxMessage[];
   events: readonly CalendarEvent[];
   previousGmail: readonly GmailSnapshotRow[];
   previousCalendar: readonly CalendarSnapshotRow[];
   aliases: readonly MatterAlias[];
   todos: readonly MemoryTodo[];
+  /** Todo ids already open on the previous collect; used to detect new open loops. */
+  previousOpenTodoIds?: readonly string[];
 };
 
 export type CollectResult = {
@@ -64,6 +68,7 @@ export function collectDigest(input: CollectInput): CollectResult {
   const seenAtMs = input.now.getTime();
   const previousIds = new Set(input.previousGmail.map((row) => row.messageId));
   const previousEvents = new Map(input.previousCalendar.map((row) => [row.eventId, row]));
+  const previousOpenTodos = new Set(input.previousOpenTodoIds ?? []);
   const signals: DigestSignal[] = [];
   let urgent = false;
 
@@ -103,6 +108,11 @@ export function collectDigest(input: CollectInput): CollectResult {
     }
     const previous = previousEvents.get(event.id);
     const movedCloser = previous !== undefined && startMs < previous.startMs;
+    const isNew = previous === undefined;
+    // Polls only wake on new or moved events. Morning re-emits current deadlines.
+    if (!input.forceMorning && !isNew && !movedCloser) {
+      continue;
+    }
     const kind = movedCloser ? "calendar_move" : "deadline";
     signals.push({
       matterId,
@@ -115,7 +125,7 @@ export function collectDigest(input: CollectInput): CollectResult {
       ...(movedCloser ? { movedCloser: true } : {}),
     });
     const hours = (startMs - seenAtMs) / (60 * 60 * 1000);
-    if (movedCloser || (hours <= 24 && hours >= -12)) {
+    if (movedCloser || (isNew && hours <= 24 && hours >= -12)) {
       urgent = true;
     }
   }
@@ -143,6 +153,9 @@ export function collectDigest(input: CollectInput): CollectResult {
 
   for (const todo of input.todos) {
     if (todo.owner !== "lawyer" || todo.status === "done") {
+      continue;
+    }
+    if (!input.forceMorning && previousOpenTodos.has(todo.id)) {
       continue;
     }
     signals.push({

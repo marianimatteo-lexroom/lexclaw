@@ -110,6 +110,8 @@ export type WakeState = {
   lastCollectAtMs: number | null;
   heldPlanJson: string | null;
   watchExpirationMs: number | null;
+  /** JSON string array of open lawyer todo ids from the last collect. */
+  openTodoIdsJson: string | null;
 };
 
 type Operation<Input, Output> = { input: Input; output: Output };

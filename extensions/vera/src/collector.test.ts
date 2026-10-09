@@ -11,6 +11,7 @@ describe("collectDigest", () => {
   it("stays silent and updates snapshots when nothing clears the bar", () => {
     const result = collectDigest({
       now: NOW,
+      forceMorning: false,
       inbox: [
         {
           id: "m1",
@@ -35,6 +36,7 @@ describe("collectDigest", () => {
   it("drops unknown mail and ranks a same-day Verdi hearing as urgent", () => {
     const result = collectDigest({
       now: NOW,
+      forceMorning: false,
       inbox: [
         {
           id: "m-unknown",
@@ -74,9 +76,41 @@ describe("collectDigest", () => {
     expect(result.urgent).toBe(true);
   });
 
+  it("does not re-signal an unchanged calendar event on a poll", () => {
+    const result = collectDigest({
+      now: NOW,
+      forceMorning: false,
+      inbox: [],
+      events: [
+        {
+          id: "e-verdi",
+          summary: "Verdi hearing",
+          start: "2026-10-06T14:00:00.000Z",
+          end: "2026-10-06T15:00:00.000Z",
+          status: "confirmed",
+        },
+      ],
+      previousGmail: [],
+      previousCalendar: [
+        {
+          eventId: "e-verdi",
+          summary: "Verdi hearing",
+          startMs: Date.parse("2026-10-06T14:00:00.000Z"),
+          endMs: Date.parse("2026-10-06T15:00:00.000Z"),
+          matterId: "verdi",
+          seenAtMs: 1,
+        },
+      ],
+      aliases: ALIASES,
+      todos: [],
+    });
+    expect(result.plan).toEqual({ deliver: false, reason: "nothing_cleared_the_bar" });
+  });
+
   it("marks a hearing that moved earlier", () => {
     const result = collectDigest({
       now: NOW,
+      forceMorning: false,
       inbox: [],
       events: [
         {

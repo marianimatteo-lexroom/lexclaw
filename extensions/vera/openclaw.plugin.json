@@ -35,6 +35,9 @@
       },
       "googlePubSubTopic": {
         "type": "string"
+      },
+      "googleNotifyToken": {
+        "type": "string"
       }
     }
   },

@@ -27,8 +27,9 @@ Disable the Gateway model heartbeat for this install (`agents.defaults.heartbeat
           googleClientSecret: "${VERA_GOOGLE_CLIENT_SECRET}",
           googleRedirectUri: "https://gateway.example/vera/google/callback",
           googleStateSecret: "${VERA_GOOGLE_STATE_SECRET}",
-          // optional: projects/.../topics/... for Gmail/Calendar watch
+          // optional: projects/.../topics/... for Gmail watch
           // googlePubSubTopic: "${VERA_GOOGLE_PUBSUB_TOPIC}",
+          // googleNotifyToken: "${VERA_GOOGLE_NOTIFY_TOKEN}",
         },
       },
     },
@@ -63,7 +64,7 @@ Create a Google Cloud OAuth web client, enable the Gmail API and the Google Cale
 
 The connect link asks for read-only Gmail, permission to send mail, and read-only Calendar, plus the account email. Vera does not change calendar events. One link covers all of that. It expires after 30 minutes and works once. When Gmail is not connected, the morning phrasing turn still follows the vera-google-connect skill. `vera_send_email` sends one plain-text message only after `confirmed` is true. When the link succeeds, Vera texts `channels["kapso-whatsapp"].defaultTo` that Gmail and Google Calendar are connected.
 
-Optional Pub/Sub: set `googlePubSubTopic` and point the push subscription at `/vera/google/notify`. Without it, the 15-minute poll owns wakes.
+Optional Pub/Sub: set `googlePubSubTopic`, set `googleNotifyToken` (16+ chars), and point the push subscription at `/vera/google/notify` with `Authorization: Bearer <token>`. Without both, the 15-minute poll owns wakes; notify without the token returns 401.
 
 ## Memory
 

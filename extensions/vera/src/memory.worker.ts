@@ -171,7 +171,8 @@ CREATE TABLE IF NOT EXISTS vera_wake_state (
   last_reconcile_at_ms INTEGER,
   last_collect_at_ms INTEGER,
   held_plan_json TEXT,
-  watch_expiration_ms INTEGER
+  watch_expiration_ms INTEGER,
+  open_todo_ids_json TEXT
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS vera_records_matter ON vera_records (matter_id);
@@ -242,6 +243,7 @@ type VeraMemoryDatabase = {
     last_collect_at_ms: number | null;
     held_plan_json: string | null;
     watch_expiration_ms: number | null;
+    open_todo_ids_json: string | null;
   };
 };
 
@@ -303,6 +305,7 @@ function emptyWake(): WakeState {
     lastCollectAtMs: null,
     heldPlanJson: null,
     watchExpirationMs: null,
+    openTodoIdsJson: null,
   };
 }
 
@@ -716,6 +719,7 @@ class VeraMemoryDatabaseStore {
       lastCollectAtMs: row.last_collect_at_ms,
       heldPlanJson: row.held_plan_json,
       watchExpirationMs: row.watch_expiration_ms,
+      openTodoIdsJson: row.open_todo_ids_json ?? null,
     };
   }
 
@@ -741,6 +745,10 @@ class VeraMemoryDatabaseStore {
             patch.watchExpirationMs !== undefined
               ? patch.watchExpirationMs
               : current.watchExpirationMs,
+          openTodoIdsJson:
+            patch.openTodoIdsJson !== undefined
+              ? patch.openTodoIdsJson
+              : current.openTodoIdsJson,
         };
         executeSqliteQuerySync(
           this.db,
@@ -755,6 +763,7 @@ class VeraMemoryDatabaseStore {
             last_collect_at_ms: next.lastCollectAtMs,
             held_plan_json: next.heldPlanJson,
             watch_expiration_ms: next.watchExpirationMs,
+            open_todo_ids_json: next.openTodoIdsJson,
           }),
         );
       },
@@ -813,6 +822,12 @@ function openVeraMemoryDatabase(dbPath: string): VeraMemoryDatabaseStore {
       synchronous: "NORMAL",
     });
     db.exec(SCHEMA_SQL);
+    const wakeColumns = db
+      .prepare("SELECT name FROM pragma_table_info('vera_wake_state')")
+      .all() as Array<{ name: string }>;
+    if (!wakeColumns.some((column) => column.name === "open_todo_ids_json")) {
+      db.exec("ALTER TABLE vera_wake_state ADD COLUMN open_todo_ids_json TEXT");
+    }
     for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`]) {
       chmodIfExists(file);
     }
