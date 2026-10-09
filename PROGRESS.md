@@ -192,7 +192,7 @@ fi
 
 node openclaw.mjs config set plugins.entries.vera.enabled true --strict-json || true
 node openclaw.mjs config set plugins.entries.kapso-whatsapp.enabled true --strict-json || true
-node openclaw.mjs config set 'tools.alsoAllow' '["vera_plan_digest","vera_research","vera_draft","vera_google_connect","vera_read_inbox","vera_read_calendar"]' --strict-json || true
+node openclaw.mjs config set 'tools.alsoAllow' '["vera_plan_digest","vera_research","vera_draft","vera_google_connect","vera_read_inbox","vera_read_calendar","vera_send_email","vera_memory_search","vera_memory_list","vera_memory_get","vera_memory_history","vera_todo_list","vera_todo_get"]' --strict-json || true
 node openclaw.mjs config set 'channels["kapso-whatsapp"].enabled' true --strict-json || true
 node openclaw.mjs config set 'channels["kapso-whatsapp"].phoneNumberId' '"1197866140067824"' --strict-json || true
 node openclaw.mjs config set 'channels["kapso-whatsapp"].defaultTo' '"+393403055911"' --strict-json || true
