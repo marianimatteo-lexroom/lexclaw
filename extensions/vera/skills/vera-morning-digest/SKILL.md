@@ -35,7 +35,7 @@ When the plan is `deliver: false`, the entire reply is exactly `NO_REPLY`. That 
 When the plan is `deliver: true`, send exactly one WhatsApp message, written as a text to a colleague:
 
 - Mention only `plan.items`, in that order.
-- Say what changed and why it should not wait, in sentences. No bold labels, no headers, no field lists.
+- Say what changed and why it should not wait, in sentences. No asterisks, no emoji, no em dashes, no headers, no field lists. If you include a draft, quote it with lines that start with `> `.
 - End with the two `plan.nextSteps`, in order. The first is research. The second is a draft that still needs a yes.
 - Do not add a third offer. Do not mention a matter that is absent from `plan.items`.
 
