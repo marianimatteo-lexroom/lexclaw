@@ -20,11 +20,30 @@
       "timeoutMs": {
         "type": "integer",
         "minimum": 1000
+      },
+      "googleClientId": {
+        "type": "string"
+      },
+      "googleClientSecret": {
+        "type": "string"
+      },
+      "googleRedirectUri": {
+        "type": "string"
+      },
+      "googleStateSecret": {
+        "type": "string"
       }
     }
   },
   "contracts": {
-    "tools": ["vera_plan_digest", "vera_research", "vera_draft"]
+    "tools": [
+      "vera_plan_digest",
+      "vera_research",
+      "vera_draft",
+      "vera_google_connect",
+      "vera_read_inbox",
+      "vera_read_calendar"
+    ]
   },
   "toolMetadata": {
     "vera_plan_digest": {
@@ -34,6 +53,15 @@
       "optional": true
     },
     "vera_draft": {
+      "optional": true
+    },
+    "vera_google_connect": {
+      "optional": true
+    },
+    "vera_read_inbox": {
+      "optional": true
+    },
+    "vera_read_calendar": {
       "optional": true
     }
   }

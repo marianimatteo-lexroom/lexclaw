@@ -11,6 +11,9 @@
     "@openclaw/plugin-sdk": "workspace:*"
   },
   "openclaw": {
-    "extensions": ["./index.ts"]
+    "extensions": ["./index.ts"],
+    "build": {
+      "workerEntries": ["./src/google-account.worker.ts"]
+    }
   }
 }
