@@ -65,7 +65,7 @@ Do not modify the other projects: `verus-legal`, `product-roast-bot`, `lexroom-m
 | Health        | `GET /healthz` returns `{"ok":true,"status":"live"}`                                                                                                    |
 | Region        | `us-west2`, 1 replica                                                                                                                                   |
 | Image         | `docker.io/openclaw/openclaw:2026.9.8` plus a bundled Vera copy                                                                                         |
-| Latest deploy | `a799d262-f93a-4ad0-8979-367041caa598` ("Fix Vera Google account worker imports"), SUCCESS, 2026-10-09T09:32Z. A bare `GET /vera/google/callback` returns 400 HTML once boot finishes, which means the route, Google config, and account store are live. |
+| Latest deploy | `ad59c9f5-7f4e-46a3-90cf-5d0a18e0325f` ("Use Claude setup token instead of API key"), SUCCESS, 2026-10-09T12:56Z. Boot imported `anthropic:manual` as a token profile and did not print the token. |
 | Logs          | `https://railway.com/project/6884818a-0e95-49d8-9052-22712801dbd0/service/96a03ba4-d4bf-4769-9851-e3a506f73805?id=a799d262-f93a-4ad0-8979-367041caa598` |
 
 CLI inside the container is `node /app/openclaw.mjs`. `railway ssh` needs the key loaded in the agent. This VM registered key `vera-deploy`. A fresh machine must register its own key. Do not copy private keys into git.
@@ -120,7 +120,8 @@ Set on service `gateway`. Values stay in Railway.
 - `KAPSO_WEBHOOK_PATH=/kapso/webhook`
 - `KAPSO_WEBHOOK_SECRET`
 - `KAPSO_API_KEY` (present, length 64; doctor `apiKeyStatus: available`)
-- `ANTHROPIC_API_KEY`
+- `ANTHROPIC_API_KEY` (kept in Railway; `start.sh` unsets it for the gateway process after a setup token imports)
+- `ANTHROPIC_SETUP_TOKEN` (Claude Pro/Max setup token, `sk-ant-oat01-...`; imported on boot into auth profile `anthropic:manual`)
 - `LEXROOM_ACCESS_TOKEN`
 - `VERA_GOOGLE_CLIENT_ID`
 - `VERA_GOOGLE_CLIENT_SECRET`
@@ -223,6 +224,18 @@ if [ -n "${VERA_GOOGLE_CLIENT_ID:-}" ]; then
   redirect_uri="${VERA_GOOGLE_REDIRECT_URI:-https://gateway-production-e368.up.railway.app/vera/google/callback}"
   redirect_json="$(REDIRECT_URI="$redirect_uri" node -e 'process.stdout.write(JSON.stringify(process.env.REDIRECT_URI))')"
   node openclaw.mjs config set plugins.entries.vera.config.googleRedirectUri "$redirect_json" --strict-json || true
+fi
+
+if [ -n "${ANTHROPIC_SETUP_TOKEN:-}" ]; then
+  token_file="$(mktemp)"
+  chmod 600 "$token_file"
+  printf '%s' "$ANTHROPIC_SETUP_TOKEN" > "$token_file"
+  if node openclaw.mjs models auth paste-token --provider anthropic < "$token_file"; then
+    unset ANTHROPIC_API_KEY
+  else
+    echo "anthropic setup-token import failed; keeping API key"
+  fi
+  rm -f "$token_file"
 fi
 
 exec node openclaw.mjs gateway --allow-unconfigured --bind lan --port "$PORT"
