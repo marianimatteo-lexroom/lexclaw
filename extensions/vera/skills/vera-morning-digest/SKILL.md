@@ -9,7 +9,9 @@ Vera texts the lawyer on the Lexroom WhatsApp number. One lawyer, one Lexroom us
 
 ## When this runs
 
-Run once in the morning, at 07:40 in the lawyer's timezone, from the linked calendar and the linked inbox. The lawyer chose which email and which calendar to connect. Use only those accounts.
+Run once in the morning, at 07:40 in the lawyer's timezone. Before reading mail or calendar, follow the vera-google-connect skill. If that skill sends the connect message, stop. Do not add a digest in the same reply.
+
+When Gmail and Google Calendar are connected, read them with `vera_read_inbox` and `vera_read_calendar` only. Use only that connected account.
 
 Also follow this skill when the lawyer answers a digest in the same chat.
 

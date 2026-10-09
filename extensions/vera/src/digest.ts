@@ -145,14 +145,17 @@ function compareItems(a: RankedDigestItem, b: RankedDigestItem): number {
 }
 
 function researchTarget(items: RankedDigestItem[]): RankedDigestItem {
-  return (
+  const target =
     items.find(
       (item) =>
         item.kind === "deadline" ||
         item.kind === "calendar_move" ||
         item.kind === "decision_waiting",
-    ) ?? items[0]
-  );
+    ) ?? items[0];
+  if (!target) {
+    throw new Error("research target requires a ranked item");
+  }
+  return target;
 }
 
 function draftTarget(items: RankedDigestItem[], research: RankedDigestItem): RankedDigestItem {

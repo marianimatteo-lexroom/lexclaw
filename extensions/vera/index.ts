@@ -1,6 +1,20 @@
-import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
+import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import {
+  defineToolPlugin,
+  getToolPluginMetadata,
+  toolPluginMetadataSymbol,
+} from "openclaw/plugin-sdk/tool-plugin";
 import { Type } from "typebox";
 import { planDigest, type DigestSignal } from "./src/digest.js";
+import { openVeraGoogleAccountFromApi } from "./src/google-account.js";
+import { exchangeAuthorizationCode } from "./src/google-api.js";
+import { handleVeraGoogleCallback } from "./src/google-callback.js";
+import { googleConnectConfigFrom } from "./src/google-connect.js";
+import {
+  executeVeraGoogleConnect,
+  executeVeraReadCalendar,
+  executeVeraReadInbox,
+} from "./src/google-tools.js";
 import { runDraft, runResearch, type LexroomConfig } from "./src/lexroom-client.js";
 
 const signalSchema = Type.Object(
@@ -28,7 +42,7 @@ const signalSchema = Type.Object(
   { additionalProperties: false },
 );
 
-export default defineToolPlugin({
+const tools = defineToolPlugin({
   id: "vera",
   name: "Vera",
   description: "Plans a lawyer's morning WhatsApp digest and calls Lexroom research and drafting.",
@@ -40,6 +54,20 @@ export default defineToolPlugin({
       baseUrl: Type.Optional(Type.String({ description: "Lexroom API base URL." })),
       timeoutMs: Type.Optional(
         Type.Integer({ minimum: 1000, description: "Research and draft stream timeout." }),
+      ),
+      googleClientId: Type.Optional(
+        Type.String({ description: "Google OAuth client id for Gmail and Calendar." }),
+      ),
+      googleClientSecret: Type.Optional(
+        Type.String({ description: "Google OAuth client secret. Do not commit it." }),
+      ),
+      googleRedirectUri: Type.Optional(
+        Type.String({
+          description: "Public https URL whose path is /vera/google/callback.",
+        }),
+      ),
+      googleStateSecret: Type.Optional(
+        Type.String({ description: "HMAC secret for connect links. Do not commit it." }),
       ),
     },
     { additionalProperties: false },
@@ -131,5 +159,102 @@ export default defineToolPlugin({
         });
       },
     }),
+    tool({
+      name: "vera_google_connect",
+      label: "Connect Gmail and Calendar",
+      description:
+        "Check whether this lawyer connected Gmail and Google Calendar. When they have not, return one WhatsApp ask and a single Google OAuth link that grants read-only access to both. Does not send the message.",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      optional: true,
+      async execute(_params, config, context) {
+        return await executeVeraGoogleConnect(config, context.api);
+      },
+    }),
+    tool({
+      name: "vera_read_inbox",
+      label: "Read connected Gmail",
+      description:
+        "Read recent inbox metadata from the Gmail account this lawyer connected. Read-only. Never sends mail.",
+      parameters: Type.Object(
+        {
+          max: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })),
+        },
+        { additionalProperties: false },
+      ),
+      optional: true,
+      async execute(params, config, context) {
+        return await executeVeraReadInbox(config, context.api, params.max, context.signal);
+      },
+    }),
+    tool({
+      name: "vera_read_calendar",
+      label: "Read connected Google Calendar",
+      description:
+        "Read upcoming events from the Google Calendar this lawyer connected. Read-only. Never creates or moves events.",
+      parameters: Type.Object(
+        {
+          hours: Type.Optional(Type.Integer({ minimum: 1, maximum: 168 })),
+        },
+        { additionalProperties: false },
+      ),
+      optional: true,
+      async execute(params, config, context) {
+        return await executeVeraReadCalendar(config, context.api, params.hours, context.signal);
+      },
+    }),
   ],
 });
+
+const entry = definePluginEntry({
+  id: "vera",
+  name: "Vera",
+  description: "Plans a lawyer's morning WhatsApp digest and calls Lexroom research and drafting.",
+  configSchema: () => {
+    const schema = tools.configSchema;
+    if (!schema) {
+      throw new Error("Vera config schema is missing");
+    }
+    return schema;
+  },
+  register(api) {
+    tools.register(api);
+    api.registerHttpRoute({
+      path: "/vera/google/callback",
+      auth: "plugin",
+      match: "exact",
+      handler: async (req, res) => {
+        try {
+          const store = await openVeraGoogleAccountFromApi(api);
+          return await handleVeraGoogleCallback(req, res, {
+            config: googleConnectConfigFrom(api.pluginConfig),
+            now: () => new Date(),
+            store,
+            exchange: exchangeAuthorizationCode,
+            log: api.logger,
+          });
+        } catch (error) {
+          api.logger.error(
+            `vera google callback failed: ${error instanceof Error ? error.message : "unknown"}`,
+          );
+          res.statusCode = 500;
+          res.setHeader("content-type", "text/html; charset=utf-8");
+          res.setHeader("cache-control", "no-store");
+          res.end(
+            "<!doctype html><title>Vera</title><p>Vera could not finish connecting the Google account.</p>",
+          );
+          return true;
+        }
+      },
+    });
+  },
+});
+
+const metadata = getToolPluginMetadata(tools);
+if (metadata) {
+  Object.defineProperty(entry, toolPluginMetadataSymbol, {
+    value: metadata,
+    enumerable: false,
+  });
+}
+
+export default entry;

@@ -40,7 +40,10 @@ One line per matter. A delivered digest offers exactly two next steps. Silence i
 
 Case 1 is not fully working yet. Chat works. The morning digest does not run.
 
-1. Gmail and Google Calendar are not linked. `gog` is not installed in the container (`command -v gog` is `no-gog`). The `gog` skill needs setup. This cannot be finished from WhatsApp. Headless flow is `gog auth credentials`, then `gog auth add EMAIL --services gmail,calendar` with `--manual` or `--remote` in a trusted Railway shell, file keyring, and `GOG_KEYRING_PASSWORD`. Callback URLs must never enter chat or agent tool input.
+1. Gmail and Google Calendar use Vera's Google OAuth API, not MCP and not `gog`. The morning cron has no WhatsApp sender, so requester-scoped MCP never attaches on that run. `gog` is a shell login and its callback URL must not be texted. One authorize URL covers read-only Gmail and read-only Calendar. The lawyer opens it from WhatsApp. The Gateway callback is `GET /vera/google/callback`. The refresh token stays in SQLite at `$OPENCLAW_STATE_DIR/vera/google-account.sqlite`.
+
+   Still needs a Google Cloud OAuth web client and these Railway variables before the link can be minted: `VERA_GOOGLE_CLIENT_ID`, `VERA_GOOGLE_CLIENT_SECRET`, `VERA_GOOGLE_STATE_SECRET` (at least 16 characters), and optionally `VERA_GOOGLE_REDIRECT_URI` (default `https://gateway-production-e368.up.railway.app/vera/google/callback`). Enable the Gmail API and the Google Calendar API, and register that redirect URI. Redeploy after the plugin change. Until those variables exist, `vera_google_connect` fails closed and the WhatsApp reply stays `NO_REPLY`.
+
 2. No 07:40 Europe/Rome digest job. Jobs present on 2026-10-09: heartbeat `e7c258bc-fbe6-4f59-b665-4f531667736f` (every 30 min) and skill-collection-review `57938a83-1055-4b42-bac1-d5114b45ae1d` (weekly). The README command still says `--channel whatsapp`; the live channel is `kapso-whatsapp`.
 3. Lexroom bearer expires `2026-10-09T21:59:35.000Z`. Research and draft fail after that until refresh. Machine API keys (`lrsk-...`, `X-API-Key`) are not accepted by Research or Drafting. Login is `POST https://api.lexroom.ai/v1/login` with `X-Client-Type: app_lex`. `LEXROOM_EMAIL` and `LEXROOM_PASSWORD` exist on the separate Railway project `verus-legal`, not on Vera. Do not print them. MFA can return 403 `mfa_step_up_required`.
 
@@ -52,18 +55,18 @@ Railway is a container service, not a VM. Account `metalmetta`. Workspace `metal
 
 Do not modify the other projects: `verus-legal`, `product-roast-bot`, `lexroom-mcp`, `fluida_mono`, `lexroom-contract-review-bot`. `ANTHROPIC_API_KEY` was copied from `verus-legal` service `api` (`b875372f-3dae-4ded-a74f-7aa2fcb8481b`).
 
-| Piece | Value |
-| --- | --- |
-| Project | `vera` `6884818a-0e95-49d8-9052-22712801dbd0` |
-| Service | `gateway` `96a03ba4-d4bf-4769-9851-e3a506f73805` |
-| Volume | `gateway-volume` `12b5b404-4158-4935-afb2-6b4b8ffedd86` mounted at `/data` |
-| Public URL | `https://gateway-production-e368.up.railway.app` |
-| Control UI | `https://gateway-production-e368.up.railway.app/openclaw` |
-| Health | `GET /healthz` returns `{"ok":true,"status":"live"}` |
-| Region | `us-west2`, 1 replica |
-| Image | `docker.io/openclaw/openclaw:2026.9.8` plus a bundled Vera copy |
-| Latest deploy | `5c73dc5c-de86-46b4-a994-ca9a2eeb60b5` ("Redeploy Vera gateway"), SUCCESS, 2026-10-09T07:49:07Z |
-| Logs | `https://railway.com/project/6884818a-0e95-49d8-9052-22712801dbd0/service/96a03ba4-d4bf-4769-9851-e3a506f73805?id=5c73dc5c-de86-46b4-a994-ca9a2eeb60b5` |
+| Piece         | Value                                                                                                                                                   |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Project       | `vera` `6884818a-0e95-49d8-9052-22712801dbd0`                                                                                                           |
+| Service       | `gateway` `96a03ba4-d4bf-4769-9851-e3a506f73805`                                                                                                        |
+| Volume        | `gateway-volume` `12b5b404-4158-4935-afb2-6b4b8ffedd86` mounted at `/data`                                                                              |
+| Public URL    | `https://gateway-production-e368.up.railway.app`                                                                                                        |
+| Control UI    | `https://gateway-production-e368.up.railway.app/openclaw`                                                                                               |
+| Health        | `GET /healthz` returns `{"ok":true,"status":"live"}`                                                                                                    |
+| Region        | `us-west2`, 1 replica                                                                                                                                   |
+| Image         | `docker.io/openclaw/openclaw:2026.9.8` plus a bundled Vera copy                                                                                         |
+| Latest deploy | `5c73dc5c-de86-46b4-a994-ca9a2eeb60b5` ("Redeploy Vera gateway"), SUCCESS, 2026-10-09T07:49:07Z                                                         |
+| Logs          | `https://railway.com/project/6884818a-0e95-49d8-9052-22712801dbd0/service/96a03ba4-d4bf-4769-9851-e3a506f73805?id=5c73dc5c-de86-46b4-a994-ca9a2eeb60b5` |
 
 CLI inside the container is `node /app/openclaw.mjs`. `railway ssh` needs the key loaded in the agent. This VM registered key `vera-deploy`. A fresh machine must register its own key. Do not copy private keys into git.
 
@@ -119,6 +122,10 @@ Set on service `gateway`. Values stay in Railway.
 - `KAPSO_API_KEY` (present, length 64; doctor `apiKeyStatus: available`)
 - `ANTHROPIC_API_KEY`
 - `LEXROOM_ACCESS_TOKEN`
+- `VERA_GOOGLE_CLIENT_ID`
+- `VERA_GOOGLE_CLIENT_SECRET`
+- `VERA_GOOGLE_STATE_SECRET`
+- `VERA_GOOGLE_REDIRECT_URI` (optional; defaults to the public `/vera/google/callback`)
 
 The container runs as root because the volume is root-owned. Plugin files must be `chown root:root`. A `node`-owned copy (uid 1000) is blocked as suspicious ownership and then fails with "Plugin artifact has no valid plugin manifest".
 
@@ -153,7 +160,15 @@ Bundle Vera with Node 24 from a source checkout. Published images do not load Ty
 pnpm exec esbuild extensions/vera/index.ts \
   --bundle --platform=node --format=esm \
   --outfile=/tmp/vera-deploy/vera/index.js \
-  --external:openclaw/plugin-sdk/tool-plugin
+  --external:openclaw/plugin-sdk/tool-plugin \
+  --external:openclaw/plugin-sdk/plugin-entry \
+  --external:openclaw/plugin-sdk/sqlite-runtime
+
+pnpm exec esbuild extensions/vera/src/google-account.worker.ts \
+  --bundle --platform=node --format=esm \
+  --outfile=/tmp/vera-deploy/vera/src/google-account.worker.js \
+  --external:openclaw/plugin-sdk/plugin-state-runtime \
+  --external:openclaw/plugin-sdk/sqlite-worker-runtime
 ```
 
 Copy `extensions/vera` into `/tmp/vera-deploy/vera`, then point `package.json` `openclaw.extensions` at `./index.js`, set `dependencies` to `{}`, and delete `devDependencies`. Keep `openclaw.plugin.json`, `skills/`, and the README. Do not upload secrets in that directory.
@@ -174,7 +189,7 @@ fi
 
 node openclaw.mjs config set plugins.entries.vera.enabled true --strict-json || true
 node openclaw.mjs config set plugins.entries.kapso-whatsapp.enabled true --strict-json || true
-node openclaw.mjs config set 'tools.alsoAllow' '["vera_plan_digest","vera_research","vera_draft"]' --strict-json || true
+node openclaw.mjs config set 'tools.alsoAllow' '["vera_plan_digest","vera_research","vera_draft","vera_google_connect","vera_read_inbox","vera_read_calendar"]' --strict-json || true
 node openclaw.mjs config set 'channels["kapso-whatsapp"].enabled' true --strict-json || true
 node openclaw.mjs config set 'channels["kapso-whatsapp"].phoneNumberId' '"1197866140067824"' --strict-json || true
 node openclaw.mjs config set 'channels["kapso-whatsapp"].defaultTo' '"+393403055911"' --strict-json || true
@@ -194,6 +209,20 @@ fi
 if [ -n "${LEXROOM_ACCESS_TOKEN:-}" ]; then
   token_json="$(node -e 'process.stdout.write(JSON.stringify(process.env.LEXROOM_ACCESS_TOKEN))')"
   node openclaw.mjs config set plugins.entries.vera.config.accessToken "$token_json" --strict-json || true
+fi
+if [ -n "${VERA_GOOGLE_CLIENT_ID:-}" ]; then
+  node openclaw.mjs config set plugins.entries.vera.config.googleClientId "$(node -e 'process.stdout.write(JSON.stringify(process.env.VERA_GOOGLE_CLIENT_ID))')" --strict-json || true
+fi
+if [ -n "${VERA_GOOGLE_CLIENT_SECRET:-}" ]; then
+  node openclaw.mjs config set plugins.entries.vera.config.googleClientSecret "$(node -e 'process.stdout.write(JSON.stringify(process.env.VERA_GOOGLE_CLIENT_SECRET))')" --strict-json || true
+fi
+if [ -n "${VERA_GOOGLE_STATE_SECRET:-}" ]; then
+  node openclaw.mjs config set plugins.entries.vera.config.googleStateSecret "$(node -e 'process.stdout.write(JSON.stringify(process.env.VERA_GOOGLE_STATE_SECRET))')" --strict-json || true
+fi
+if [ -n "${VERA_GOOGLE_CLIENT_ID:-}" ]; then
+  redirect_uri="${VERA_GOOGLE_REDIRECT_URI:-https://gateway-production-e368.up.railway.app/vera/google/callback}"
+  redirect_json="$(REDIRECT_URI="$redirect_uri" node -e 'process.stdout.write(JSON.stringify(process.env.REDIRECT_URI))')"
+  node openclaw.mjs config set plugins.entries.vera.config.googleRedirectUri "$redirect_json" --strict-json || true
 fi
 
 exec node openclaw.mjs gateway --allow-unconfigured --bind lan --port "$PORT"
