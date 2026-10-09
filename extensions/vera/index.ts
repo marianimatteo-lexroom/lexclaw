@@ -8,7 +8,7 @@ import { Type } from "typebox";
 import { planDigest, type DigestSignal } from "./src/digest.js";
 import { openVeraGoogleAccountFromApi } from "./src/google-account.js";
 import { exchangeAuthorizationCode } from "./src/google-api.js";
-import { handleVeraGoogleCallback } from "./src/google-callback.js";
+import { handleVeraGoogleCallback, writeVeraConnectPage } from "./src/google-callback.js";
 import { googleConnectConfigFrom } from "./src/google-connect.js";
 import {
   executeVeraGoogleConnect,
@@ -236,12 +236,11 @@ const entry = definePluginEntry({
           api.logger.error(
             `vera google callback failed: ${error instanceof Error ? error.message : "unknown"}`,
           );
-          res.statusCode = 500;
-          res.setHeader("content-type", "text/html; charset=utf-8");
-          res.setHeader("cache-control", "no-store");
-          res.end(
-            "<!doctype html><title>Vera</title><p>Vera could not finish connecting the Google account.</p>",
-          );
+          writeVeraConnectPage(res, 500, {
+            kind: "blocked",
+            heading: "Could not connect",
+            message: "Vera could not finish connecting the Google account.",
+          });
           return true;
         }
       },
