@@ -6,6 +6,12 @@ import type {
 } from "./openclaw-state-read.types.js";
 
 export function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCommand {
+  if (command.type === "userProfiles.catalogIdentity") {
+    return { ...command, input: structuredClone(command.input) };
+  }
+  if (command.type === "meetingTranscripts.export") {
+    return structuredClone(command);
+  }
   if (
     command.type === "localWorkspace.get" ||
     command.type === "localWorkspace.exists" ||
@@ -16,6 +22,8 @@ export function captureCommand(command: OpenClawStateReadCommand): OpenClawState
     command.type === "sessionState.versions" ||
     command.type === "sessionState.ambientTargets" ||
     command.type === "sessionState.events" ||
+    command.type === "sessionUpstream.read" ||
+    command.type === "operatorApprovals.placementGrant" ||
     command.type === "operatorApprovals.history" ||
     command.type === "diagnostic.latest" ||
     command.type === "diagnostic.configAuditFacts" ||
@@ -214,6 +222,9 @@ function stringBytes(values: readonly (string | undefined)[]): number {
 }
 
 function commandBytes(command: OpenClawStateReadRequest["command"]): number {
+  if (command.type === "userProfiles.catalogIdentity") {
+    return Buffer.byteLength(command.type) + Buffer.byteLength(JSON.stringify(command.input));
+  }
   if (
     command.type === "pairing.allowFrom" ||
     command.type === "secrets.execEnvironment" ||
@@ -221,6 +232,7 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
     command.type === "sessionState.versions" ||
     command.type === "sessionState.ambientTargets" ||
     command.type === "sessionState.events" ||
+    command.type === "sessionUpstream.read" ||
     command.type === "workers.placementProjection" ||
     command.type === "workers.placementPendingResults" ||
     isWorkspaceJournalReadCommand(command)
@@ -384,7 +396,10 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
       16
     );
   }
-  if (command.type === "operatorApprovals.validateCronGrant") {
+  if (
+    command.type === "operatorApprovals.validateCronGrant" ||
+    command.type === "operatorApprovals.placementGrant"
+  ) {
     return bytes + Buffer.byteLength(JSON.stringify(command.input), "utf8");
   }
   if (command.type === "operatorApprovals.listCronGrants") {
@@ -462,11 +477,25 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
       bytes,
     );
   }
-  if (command.type === "fleet.get") {
-    return bytes + Buffer.byteLength(command.tenantId, "utf8");
-  }
   if (command.type === "onboardingRecommendations.read") {
     return bytes + Buffer.byteLength(command.configKey, "utf8");
+  }
+  if (
+    command.type === "userModelAccounts.summary" ||
+    command.type === "userModelAccounts.selection"
+  ) {
+    return bytes + stringBytes([command.profileId, command.authProfileId]);
+  }
+  if (command.type === "userModelAccounts.catalog") {
+    return (
+      bytes +
+      Buffer.byteLength(
+        "profileId" in command.selection
+          ? command.selection.profileId
+          : command.selection.requesterProfileId,
+        "utf8",
+      )
+    );
   }
   if (
     command.type === "userModelAccounts.links" ||
@@ -538,6 +567,9 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
   }
   if (command.type === "workerEnvironments.snapshot") {
     return bytes + stringBytes(command.ids ?? []);
+  }
+  if (command.type === "meetingTranscripts.export") {
+    return bytes + Buffer.byteLength(JSON.stringify(command));
   }
   return bytes;
 }

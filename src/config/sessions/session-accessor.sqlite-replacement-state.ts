@@ -1,4 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { createSqliteCommitReceipt } from "../../infra/sqlite-commit-receipt.js";
 import { getAdmittedSqliteSchemaFacts } from "../../infra/sqlite-schema-facts.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
@@ -33,7 +34,6 @@ import type {
 } from "./session-accessor.sqlite-replacement-types.js";
 import { appendTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import { readSessionTranscriptWatermarkInDatabase } from "./session-accessor.sqlite-transcript-watermark.js";
-import { listSessionMembersInDatabase } from "./session-sharing-store.kernel.js";
 import type { SessionMaintenancePreservationSnapshot } from "./store-maintenance-preserve-snapshot.js";
 import type { SessionEntry } from "./types.js";
 
@@ -57,12 +57,19 @@ export function prepareSessionEntryReplacementPublication(
       [...result.current.keys()],
       "list",
       undefined,
-      { includeBoardPresence: true },
+      { includeBoardPresence: true, includeMembership: true },
     );
     // Read the final persisted bytes and side tables after assignment, alias moves and maintenance.
     const committed = readCommitted(key);
     if (!committed) {
       throw new Error(`Session publication lost its committed metadata: ${key}`);
+    }
+    const memberIds: unknown = JSON.parse(committed.row.member_ids_json ?? "null");
+    if (
+      !Array.isArray(memberIds) ||
+      !memberIds.every((id): id is string => typeof id === "string")
+    ) {
+      throw new Error(`Session publication lost its committed membership: ${key}`);
     }
     current.set(key, freezeJsonSnapshot(committed.entry));
     const { entry } = committed;
@@ -74,7 +81,7 @@ export function prepareSessionEntryReplacementPublication(
           isInternalSessionEffectsKey(key)
             ? null
             : (normalizeOptionalString(entry.category) ?? null),
-          listSessionMembersInDatabase(database, key).map(({ identityId }) => identityId),
+          memberIds,
           {
             ...(entry.participants ? { participants: entry.participants } : {}),
             ...(entry.participantCount === undefined
@@ -90,6 +97,35 @@ export function prepareSessionEntryReplacementPublication(
       }),
     );
   }
+  const source = getAdmittedSqliteSchemaFacts(database.db)
+    ? {
+        ...readOpenClawAgentDatabaseIdentity(database),
+        revision: readSessionNodesGeneration(database.db),
+      }
+    : undefined;
+  const changedKeys = [
+    ...new Set([...result.previous.keys(), ...result.current.keys(), ...archived]),
+  ];
+  const receipt =
+    source &&
+    createSqliteCommitReceipt<
+      { entry: SessionEntry; projection: SessionEntryProjectionFacts },
+      typeof source
+    >({
+      source,
+      domain: "session-entry-replacement",
+      keys: changedKeys,
+      readFact(key) {
+        const entry = current.get(key);
+        const facts = projection.get(key);
+        if (entry && facts) {
+          return { kind: "postimage", value: { entry, projection: facts } };
+        }
+        return result.previous.has(key) && !current.has(key)
+          ? { kind: "absent" }
+          : { kind: "unknown" };
+      },
+    });
   return {
     kind: "session-entry-replacements",
     pendingArchiveRecovery: result.pendingArchiveRecovery,
@@ -99,6 +135,16 @@ export function prepareSessionEntryReplacementPublication(
         ? [key]
         : [],
     ),
+    // Committed rows that keep their incarnation; generation readers need not wait for them.
+    generationUnchangedKeys: [...current].flatMap(([key, entry]) => {
+      const previous = result.previous.get(key);
+      return !invalidated.has(key) &&
+        previous !== undefined &&
+        previous.sessionId === entry.sessionId &&
+        previous.lifecycleRevision === entry.lifecycleRevision
+        ? [key]
+        : [];
+    }),
     previous: new Map(
       [...result.previous].map(([key, entry]) => [
         key,
@@ -114,15 +160,8 @@ export function prepareSessionEntryReplacementPublication(
         previousEntry: result.previous.get(sessionKey),
       }),
     ),
-    ...(getAdmittedSqliteSchemaFacts(database.db)
-      ? {
-          source: {
-            ...readOpenClawAgentDatabaseIdentity(database),
-            revision: readSessionNodesGeneration(database.db),
-          },
-        }
-      : {}),
-    changedKeys: [...new Set([...result.previous.keys(), ...result.current.keys(), ...archived])],
+    ...(source ? { source, receipt } : {}),
+    changedKeys,
   };
 }
 
