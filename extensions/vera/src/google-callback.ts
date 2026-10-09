@@ -6,6 +6,7 @@ import {
   readGoogleConnectConfig,
   type GoogleConnectConfig,
 } from "./google-connect.js";
+import type { GoogleConnectedNotice } from "./google-notify.js";
 
 type CallbackDeps = {
   config: GoogleConnectConfig;
@@ -13,6 +14,7 @@ type CallbackDeps = {
   store: GoogleAccountStore;
   exchange: typeof exchangeAuthorizationCode;
   log: { error: (message: string) => void };
+  notifyConnected?: (email: string) => Promise<GoogleConnectedNotice>;
 };
 
 function escapeHtml(value: string): string {
@@ -338,6 +340,12 @@ export async function handleVeraGoogleCallback(
     accessExpiresAtMs: exchanged.token.accessExpiresAtMs,
     connectedAtMs: now.getTime(),
   });
+  if (deps.notifyConnected) {
+    const notice = await deps.notifyConnected(exchanged.token.email);
+    if (!notice.ok) {
+      deps.log.error(`vera google connect confirmation was not sent: ${notice.error}`);
+    }
+  }
   writeVeraConnectPage(res, 200, {
     kind: "ready",
     heading: "Connected",

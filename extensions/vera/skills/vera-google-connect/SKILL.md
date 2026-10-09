@@ -24,4 +24,4 @@ When `ask` is present, send exactly one WhatsApp message:
 - Use `ask.message` as the English source and translate the sentences around the URL.
 - Do not add a digest, a second link, or any other offer in that message.
 
-That message is the proactive connect ask. Send it on the morning run even when there is no digest. After the lawyer connects, later runs may read the inbox and calendar.
+That message is the proactive connect ask. Send it on the morning run even when there is no digest. After the lawyer connects, the callback texts a confirmation to the same WhatsApp chat. Do not send that confirmation yourself, and do not send another connect link. Later runs may read the inbox and calendar.

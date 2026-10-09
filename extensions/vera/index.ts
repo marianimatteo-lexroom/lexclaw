@@ -10,6 +10,7 @@ import { openVeraGoogleAccountFromApi } from "./src/google-account.js";
 import { exchangeAuthorizationCode } from "./src/google-api.js";
 import { handleVeraGoogleCallback, writeVeraConnectPage } from "./src/google-callback.js";
 import { googleConnectConfigFrom } from "./src/google-connect.js";
+import { sendGoogleConnectedNotice } from "./src/google-notify.js";
 import {
   executeVeraGoogleConnect,
   executeVeraReadCalendar,
@@ -231,6 +232,12 @@ const entry = definePluginEntry({
             store,
             exchange: exchangeAuthorizationCode,
             log: api.logger,
+            notifyConnected: (email) =>
+              sendGoogleConnectedNotice({
+                config: api.config,
+                email,
+                loadAdapter: (channelId) => api.runtime.channel.outbound.loadAdapter(channelId),
+              }),
           });
         } catch (error) {
           api.logger.error(
