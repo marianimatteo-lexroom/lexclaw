@@ -8,12 +8,14 @@ import { Type } from "typebox";
 import { planDigest, type DigestSignal } from "./src/digest.js";
 import { openVeraGoogleAccountFromApi } from "./src/google-account.js";
 import { exchangeAuthorizationCode } from "./src/google-api.js";
-import { handleVeraGoogleCallback } from "./src/google-callback.js";
+import { handleVeraGoogleCallback, writeVeraConnectPage } from "./src/google-callback.js";
 import { googleConnectConfigFrom } from "./src/google-connect.js";
+import { sendGoogleConnectedNotice } from "./src/google-notify.js";
 import {
   executeVeraGoogleConnect,
   executeVeraReadCalendar,
   executeVeraReadInbox,
+  executeVeraSendEmail,
 } from "./src/google-tools.js";
 import { runDraft, runResearch, type LexroomConfig } from "./src/lexroom-client.js";
 
@@ -163,7 +165,7 @@ const tools = defineToolPlugin({
       name: "vera_google_connect",
       label: "Connect Gmail and Calendar",
       description:
-        "Check whether this lawyer connected Gmail and Google Calendar. When they have not, return one WhatsApp ask and a single Google OAuth link that grants read-only access to both. Does not send the message.",
+        "Check whether this lawyer connected Gmail and Google Calendar, including permission to send mail. When they have not, or the saved connection cannot send, return one WhatsApp ask and a single Google OAuth link. Does not send the message.",
       parameters: Type.Object({}, { additionalProperties: false }),
       optional: true,
       async execute(_params, config, context) {
@@ -174,7 +176,7 @@ const tools = defineToolPlugin({
       name: "vera_read_inbox",
       label: "Read connected Gmail",
       description:
-        "Read recent inbox metadata from the Gmail account this lawyer connected. Read-only. Never sends mail.",
+        "Read recent inbox metadata from the Gmail account this lawyer connected. Does not send mail.",
       parameters: Type.Object(
         {
           max: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })),
@@ -200,6 +202,25 @@ const tools = defineToolPlugin({
       optional: true,
       async execute(params, config, context) {
         return await executeVeraReadCalendar(config, context.api, params.hours, context.signal);
+      },
+    }),
+    tool({
+      name: "vera_send_email",
+      label: "Send email from connected Gmail",
+      description:
+        "Send one plain-text email from the Gmail account this lawyer connected. Set confirmed true only after he agrees in the chat to that exact message. Any other value returns confirmation_required and does not send. Calendar stays read-only.",
+      parameters: Type.Object(
+        {
+          to: Type.String({ minLength: 3, description: "One recipient email address." }),
+          subject: Type.String({ minLength: 1, description: "One-line subject." }),
+          text: Type.String({ minLength: 1, description: "Plain-text body." }),
+          confirmed: Type.Boolean(),
+        },
+        { additionalProperties: false },
+      ),
+      optional: true,
+      async execute(params, config, context) {
+        return await executeVeraSendEmail(config, context.api, params, context.signal);
       },
     }),
   ],
@@ -231,17 +252,22 @@ const entry = definePluginEntry({
             store,
             exchange: exchangeAuthorizationCode,
             log: api.logger,
+            notifyConnected: (email) =>
+              sendGoogleConnectedNotice({
+                config: api.config,
+                email,
+                loadAdapter: (channelId) => api.runtime.channel.outbound.loadAdapter(channelId),
+              }),
           });
         } catch (error) {
           api.logger.error(
             `vera google callback failed: ${error instanceof Error ? error.message : "unknown"}`,
           );
-          res.statusCode = 500;
-          res.setHeader("content-type", "text/html; charset=utf-8");
-          res.setHeader("cache-control", "no-store");
-          res.end(
-            "<!doctype html><title>Vera</title><p>Vera could not finish connecting the Google account.</p>",
-          );
+          writeVeraConnectPage(res, 500, {
+            kind: "blocked",
+            heading: "Could not connect",
+            message: "Vera could not finish connecting the Google account.",
+          });
           return true;
         }
       },

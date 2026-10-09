@@ -79,6 +79,10 @@ describe("handleVeraGoogleCallback", () => {
     expect(first.statusCode).toBe(200);
     expect(first.body).toContain("lawyer@example.com");
     expect(first.body).toContain("Gmail and Google Calendar");
+    expect(first.body).toContain("You can close this page and return to WhatsApp.");
+    expect(first.body).toContain('name="viewport"');
+    expect(first.body).not.toContain("<script");
+    expect(first.headers.get("content-security-policy")).toContain("default-src 'none'");
     expect(store.account?.refreshToken).toBe("test-refresh-token");
 
     const second = response();
@@ -110,6 +114,111 @@ describe("handleVeraGoogleCallback", () => {
     );
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain("did not connect");
+    expect(res.body).toContain("Not connected");
     expect(exchange).not.toHaveBeenCalled();
+  });
+
+  it("escapes the connected account address", async () => {
+    const store = memoryStore();
+    const issued = createConnectState(CONFIG.googleStateSecret ?? "", NOW);
+    await store.replacePending(issued.nonce, issued.expiresAtMs);
+    const res = response();
+    await handleVeraGoogleCallback(
+      {
+        method: "GET",
+        url: `/vera/google/callback?code=test-auth-code&state=${issued.state}`,
+      } as IncomingMessage,
+      res as unknown as ServerResponse,
+      {
+        config: CONFIG,
+        now: () => NOW,
+        store,
+        exchange: async () => ({
+          ok: true as const,
+          token: {
+            email: `lawyer+<tag>@example.com`,
+            refreshToken: "test-refresh-token",
+            accessToken: "test-access-token",
+            accessExpiresAtMs: NOW.getTime() + 3_600_000,
+          },
+        }),
+        log: { error() {} },
+      },
+    );
+    expect(res.body).toContain("lawyer+&lt;tag&gt;@example.com");
+    expect(res.body).not.toContain("<tag>");
+  });
+
+  it("texts WhatsApp after the Google account is stored", async () => {
+    const store = memoryStore();
+    const issued = createConnectState(CONFIG.googleStateSecret ?? "", NOW);
+    await store.replacePending(issued.nonce, issued.expiresAtMs);
+    const notifyConnected = vi.fn(async () => ({ ok: true as const }));
+    const res = response();
+    await handleVeraGoogleCallback(
+      {
+        method: "GET",
+        url: `/vera/google/callback?code=test-auth-code&state=${issued.state}`,
+      } as IncomingMessage,
+      res as unknown as ServerResponse,
+      {
+        config: CONFIG,
+        now: () => NOW,
+        store,
+        exchange: async () => ({
+          ok: true as const,
+          token: {
+            email: "lawyer@example.com",
+            refreshToken: "test-refresh-token",
+            accessToken: "test-access-token",
+            accessExpiresAtMs: NOW.getTime() + 3_600_000,
+          },
+        }),
+        log: { error() {} },
+        notifyConnected,
+      },
+    );
+    expect(res.statusCode).toBe(200);
+    expect(notifyConnected).toHaveBeenCalledExactlyOnceWith("lawyer@example.com");
+    expect(store.account?.email).toBe("lawyer@example.com");
+  });
+
+  it("keeps the account connected when the WhatsApp confirmation fails", async () => {
+    const store = memoryStore();
+    const issued = createConnectState(CONFIG.googleStateSecret ?? "", NOW);
+    await store.replacePending(issued.nonce, issued.expiresAtMs);
+    const errors: string[] = [];
+    const res = response();
+    await handleVeraGoogleCallback(
+      {
+        method: "GET",
+        url: `/vera/google/callback?code=test-auth-code&state=${issued.state}`,
+      } as IncomingMessage,
+      res as unknown as ServerResponse,
+      {
+        config: CONFIG,
+        now: () => NOW,
+        store,
+        exchange: async () => ({
+          ok: true as const,
+          token: {
+            email: "lawyer@example.com",
+            refreshToken: "test-refresh-token",
+            accessToken: "test-access-token",
+            accessExpiresAtMs: NOW.getTime() + 3_600_000,
+          },
+        }),
+        log: {
+          error(message: string) {
+            errors.push(message);
+          },
+        },
+        notifyConnected: async () => ({ ok: false as const, error: "outbound down" }),
+      },
+    );
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("Connected");
+    expect(store.account?.email).toBe("lawyer@example.com");
+    expect(errors).toEqual(["vera google connect confirmation was not sent: outbound down"]);
   });
 });

@@ -1,5 +1,5 @@
-import { createRequire } from "node:module";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
@@ -101,6 +101,8 @@ CREATE TABLE IF NOT EXISTS vera_google_account (
 ) STRICT;
 `;
 
+const SCOPES_COLUMN_SQL = "ALTER TABLE vera_google_account ADD COLUMN scopes TEXT";
+
 type VeraGoogleDatabase = {
   vera_google_pending: { nonce: string; expires_at_ms: number };
   vera_google_account: {
@@ -110,6 +112,7 @@ type VeraGoogleDatabase = {
     access_token: string | null;
     access_expires_at_ms: number | null;
     connected_at_ms: number;
+    scopes: string | null;
   };
 };
 
@@ -141,6 +144,9 @@ function assertAccount(account: GoogleAccountRecord): void {
   }
   if (!Number.isFinite(account.connectedAtMs)) {
     throw new Error("Vera Google connected time is invalid");
+  }
+  if (account.scopes !== null && (account.scopes.length > 2000 || /[\r\n]/u.test(account.scopes))) {
+    throw new Error("Vera Google scopes are invalid");
   }
 }
 
@@ -230,6 +236,7 @@ class VeraGoogleDatabaseStore {
             access_token: account.accessToken,
             access_expires_at_ms: account.accessExpiresAtMs,
             connected_at_ms: account.connectedAtMs,
+            scopes: account.scopes,
           }),
         );
       },
@@ -253,6 +260,7 @@ class VeraGoogleDatabaseStore {
           "access_token",
           "access_expires_at_ms",
           "connected_at_ms",
+          "scopes",
         ])
         .where("id", "=", VERA_GOOGLE_ACCOUNT_ID),
     );
@@ -265,6 +273,7 @@ class VeraGoogleDatabaseStore {
       accessToken: row.access_token,
       accessExpiresAtMs: row.access_expires_at_ms,
       connectedAtMs: row.connected_at_ms,
+      scopes: row.scopes,
     };
   }
 
@@ -304,6 +313,12 @@ function openVeraGoogleDatabase(dbPath: string): VeraGoogleDatabaseStore {
       synchronous: "NORMAL",
     });
     db.exec(SCHEMA_SQL);
+    const columns = db
+      .prepare("SELECT name FROM pragma_table_info('vera_google_account')")
+      .all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "scopes")) {
+      db.exec(SCOPES_COLUMN_SQL);
+    }
     for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`]) {
       chmodIfExists(file);
     }

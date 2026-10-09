@@ -12,6 +12,7 @@ it("registers the Google connect link and the read-only Gmail and Calendar tools
     "vera_google_connect",
     "vera_read_inbox",
     "vera_read_calendar",
+    "vera_send_email",
   ]);
   expect(getToolPluginMetadata(plugin)?.configSchema).toMatchObject({
     properties: {
@@ -30,7 +31,7 @@ it("registers the Google connect link and the read-only Gmail and Calendar tools
       registerHttpRoute,
     }),
   );
-  expect(registerTool).toHaveBeenCalledTimes(6);
+  expect(registerTool).toHaveBeenCalledTimes(7);
   expect(registerHttpRoute).toHaveBeenCalledWith(
     expect.objectContaining({
       path: "/vera/google/callback",

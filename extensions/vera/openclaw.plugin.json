@@ -42,7 +42,8 @@
       "vera_draft",
       "vera_google_connect",
       "vera_read_inbox",
-      "vera_read_calendar"
+      "vera_read_calendar",
+      "vera_send_email"
     ]
   },
   "toolMetadata": {
@@ -62,6 +63,9 @@
       "optional": true
     },
     "vera_read_calendar": {
+      "optional": true
+    },
+    "vera_send_email": {
       "optional": true
     }
   }

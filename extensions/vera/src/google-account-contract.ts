@@ -7,6 +7,8 @@ export type GoogleAccountRecord = {
   accessToken: string | null;
   accessExpiresAtMs: number | null;
   connectedAtMs: number;
+  /** Space-separated Google scopes. Null is a connection from before send was requested. */
+  scopes: string | null;
 };
 
 export type GoogleAccountStore = {

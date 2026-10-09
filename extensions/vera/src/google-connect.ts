@@ -6,14 +6,17 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
  * gog's callback URL must not be texted. Vera keeps the refresh token and
  * reads both APIs directly.
  */
+export const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
+
 export const GOOGLE_CONNECT_SCOPES = [
   "openid",
   "email",
   "https://www.googleapis.com/auth/gmail.readonly",
+  GMAIL_SEND_SCOPE,
   "https://www.googleapis.com/auth/calendar.readonly",
 ] as const;
 
-export const GOOGLE_CONNECT_SERVICES = ["gmail", "google_calendar"] as const;
+export const GOOGLE_CONNECT_SERVICES = ["gmail", "google_calendar", "gmail_send"] as const;
 
 const STATE_TTL_MS = 30 * 60 * 1000;
 const CALLBACK_PATH = "/vera/google/callback";
@@ -172,9 +175,30 @@ export function buildGoogleConnectUrl(params: {
   return url.toString();
 }
 
-export function googleConnectMessage(url: string): string {
+export function canSendMail(scopes: string | null | undefined): boolean {
+  return typeof scopes === "string" && scopes.split(/\s+/u).includes(GMAIL_SEND_SCOPE);
+}
+
+export function coversConnectScopes(scope: unknown): boolean {
+  if (typeof scope !== "string" || scope.trim() === "") {
+    return true;
+  }
+  const parts = new Set(scope.split(/\s+/u));
+  return GOOGLE_CONNECT_SCOPES.every(
+    (item) => item === "openid" || item === "email" || parts.has(item),
+  );
+}
+
+export function googleConnectMessage(url: string, purpose: "connect" | "send" = "connect"): string {
+  if (purpose === "send") {
+    return [
+      "Vera can read Gmail and Google Calendar, but cannot send mail yet.",
+      "Open this link and approve sending:",
+      url,
+    ].join("\n");
+  }
   return [
-    "Connect Gmail and Google Calendar so Vera can prepare your morning digest.",
+    "Connect Gmail and Google Calendar so Vera can prepare your morning digest and send mail you confirm.",
     "Open this link to connect your Google account:",
     url,
   ].join("\n");
@@ -183,14 +207,14 @@ export function googleConnectMessage(url: string): string {
 export async function prepareGoogleConnect(params: {
   config: GoogleConnectConfig;
   now: Date;
-  accountEmail: string | null;
+  account: { email: string; scopes: string | null } | null;
   savePending: (nonce: string, expiresAtMs: number) => Promise<void>;
 }): Promise<GoogleConnectResult> {
-  if (params.accountEmail) {
+  if (params.account && canSendMail(params.account.scopes)) {
     return {
       ok: true,
       connected: true,
-      email: params.accountEmail,
+      email: params.account.email,
       services: GOOGLE_CONNECT_SERVICES,
     };
   }
@@ -211,7 +235,7 @@ export async function prepareGoogleConnect(params: {
     ask: {
       services: GOOGLE_CONNECT_SERVICES,
       url,
-      message: googleConnectMessage(url),
+      message: googleConnectMessage(url, params.account ? "send" : "connect"),
     },
   };
 }
