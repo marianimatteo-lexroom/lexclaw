@@ -1,22 +1,89 @@
+import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { configureSqliteConnectionPragmas } from "openclaw/plugin-sdk/plugin-state-runtime";
-import {
-  enableNodeSqliteKyselyStatementCache,
-  executeSqliteQuerySync,
-  executeSqliteQueryTakeFirstSync,
-  getNodeSqliteKysely,
-  openNodeSqliteDatabase,
-  runSqliteImmediateTransactionSync,
-  type SqliteWorkerBackend,
-  type SqliteWorkerCommand,
+import { pathToFileURL } from "node:url";
+import type { configureSqliteConnectionPragmas as ConfigureSqliteConnectionPragmas } from "openclaw/plugin-sdk/plugin-state-runtime";
+import type {
+  enableNodeSqliteKyselyStatementCache as EnableNodeSqliteKyselyStatementCache,
+  executeSqliteQuerySync as ExecuteSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync as ExecuteSqliteQueryTakeFirstSync,
+  getNodeSqliteKysely as GetNodeSqliteKysely,
+  openNodeSqliteDatabase as OpenNodeSqliteDatabase,
+  runSqliteImmediateTransactionSync as RunSqliteImmediateTransactionSync,
+  SqliteWorkerBackend,
+  SqliteWorkerCommand,
 } from "openclaw/plugin-sdk/sqlite-worker-runtime";
 import {
   VERA_GOOGLE_ACCOUNT_ID,
   type GoogleAccountRecord,
   type VeraGoogleOperations,
 } from "./google-account-contract.js";
+
+/**
+ * The installed plugin lives under the state directory, outside the OpenClaw
+ * package. The SQLite worker does not inherit the gateway's import hook, so a
+ * bare `openclaw/*` import fails there. Tests and in-repo runs resolve the
+ * package normally; the Railway copy resolves it from the image instead.
+ */
+async function importOpenClawSdk(specifier: string): Promise<Record<string, unknown>> {
+  try {
+    return await import(specifier);
+  } catch (error) {
+    const code = error instanceof Error && "code" in error ? error.code : undefined;
+    if (code !== "ERR_MODULE_NOT_FOUND") {
+      throw error;
+    }
+    const anchor = ["/app/openclaw.mjs", path.join(process.cwd(), "openclaw.mjs")].find((file) =>
+      fs.existsSync(file),
+    );
+    if (!anchor) {
+      throw error;
+    }
+    return await import(pathToFileURL(createRequire(anchor).resolve(specifier)).href);
+  }
+}
+
+function sdkFunction<T extends (...args: never[]) => unknown>(
+  module: Record<string, unknown>,
+  name: string,
+): T {
+  const value = module[name];
+  if (typeof value !== "function") {
+    throw new Error(`Vera Google account worker is missing ${name}.`);
+  }
+  return value as T;
+}
+
+const pluginState = await importOpenClawSdk("openclaw/plugin-sdk/plugin-state-runtime");
+const sqliteRuntime = await importOpenClawSdk("openclaw/plugin-sdk/sqlite-worker-runtime");
+const configureSqliteConnectionPragmas = sdkFunction<typeof ConfigureSqliteConnectionPragmas>(
+  pluginState,
+  "configureSqliteConnectionPragmas",
+);
+const enableNodeSqliteKyselyStatementCache = sdkFunction<
+  typeof EnableNodeSqliteKyselyStatementCache
+>(sqliteRuntime, "enableNodeSqliteKyselyStatementCache");
+const executeSqliteQuerySync = sdkFunction<typeof ExecuteSqliteQuerySync>(
+  sqliteRuntime,
+  "executeSqliteQuerySync",
+);
+const executeSqliteQueryTakeFirstSync = sdkFunction<typeof ExecuteSqliteQueryTakeFirstSync>(
+  sqliteRuntime,
+  "executeSqliteQueryTakeFirstSync",
+);
+const getNodeSqliteKysely = sdkFunction<typeof GetNodeSqliteKysely>(
+  sqliteRuntime,
+  "getNodeSqliteKysely",
+);
+const openNodeSqliteDatabase = sdkFunction<typeof OpenNodeSqliteDatabase>(
+  sqliteRuntime,
+  "openNodeSqliteDatabase",
+);
+const runSqliteImmediateTransactionSync = sdkFunction<typeof RunSqliteImmediateTransactionSync>(
+  sqliteRuntime,
+  "runSqliteImmediateTransactionSync",
+);
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS vera_google_pending (
