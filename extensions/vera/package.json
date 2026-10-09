@@ -2,7 +2,7 @@
   "name": "@lexroom/vera",
   "version": "2026.9.8",
   "private": true,
-  "description": "Vera morning digest for Lexroom lawyers.",
+  "description": "Vera digest, Instinct-shaped matter memory, and event-driven wakes for Lexroom lawyers.",
   "type": "module",
   "dependencies": {
     "typebox": "1.3.34"
@@ -13,7 +13,7 @@
   "openclaw": {
     "extensions": ["./index.ts"],
     "build": {
-      "workerEntries": ["./src/google-account.worker.ts"]
+      "workerEntries": ["./src/google-account.worker.ts", "./src/memory.worker.ts"]
     }
   }
 }

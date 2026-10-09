@@ -8,6 +8,7 @@ import {
   parseCalendarEvents,
   parseGmailMessage,
   sendGmailMessage,
+  watchGmailInbox,
 } from "./google-api.js";
 
 const NOW = new Date("2026-10-09T07:40:00.000Z");
@@ -212,6 +213,29 @@ describe("google reads", () => {
         fetchImpl,
       }),
     ).toMatchObject({ ok: true, events: [{ id: "evt-1", summary: "Hearing" }] });
+  });
+});
+
+describe("gmail watch", () => {
+  it("registers a Pub/Sub topic and rejects a bad topic name", async () => {
+    expect(
+      await watchGmailInbox({
+        accessToken: "test-access-token",
+        topicName: "not-a-topic",
+      }),
+    ).toEqual({ ok: false, status: 400 });
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.method).toBe("POST");
+      expect(String(init?.body)).toContain("projects/p/topics/t");
+      return jsonResponse({ expiration: "1760000000000" });
+    });
+    expect(
+      await watchGmailInbox({
+        accessToken: "test-access-token",
+        topicName: "projects/p/topics/t",
+        fetchImpl,
+      }),
+    ).toEqual({ ok: true, expirationMs: 1_760_000_000_000 });
   });
 });
 

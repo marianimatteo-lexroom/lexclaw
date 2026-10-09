@@ -5,7 +5,7 @@
     "onStartup": true
   },
   "name": "Vera",
-  "description": "Plans a lawyer's morning WhatsApp digest and calls Lexroom research and drafting.",
+  "description": "Lawyer WhatsApp digest with Instinct-shaped matter memory and event-driven wakes.",
   "skills": ["./skills"],
   "configSchema": {
     "type": "object",
@@ -32,6 +32,12 @@
       },
       "googleStateSecret": {
         "type": "string"
+      },
+      "googlePubSubTopic": {
+        "type": "string"
+      },
+      "googleNotifyToken": {
+        "type": "string"
       }
     }
   },
@@ -43,7 +49,13 @@
       "vera_google_connect",
       "vera_read_inbox",
       "vera_read_calendar",
-      "vera_send_email"
+      "vera_send_email",
+      "vera_memory_search",
+      "vera_memory_list",
+      "vera_memory_get",
+      "vera_memory_history",
+      "vera_todo_list",
+      "vera_todo_get"
     ]
   },
   "toolMetadata": {
@@ -66,6 +78,24 @@
       "optional": true
     },
     "vera_send_email": {
+      "optional": true
+    },
+    "vera_memory_search": {
+      "optional": true
+    },
+    "vera_memory_list": {
+      "optional": true
+    },
+    "vera_memory_get": {
+      "optional": true
+    },
+    "vera_memory_history": {
+      "optional": true
+    },
+    "vera_todo_list": {
+      "optional": true
+    },
+    "vera_todo_get": {
       "optional": true
     }
   }
