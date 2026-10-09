@@ -32,10 +32,10 @@ Call `vera_plan_digest` with those signals. Do not rank them yourself.
 
 When the plan is `deliver: false`, the entire reply is exactly `NO_REPLY`. That token is not delivered to WhatsApp. Do not add a greeting, a placeholder, or any other text.
 
-When the plan is `deliver: true`, send exactly one WhatsApp message:
+When the plan is `deliver: true`, send exactly one WhatsApp message, written as a text to a colleague:
 
 - Mention only `plan.items`, in that order.
-- Say what changed and why it should not wait.
+- Say what changed and why it should not wait, in sentences. No bold labels, no headers, no field lists.
 - End with the two `plan.nextSteps`, in order. The first is research. The second is a draft that still needs a yes.
 - Do not add a third offer. Do not mention a matter that is absent from `plan.items`.
 
@@ -45,4 +45,4 @@ A yes to the research step calls `vera_research` with that step's `matterId` onl
 
 A draft waits for a separate yes after research. Only then call `vera_draft` with `confirmed: true` and the same `matterId`. If the lawyer has not agreed, call it with `confirmed: false` or do not call it.
 
-Never send email. Never create or move a calendar event. Never draft for one matter using another matter's facts.
+The morning message does not send mail. If he later asks to send a reply, follow the vera-google-connect skill. Never create or move a calendar event. Never draft for one matter using another matter's facts.

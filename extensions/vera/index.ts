@@ -208,7 +208,7 @@ const tools = defineToolPlugin({
       name: "vera_send_email",
       label: "Send email from connected Gmail",
       description:
-        "Send one plain-text email from the Gmail account this lawyer connected. Set confirmed true only after the lawyer agrees to the exact recipient, subject, and body in the chat. Any other value returns confirmation_required and does not send. Calendar stays read-only.",
+        "Send one plain-text email from the Gmail account this lawyer connected. Set confirmed true only after he agrees in the chat to that exact message. Any other value returns confirmation_required and does not send. Calendar stays read-only.",
       parameters: Type.Object(
         {
           to: Type.String({ minLength: 3, description: "One recipient email address." }),

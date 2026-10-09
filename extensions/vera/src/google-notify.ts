@@ -10,9 +10,12 @@ type TextSender = (params: {
 
 export type GoogleConnectedNotice = { ok: true } | { ok: false; error: string };
 
-export function googleConnectedText(email: string): string {
-  const safe = email.replaceAll(/[\r\n]+/g, " ").trim();
-  return `Gmail and Google Calendar are connected to Vera for ${safe}. Vera can send mail you confirm.`;
+/**
+ * WhatsApp turns a raw email address into a contact card and covers the
+ * message, so the confirmation names the products and not the address.
+ */
+export function googleConnectedText(_email: string): string {
+  return "Gmail and Calendar are connected. I can send mail when you say so.";
 }
 
 export function readVeraWhatsAppTarget(config: unknown): string | null {
