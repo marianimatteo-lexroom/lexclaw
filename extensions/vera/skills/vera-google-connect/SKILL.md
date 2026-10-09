@@ -19,9 +19,12 @@ When `connected` is true, do not ask again and do not send the link.
 
 When `ask` is present, send exactly one WhatsApp message:
 
-- Ask the lawyer to connect Gmail and Google Calendar.
-- Include `ask.url` on its own line, copied exactly.
 - Use `ask.message` as the English source and translate the sentences around the URL.
+- Include `ask.url` on its own line, copied exactly.
 - Do not add a digest, a second link, or any other offer in that message.
 
-That message is the proactive connect ask. Send it on the morning run even when there is no digest. After the lawyer connects, the callback texts a confirmation to the same WhatsApp chat. Do not send that confirmation yourself, and do not send another connect link. Later runs may read the inbox and calendar.
+That message is the proactive connect ask. Send it on the morning run even when there is no digest. A connection that can read but not send still returns `ask`; send that link too. After the lawyer connects, the callback texts a confirmation to the same WhatsApp chat. Do not send that confirmation yourself, and do not send another connect link. Later runs may read the inbox and calendar.
+
+## Sending mail
+
+Send mail only when the lawyer asks, and only with `vera_send_email`. Show the recipient, subject, and body in the chat first. Call the tool with `confirmed: false` until they agree to that exact text, then call it once with `confirmed: true`. Do not change calendar events. If the tool returns `needs_send_scope` or `not_connected`, follow the connect ask above.

@@ -1,10 +1,12 @@
 import type { GoogleAccountRecord } from "./google-account-contract.js";
+import { coversConnectScopes, GOOGLE_CONNECT_SCOPES } from "./google-connect.js";
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";
 const GMAIL_PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile";
 const GMAIL_LIST_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages";
 const CALENDAR_EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+const GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send";
 const ACCESS_SKEW_MS = 60_000;
 const EMAIL = /^[^\s@]+@[^\s@]+$/u;
 
@@ -29,6 +31,7 @@ export type GoogleToken = {
   refreshToken: string;
   accessToken: string;
   accessExpiresAtMs: number;
+  scopes: string;
 };
 
 type FetchLike = typeof fetch;
@@ -52,17 +55,6 @@ function googleErrorCode(value: unknown): string | null {
     return null;
   }
   return error;
-}
-
-function hasReadonlyScopes(scope: unknown): boolean {
-  if (typeof scope !== "string" || scope.trim() === "") {
-    return true;
-  }
-  const parts = new Set(scope.split(/\s+/u));
-  return (
-    parts.has("https://www.googleapis.com/auth/gmail.readonly") &&
-    parts.has("https://www.googleapis.com/auth/calendar.readonly")
-  );
 }
 
 async function readBody(response: Response): Promise<unknown> {
@@ -260,9 +252,13 @@ export async function exchangeAuthorizationCode(params: {
   if (!token.ok) {
     return token;
   }
-  if (!hasReadonlyScopes(token.value.scope)) {
+  if (!coversConnectScopes(token.value.scope)) {
     return { ok: false, reason: "denied_scopes" };
   }
+  const scopes =
+    typeof token.value.scope === "string" && token.value.scope.trim()
+      ? token.value.scope
+      : GOOGLE_CONNECT_SCOPES.join(" ");
   const accessToken = token.value.access_token;
   const refreshToken = token.value.refresh_token;
   if (typeof accessToken !== "string" || accessToken.length === 0) {
@@ -283,8 +279,77 @@ export async function exchangeAuthorizationCode(params: {
       refreshToken,
       accessToken,
       accessExpiresAtMs: params.now.getTime() + expiresIn * 1000,
+      scopes,
     },
   };
+}
+
+export function buildRawGmailMessage(params: {
+  from: string;
+  to: string;
+  subject: string;
+  text: string;
+}): string {
+  const subject = /^[\t\u0020-\u007e]*$/u.test(params.subject)
+    ? params.subject
+    : `=?UTF-8?B?${Buffer.from(params.subject, "utf8").toString("base64")}?=`;
+  const text = params.text.replaceAll("\r\n", "\n").replaceAll("\n", "\r\n");
+  const message = [
+    `From: ${params.from}`,
+    `To: ${params.to}`,
+    `Subject: ${subject}`,
+    "MIME-Version: 1.0",
+    'Content-Type: text/plain; charset="UTF-8"',
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    text,
+  ].join("\r\n");
+  return Buffer.from(message, "utf8").toString("base64url");
+}
+
+export async function sendGmailMessage(params: {
+  accessToken: string;
+  from: string;
+  to: string;
+  subject: string;
+  text: string;
+  fetchImpl?: FetchLike;
+  signal?: AbortSignal;
+}): Promise<{ ok: true; id: string } | { ok: false; status: number }> {
+  const fetchImpl = params.fetchImpl ?? fetch;
+  let response: Response;
+  try {
+    response = await fetchImpl(GMAIL_SEND_URL, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${params.accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        raw: buildRawGmailMessage({
+          from: params.from,
+          to: params.to,
+          subject: params.subject,
+          text: params.text,
+        }),
+      }),
+      signal: params.signal ?? AbortSignal.timeout(20_000),
+    });
+  } catch {
+    return { ok: false, status: 0 };
+  }
+  const payload = await readBody(response);
+  if (!response.ok) {
+    return { ok: false, status: response.status };
+  }
+  const id =
+    payload && typeof payload === "object" && typeof (payload as { id?: unknown }).id === "string"
+      ? (payload as { id: string }).id
+      : "";
+  if (!id) {
+    return { ok: false, status: response.status };
+  }
+  return { ok: true, id };
 }
 
 export async function loadAccessToken(params: {

@@ -232,7 +232,7 @@ function renderConnectPage(content: ConnectPage): string {
     : "";
   const access =
     content.kind === "ready"
-      ? `<ul class="products"><li><span>Gmail</span><span>Read only</span></li><li><span>Google Calendar</span><span>Read only</span></li></ul><p class="foot">You can close this page and return to WhatsApp.</p>`
+      ? `<ul class="products"><li><span>Gmail</span><span>Read and send</span></li><li><span>Google Calendar</span><span>Read only</span></li></ul><p class="foot">You can close this page and return to WhatsApp.</p>`
       : "";
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Vera</title><style>${PAGE_STYLE}</style></head><body><main class="card"><p class="brand"><i></i>Vera</p><div class="badge ${content.kind}">${mark(content.kind)}</div><h1>${escapeHtml(content.heading)}</h1><p class="lead">${escapeHtml(content.message)}</p>${account}${access}</main></body></html>`;
 }
@@ -328,7 +328,7 @@ export async function handleVeraGoogleCallback(
       kind: denied ? "retry" : "blocked",
       heading: denied ? "Approval needed" : "Could not connect",
       message: denied
-        ? "Approve both Gmail and Google Calendar, then ask Vera for a new link."
+        ? "Approve Gmail, sending mail, and Google Calendar, then ask Vera for a new link."
         : "Vera could not finish connecting the Google account. Return to WhatsApp and ask for a new link.",
     });
     return true;
@@ -339,6 +339,7 @@ export async function handleVeraGoogleCallback(
     accessToken: exchanged.token.accessToken,
     accessExpiresAtMs: exchanged.token.accessExpiresAtMs,
     connectedAtMs: now.getTime(),
+    scopes: exchanged.token.scopes,
   });
   if (deps.notifyConnected) {
     const notice = await deps.notifyConnected(exchanged.token.email);

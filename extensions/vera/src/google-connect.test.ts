@@ -66,7 +66,7 @@ describe("prepareGoogleConnect", () => {
     const result = await prepareGoogleConnect({
       config: CONFIG,
       now: NOW,
-      accountEmail: null,
+      account: null,
       savePending: async (nonce, expiresAtMs) => {
         pending.push({ nonce, expiresAtMs });
       },
@@ -82,7 +82,8 @@ describe("prepareGoogleConnect", () => {
     expect(url.searchParams.get("prompt")).toBe("consent");
     expect(url.searchParams.get("redirect_uri")).toBe(CONFIG.googleRedirectUri);
     expect(url.searchParams.get("scope")?.split(" ")).toEqual([...GOOGLE_CONNECT_SCOPES]);
-    expect(result.ask.services).toEqual(["gmail", "google_calendar"]);
+    expect(result.ask.services).toEqual(["gmail", "google_calendar", "gmail_send"]);
+    expect(result.ask.message).toContain("send mail you confirm");
     expect(result.ask.message).toBe(googleConnectMessage(result.ask.url));
     expect(result.ask.message).toContain("Gmail and Google Calendar");
     expect(result.ask.message).toContain(result.ask.url);
@@ -95,12 +96,15 @@ describe("prepareGoogleConnect", () => {
     ).toBe(result.ask.url);
   });
 
-  it("does not mint a link when the account is already connected", async () => {
+  it("does not mint a link when the account can already send mail", async () => {
     let saved = false;
     const result = await prepareGoogleConnect({
       config: CONFIG,
       now: NOW,
-      accountEmail: "lawyer@example.com",
+      account: {
+        email: "lawyer@example.com",
+        scopes: "https://www.googleapis.com/auth/gmail.send",
+      },
       savePending: async () => {
         saved = true;
       },
@@ -110,8 +114,18 @@ describe("prepareGoogleConnect", () => {
       ok: true,
       connected: true,
       email: "lawyer@example.com",
-      services: ["gmail", "google_calendar"],
+      services: ["gmail", "google_calendar", "gmail_send"],
     });
+  });
+
+  it("asks again when the saved connection cannot send mail", async () => {
+    const result = await prepareGoogleConnect({
+      config: CONFIG,
+      now: NOW,
+      account: { email: "lawyer@example.com", scopes: null },
+      savePending: async () => {},
+    });
+    expect(result.ok && !result.connected && result.ask.message).toContain("cannot send mail yet");
   });
 });
 

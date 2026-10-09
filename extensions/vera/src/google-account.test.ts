@@ -10,6 +10,7 @@ const ACCOUNT = {
   accessToken: "test-access-token",
   accessExpiresAtMs: 1_000,
   connectedAtMs: 500,
+  scopes: "https://www.googleapis.com/auth/gmail.send",
 };
 
 describe("vera google account store", () => {

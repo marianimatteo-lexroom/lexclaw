@@ -32,6 +32,7 @@ Each chat is one Lexroom user. Memory stays on one client or matter at a time. R
       "vera_google_connect",
       "vera_read_inbox",
       "vera_read_calendar",
+      "vera_send_email",
     ],
   },
 }
@@ -45,7 +46,7 @@ Vera uses the Gmail and Google Calendar APIs, not an MCP server and not `gog`. T
 
 Create a Google Cloud OAuth web client, enable the Gmail API and the Google Calendar API, and register `googleRedirectUri` as an authorized redirect URI. The path is `/vera/google/callback` on the public Gateway origin. `googleStateSecret` is any private string of at least 16 characters. Vera stores the refresh token in its own SQLite file under the Gateway state directory.
 
-The connect link asks for read-only Gmail and read-only Calendar, plus the account email. Vera does not send mail or change events. One link covers both products. It expires after 30 minutes and works once. The morning skill sends it on WhatsApp until the lawyer connects. When the link succeeds, Vera texts `channels["kapso-whatsapp"].defaultTo` that Gmail and Google Calendar are connected.
+The connect link asks for read-only Gmail, permission to send mail, and read-only Calendar, plus the account email. Vera does not change calendar events. One link covers all of that. It expires after 30 minutes and works once. The morning skill sends it on WhatsApp until the lawyer connects, and again when an older connection cannot send mail. `vera_send_email` sends one plain-text message only after `confirmed` is true. When the link succeeds, Vera texts `channels["kapso-whatsapp"].defaultTo` that Gmail and Google Calendar are connected.
 
 ## Morning automation
 

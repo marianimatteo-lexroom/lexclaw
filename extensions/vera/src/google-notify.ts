@@ -12,7 +12,7 @@ export type GoogleConnectedNotice = { ok: true } | { ok: false; error: string };
 
 export function googleConnectedText(email: string): string {
   const safe = email.replaceAll(/[\r\n]+/g, " ").trim();
-  return `Gmail and Google Calendar are connected to Vera for ${safe}.`;
+  return `Gmail and Google Calendar are connected to Vera for ${safe}. Vera can send mail you confirm.`;
 }
 
 export function readVeraWhatsAppTarget(config: unknown): string | null {

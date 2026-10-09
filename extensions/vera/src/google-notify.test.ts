@@ -25,7 +25,7 @@ describe("sendGoogleConnectedNotice", () => {
     expect(sendText).toHaveBeenCalledWith({
       cfg: config,
       to: "+393403055911",
-      text: "Gmail and Google Calendar are connected to Vera for lawyer@example.com.",
+      text: "Gmail and Google Calendar are connected to Vera for lawyer@example.com. Vera can send mail you confirm.",
     });
   });
 
@@ -46,7 +46,7 @@ describe("sendGoogleConnectedNotice", () => {
       }),
     ).toEqual({ ok: false, error: "kapso-whatsapp outbound is unavailable" });
     expect(googleConnectedText("lawyer\n@example.com")).toBe(
-      "Gmail and Google Calendar are connected to Vera for lawyer @example.com.",
+      "Gmail and Google Calendar are connected to Vera for lawyer @example.com. Vera can send mail you confirm.",
     );
     expect(sendText).not.toHaveBeenCalled();
   });

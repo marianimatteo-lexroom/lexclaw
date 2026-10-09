@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildRawGmailMessage,
   exchangeAuthorizationCode,
   listInboxMessages,
   listUpcomingEvents,
   loadAccessToken,
   parseCalendarEvents,
   parseGmailMessage,
+  sendGmailMessage,
 } from "./google-api.js";
 
 const NOW = new Date("2026-10-09T07:40:00.000Z");
@@ -83,7 +85,7 @@ describe("google oauth", () => {
           refresh_token: "test-refresh-token",
           expires_in: 3600,
           scope:
-            "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.readonly",
+            "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.readonly",
         });
       }
       return jsonResponse({ email: "lawyer@example.com" });
@@ -103,6 +105,8 @@ describe("google oauth", () => {
         refreshToken: "test-refresh-token",
         accessToken: "test-access-token",
         accessExpiresAtMs: NOW.getTime() + 3_600_000,
+        scopes:
+          "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.readonly",
       },
     });
   });
@@ -113,7 +117,7 @@ describe("google oauth", () => {
         access_token: "test-access-token",
         expires_in: 3600,
         scope:
-          "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.readonly",
+          "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.readonly",
       }),
     );
     expect(
@@ -157,6 +161,7 @@ describe("google oauth", () => {
           accessToken: null,
           accessExpiresAtMs: null,
           connectedAtMs: 1,
+          scopes: null,
         },
         clientId: "test-client",
         clientSecret: "test-client-secret-value",
@@ -207,5 +212,35 @@ describe("google reads", () => {
         fetchImpl,
       }),
     ).toMatchObject({ ok: true, events: [{ id: "evt-1", summary: "Hearing" }] });
+  });
+});
+
+describe("gmail send", () => {
+  it("sends one plain-text message and keeps the body out of the URL", async () => {
+    const raw = buildRawGmailMessage({
+      from: "lawyer@example.com",
+      to: "paolo@example.com",
+      subject: "Più respiro",
+      text: "Ciao Paolo,\nperfetto.",
+    });
+    const decoded = Buffer.from(raw, "base64url").toString("utf8");
+    expect(decoded).toContain("To: paolo@example.com");
+    expect(decoded).toContain("Ciao Paolo,");
+    expect(decoded).toContain("=?UTF-8?B?");
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(init?.body)).toContain(raw);
+      expect(init?.method).toBe("POST");
+      return jsonResponse({ id: "sent-1" });
+    });
+    expect(
+      await sendGmailMessage({
+        accessToken: "test-access-token",
+        from: "lawyer@example.com",
+        to: "paolo@example.com",
+        subject: "Più respiro",
+        text: "Ciao Paolo,\nperfetto.",
+        fetchImpl,
+      }),
+    ).toEqual({ ok: true, id: "sent-1" });
   });
 });
