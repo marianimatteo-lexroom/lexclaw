@@ -12,11 +12,13 @@ Locked decisions:
 
 - One separate agent per lawyer. Lawyers cannot see each other's matters. Each chat is one Lexroom user.
 - Day-one Lexroom API is research and draft only. After a digest, offer exactly two next steps. Research runs first. Draft only after a separate confirmation. Never send email or change the calendar.
-- Morning digest: one message, ranked by cost of waiting. Stay silent when nothing clears the bar. The silent cron reply must be exactly `NO_REPLY`.
+- Morning digest: one message, ranked by cost of waiting. Stay silent when nothing clears the bar. The silent reply must be exactly `NO_REPLY`.
+- Collector owns Gmail/Calendar diffs and `planDigest`. The model phrases only when `deliver: true`. Quiet mornings do not open a session.
 - Email and calendar are optional and chosen by the lawyer (Gmail and/or Outlook, Google Calendar and/or Outlook). Outlook has no connector yet.
 - WhatsApp transport is Kapso (`@kapso/openclaw-whatsapp`), not Baileys.
-- Memory stays on one client or matter. Language is the lawyer's language. Jurisdiction comes from the Lexroom account, usually Italian.
-- Case 1 (morning digest) is the current build. Case 2 is not started: wake on a new email, summarize it, and draft a reply without sending it.
+- Memory is Instinct-shaped, matter-scoped SQLite (`memory.sqlite`): aliases + keyword search, injected brief, daily reconcile writes, answering agent reads only.
+- Disable the Gateway model heartbeat (`every: "0m"`). The Vera service owns the 15-minute poll and 07:40 Europe/Rome pass.
+- Case 1 (morning digest) plus event wakes for urgent calendar/mail are in the Instinct memory/wake build. Non-urgent mail waits for morning; drafts still need a separate yes.
 
 Digest cost bar is 40 (`extensions/vera/src/digest.ts`):
 

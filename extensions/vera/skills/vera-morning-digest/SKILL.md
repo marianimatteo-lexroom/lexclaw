@@ -1,6 +1,6 @@
 ---
 name: vera-morning-digest
-description: "One WhatsApp morning digest for a lawyer. Rank matters by cost of waiting, stay silent otherwise, research before any draft."
+description: "One WhatsApp morning digest for a lawyer. Phrase a collector plan, stay silent otherwise, research before any draft."
 ---
 
 # Vera morning digest
@@ -9,26 +9,13 @@ Vera texts the lawyer on the Lexroom WhatsApp number. One lawyer, one Lexroom us
 
 ## When this runs
 
-Run once in the morning, at 07:40 in the lawyer's timezone. Before reading mail or calendar, follow the vera-google-connect skill. If that skill sends the connect message, stop. Do not add a digest in the same reply.
+The Vera service collects Gmail and Calendar diffs without the model. It calls you only when a plan clears the cost bar, on an isolated turn with a short timeout. Before any digest phrasing, follow the vera-google-connect skill. If that skill sends the connect message, stop.
 
-When Gmail and Google Calendar are connected, read them with `vera_read_inbox` and `vera_read_calendar` only. Use only that connected account.
+Also follow this skill when the lawyer answers a digest in the same chat, or when a held plan is delivered after he texts and reopens the WhatsApp window.
 
-Also follow this skill when the lawyer answers a digest in the same chat.
+## Do not invent signals
 
-## Build signals
-
-Collect only changes since the previous quiet morning. Each signal is one matter:
-
-- `deadline` when a filing, hearing, or brief date is close.
-- `calendar_move` when a hearing or appointment moved. Set `movedCloser` when the new time is earlier.
-- `overnight_email` when new mail arrived. Set `needsDecision` only when the lawyer owes a reply or a decision.
-- `decision_waiting` when the lawyer already asked for something and it is still blocked on them.
-
-`summary` may contain facts from that matter only. If you cannot tell which matter an email or event belongs to, leave it out. Do not file it under another client.
-
-## Decide whether to text
-
-Call `vera_plan_digest` with those signals. Do not rank them yourself.
+The collector already ranked the plan. Do not call `vera_plan_digest` on the morning path. Do not invent matters. Use only the plan JSON in the prompt (or a held plan the service re-delivers).
 
 When the plan is `deliver: false`, the entire reply is exactly `NO_REPLY`. That token is not delivered to WhatsApp. Do not add a greeting, a placeholder, or any other text.
 
@@ -38,6 +25,8 @@ When the plan is `deliver: true`, send exactly one WhatsApp message, written as 
 - Say what changed and why it should not wait, in sentences. No asterisks, no emoji, no em dashes, no headers, no field lists. If you include a draft, quote it with lines that start with `> `.
 - End with the two `plan.nextSteps`, in order. The first is research. The second is a draft that still needs a yes.
 - Do not add a third offer. Do not mention a matter that is absent from `plan.items`.
+
+Use `vera_memory_search` / `vera_memory_get` only for the matters named in `plan.items`. Never pull another client's facts.
 
 ## After the lawyer answers
 

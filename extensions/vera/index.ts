@@ -5,6 +5,7 @@ import {
   toolPluginMetadataSymbol,
 } from "openclaw/plugin-sdk/tool-plugin";
 import { Type } from "typebox";
+import { buildInjectedBrief } from "./src/brief.js";
 import { planDigest, type DigestSignal } from "./src/digest.js";
 import { openVeraGoogleAccountFromApi } from "./src/google-account.js";
 import { exchangeAuthorizationCode } from "./src/google-api.js";
@@ -18,6 +19,18 @@ import {
   executeVeraSendEmail,
 } from "./src/google-tools.js";
 import { runDraft, runResearch, type LexroomConfig } from "./src/lexroom-client.js";
+import { MEMORY_FOLDERS } from "./src/memory-contract.js";
+import {
+  executeVeraMemoryGet,
+  executeVeraMemoryHistory,
+  executeVeraMemoryList,
+  executeVeraMemorySearch,
+  executeVeraTodoGet,
+  executeVeraTodoList,
+} from "./src/memory-tools.js";
+import { openVeraMemoryFromApi } from "./src/memory.js";
+import { recordLawyerInbound, registerVeraService } from "./src/service.js";
+import { handleVeraGoogleNotify } from "./src/watch.js";
 
 const signalSchema = Type.Object(
   {
@@ -47,7 +60,8 @@ const signalSchema = Type.Object(
 const tools = defineToolPlugin({
   id: "vera",
   name: "Vera",
-  description: "Plans a lawyer's morning WhatsApp digest and calls Lexroom research and drafting.",
+  description:
+    "Lawyer WhatsApp digest with Instinct-shaped matter memory and event-driven wakes.",
   configSchema: Type.Object(
     {
       accessToken: Type.Optional(
@@ -70,6 +84,12 @@ const tools = defineToolPlugin({
       ),
       googleStateSecret: Type.Optional(
         Type.String({ description: "HMAC secret for connect links. Do not commit it." }),
+      ),
+      googlePubSubTopic: Type.Optional(
+        Type.String({
+          description:
+            "Optional projects/.../topics/... for Gmail and Calendar watch. Without it, Vera polls every 15 minutes.",
+        }),
       ),
     },
     { additionalProperties: false },
@@ -223,13 +243,104 @@ const tools = defineToolPlugin({
         return await executeVeraSendEmail(config, context.api, params, context.signal);
       },
     }),
+    tool({
+      name: "vera_memory_search",
+      label: "Search matter memory",
+      description:
+        "Keyword search inside one matter's Instinct-shaped wiki. Aliases matter; misspellings do not. Never crosses matters.",
+      parameters: Type.Object(
+        {
+          query: Type.String({ minLength: 1 }),
+          matterId: Type.String({ minLength: 1 }),
+        },
+        { additionalProperties: false },
+      ),
+      optional: true,
+      async execute(params, _config, context) {
+        return await executeVeraMemorySearch(context.api, params);
+      },
+    }),
+    tool({
+      name: "vera_memory_list",
+      label: "List matter memory folder",
+      description: "List current wiki pages in one Instinct folder for one matter.",
+      parameters: Type.Object(
+        {
+          folder: Type.Union(MEMORY_FOLDERS.map((folder) => Type.Literal(folder))),
+          matterId: Type.String({ minLength: 1 }),
+        },
+        { additionalProperties: false },
+      ),
+      optional: true,
+      async execute(params, _config, context) {
+        return await executeVeraMemoryList(context.api, params);
+      },
+    }),
+    tool({
+      name: "vera_memory_get",
+      label: "Get matter memory page",
+      description: "Read one rendered wiki page. Requires the matter id that owns it.",
+      parameters: Type.Object(
+        {
+          id: Type.String({ minLength: 1 }),
+          matterId: Type.String({ minLength: 1 }),
+        },
+        { additionalProperties: false },
+      ),
+      optional: true,
+      async execute(params, _config, context) {
+        return await executeVeraMemoryGet(context.api, params);
+      },
+    }),
+    tool({
+      name: "vera_memory_history",
+      label: "Matter memory history",
+      description: "Read revision summaries for one page. Old bodies stay here after corrections.",
+      parameters: Type.Object(
+        {
+          id: Type.String({ minLength: 1 }),
+          matterId: Type.String({ minLength: 1 }),
+        },
+        { additionalProperties: false },
+      ),
+      optional: true,
+      async execute(params, _config, context) {
+        return await executeVeraMemoryHistory(context.api, params);
+      },
+    }),
+    tool({
+      name: "vera_todo_list",
+      label: "List open loops",
+      description: "List todo ids, owners, titles, and statuses. Details need vera_todo_get.",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      optional: true,
+      async execute(_params, _config, context) {
+        return await executeVeraTodoList(context.api);
+      },
+    }),
+    tool({
+      name: "vera_todo_get",
+      label: "Get open loop detail",
+      description: "Read detail for one open loop.",
+      parameters: Type.Object(
+        {
+          id: Type.String({ minLength: 1 }),
+        },
+        { additionalProperties: false },
+      ),
+      optional: true,
+      async execute(params, _config, context) {
+        return await executeVeraTodoGet(context.api, params);
+      },
+    }),
   ],
 });
 
 const entry = definePluginEntry({
   id: "vera",
   name: "Vera",
-  description: "Plans a lawyer's morning WhatsApp digest and calls Lexroom research and drafting.",
+  description:
+    "Lawyer WhatsApp digest with Instinct-shaped matter memory and event-driven wakes.",
   configSchema: () => {
     const schema = tools.configSchema;
     if (!schema) {
@@ -239,6 +350,51 @@ const entry = definePluginEntry({
   },
   register(api) {
     tools.register(api);
+    registerVeraService({ api });
+
+    api.on("message_received", async () => {
+      try {
+        await recordLawyerInbound({ api, atMs: Date.now() });
+      } catch (error) {
+        api.logger.error(
+          `vera inbound wake record failed: ${error instanceof Error ? error.message : "unknown"}`,
+        );
+      }
+    });
+
+    api.on(
+      "before_prompt_build",
+      async (_event, ctx) => {
+        try {
+          const authority = ctx.toolAuthority;
+          if (!authority?.allows("vera_memory_search")) {
+            return;
+          }
+          const memory = await openVeraMemoryFromApi(api);
+          const [profile, todos] = await Promise.all([
+            memory.readProfile(),
+            memory.listTodos(),
+          ]);
+          authority.assertActive();
+          const brief = buildInjectedBrief({
+            profile,
+            todos,
+            sessionKey: ctx.sessionKey,
+          });
+          if (!brief.trim()) {
+            return;
+          }
+          return { prependContext: brief };
+        } catch (error) {
+          api.logger.error(
+            `vera brief inject failed: ${error instanceof Error ? error.message : "unknown"}`,
+          );
+          return;
+        }
+      },
+      { requiresToolAuthority: true },
+    );
+
     api.registerHttpRoute({
       path: "/vera/google/callback",
       auth: "plugin",
@@ -271,6 +427,13 @@ const entry = definePluginEntry({
           return true;
         }
       },
+    });
+
+    api.registerHttpRoute({
+      path: "/vera/google/notify",
+      auth: "plugin",
+      match: "exact",
+      handler: (req, res) => handleVeraGoogleNotify(req, res, api),
     });
   },
 });

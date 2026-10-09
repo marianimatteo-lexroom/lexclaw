@@ -1,15 +1,22 @@
 # Vera
 
-Vera is the morning WhatsApp digest for one Lexroom lawyer.
+Vera is the WhatsApp assistant for one Lexroom lawyer.
 
-At 07:40 it looks at the Gmail inbox and Google Calendar that lawyer connected. If they are not connected yet, that same run asks on WhatsApp and sends one Google link for both. After they are connected, it sends one digest, ranked by the cost of waiting, or it stays silent. The digest offers two next steps: Lexroom research first, then a Lexroom draft only after the lawyer confirms.
+A plugin service diffs the connected Gmail inbox and Google Calendar every 15 minutes and at 07:40 Europe/Rome. A quiet pass updates snapshots and never calls the model. When a plan clears the cost bar, Vera starts one isolated turn (45s timeout) that phrases a single digest. Same-day deadlines and hearings that moved earlier may wake immediately; everything else waits for morning. If the WhatsApp 24-hour window is closed, the plan is held until the lawyer texts.
 
-Each chat is one Lexroom user. Memory stays on one client or matter at a time. Research does not search the private library unless the call names that matter's document ids.
+Matter memory is Instinct-shaped: markdown pages with aliases, keyword search (no vectors), a small injected brief, and a daily reconcile that writes while the answering agent only reads. Pages are matter-scoped. Research and draft still go through Lexroom, with a separate confirmation before any draft or email send.
+
+Disable the Gateway model heartbeat for this install (`agents.defaults.heartbeat.every: "0m"`). Do not create a second model cron for the morning digest; the Vera service owns that wake.
 
 ## Enable
 
 ```json5
 {
+  agents: {
+    defaults: {
+      heartbeat: { every: "0m" },
+    },
+  },
   plugins: {
     entries: {
       vera: {
@@ -20,6 +27,8 @@ Each chat is one Lexroom user. Memory stays on one client or matter at a time. R
           googleClientSecret: "${VERA_GOOGLE_CLIENT_SECRET}",
           googleRedirectUri: "https://gateway.example/vera/google/callback",
           googleStateSecret: "${VERA_GOOGLE_STATE_SECRET}",
+          // optional: projects/.../topics/... for Gmail/Calendar watch
+          // googlePubSubTopic: "${VERA_GOOGLE_PUBSUB_TOPIC}",
         },
       },
     },
@@ -33,6 +42,12 @@ Each chat is one Lexroom user. Memory stays on one client or matter at a time. R
       "vera_read_inbox",
       "vera_read_calendar",
       "vera_send_email",
+      "vera_memory_search",
+      "vera_memory_list",
+      "vera_memory_get",
+      "vera_memory_history",
+      "vera_todo_list",
+      "vera_todo_get",
     ],
   },
 }
@@ -42,26 +57,14 @@ Research and drafting need a bearer token from `POST /v1/login` on `https://api.
 
 ## Google account
 
-Vera uses the Gmail and Google Calendar APIs, not an MCP server and not `gog`. The morning run has no WhatsApp sender, so a requester-scoped MCP connection is not available then. `gog` login is a shell flow and its callback URL must not be texted.
+Vera uses the Gmail and Google Calendar APIs, not an MCP server and not `gog`. The collector runs without a WhatsApp sender, so requester-scoped MCP is not available. `gog` login is a shell flow and its callback URL must not be texted.
 
-Create a Google Cloud OAuth web client, enable the Gmail API and the Google Calendar API, and register `googleRedirectUri` as an authorized redirect URI. The path is `/vera/google/callback` on the public Gateway origin. `googleStateSecret` is any private string of at least 16 characters. Vera stores the refresh token in its own SQLite file under the Gateway state directory.
+Create a Google Cloud OAuth web client, enable the Gmail API and the Google Calendar API, and register `googleRedirectUri` as an authorized redirect URI. The path is `/vera/google/callback` on the public Gateway origin. `googleStateSecret` is any private string of at least 16 characters. The refresh token stays in `$OPENCLAW_STATE_DIR/vera/google-account.sqlite`. Matter memory and snapshots live in `$OPENCLAW_STATE_DIR/vera/memory.sqlite`.
 
-The connect link asks for read-only Gmail, permission to send mail, and read-only Calendar, plus the account email. Vera does not change calendar events. One link covers all of that. It expires after 30 minutes and works once. The morning skill sends it on WhatsApp until the lawyer connects, and again when an older connection cannot send mail. `vera_send_email` sends one plain-text message only after `confirmed` is true. When the link succeeds, Vera texts `channels["kapso-whatsapp"].defaultTo` that Gmail and Google Calendar are connected.
+The connect link asks for read-only Gmail, permission to send mail, and read-only Calendar, plus the account email. Vera does not change calendar events. One link covers all of that. It expires after 30 minutes and works once. When Gmail is not connected, the morning phrasing turn still follows the vera-google-connect skill. `vera_send_email` sends one plain-text message only after `confirmed` is true. When the link succeeds, Vera texts `channels["kapso-whatsapp"].defaultTo` that Gmail and Google Calendar are connected.
 
-## Morning automation
+Optional Pub/Sub: set `googlePubSubTopic` and point the push subscription at `/vera/google/notify`. Without it, the 15-minute poll owns wakes.
 
-The Gateway WhatsApp account is the Lexroom business number, on the Kapso channel. `--to` is the lawyer's own number.
+## Memory
 
-```bash
-openclaw automations create "40 7 * * *" \
-  "Run the vera-morning-digest skill now." \
-  --name "Vera morning digest" \
-  --tz "Europe/Rome" \
-  --exact \
-  --session isolated \
-  --announce \
-  --channel kapso-whatsapp \
-  --to "+390000000000"
-```
-
-Change the timezone and the destination number. The skill sends nothing when no signal clears the bar.
+Read-only tools: `vera_memory_search`, `vera_memory_list`, `vera_memory_get`, `vera_memory_history`, `vera_todo_list`, `vera_todo_get`. Every page except lawyer-global preferences requires a `matterId`. Search is case-insensitive substring match on aliases, title, and id. The daily reconcile writes timeline notes and one-pagers; the answering turn never writes memory.
