@@ -2,7 +2,7 @@
 
 Handoff for a fresh session. Read this before changing Vera, Kapso, or the Railway gateway.
 
-Last checked 2026-10-09 around 07:53 UTC. The gateway was live. No secrets belong in this file or in git. Tokens, webhook secrets, and API keys live only in Railway variables and on the volume.
+Last checked 2026-10-10 around 00:20 UTC. The gateway was live on OpenClaw `2026.9.9` with Instinct memory/wake Vera. No secrets belong in this file or in git. Tokens, webhook secrets, and API keys live only in Railway variables and on the volume.
 
 ## Product
 
@@ -40,16 +40,16 @@ One line per matter. A delivered digest offers exactly two next steps. Silence i
 
 ## What is not done
 
-Case 1 is not fully working yet. Chat works. The morning digest does not run.
+Case 1 is closer but not fully proven end-to-end. Chat works. Instinct wake service `vera-instinct-wake` starts on boot (15-minute poll + 07:40 Europe/Rome). Published OpenClaw `2026.9.9` still omits the Gateway service scheduler on the plugin service context, so Vera falls back to `setInterval` and logs a warn. Heartbeat is disabled (`every: "0m"`). `plugins.entries.vera.hooks.allowConversationAccess` is true so the brief hook is not blocked.
 
-1. Gmail and Google Calendar use Vera's Google OAuth API, not MCP and not `gog`. The morning cron has no WhatsApp sender, so requester-scoped MCP never attaches on that run. `gog` is a shell login and its callback URL must not be texted. One authorize URL covers read-only Gmail and read-only Calendar. The lawyer opens it from WhatsApp. The Gateway callback is `GET /vera/google/callback`. The refresh token stays in SQLite at `$OPENCLAW_STATE_DIR/vera/google-account.sqlite`.
+1. Gmail and Google Calendar use Vera's Google OAuth API, not MCP and not `gog`. `gog` is a shell login and its callback URL must not be texted. One authorize URL covers read-only Gmail and read-only Calendar. The lawyer opens it from WhatsApp. The Gateway callback is `GET /vera/google/callback`. The refresh token stays in SQLite at `$OPENCLAW_STATE_DIR/vera/google-account.sqlite`.
 
-   Google Cloud project `verus-500517` has the OAuth web client, and the gateway variables are set: `VERA_GOOGLE_CLIENT_ID`, `VERA_GOOGLE_CLIENT_SECRET`, `VERA_GOOGLE_STATE_SECRET`, and `VERA_GOOGLE_REDIRECT_URI` (`https://gateway-production-e368.up.railway.app/vera/google/callback`). The installed plugin worker resolves the SDK from `/app/openclaw.mjs` because it lives outside the OpenClaw package. A bare callback request returns 400, not 503, so config loaded. The morning cron is still not created. WhatsApp Cloud API still rejects non-template outbound outside the 24-hour window.
+   Google Cloud project `verus-500517` has the OAuth web client, and the gateway variables are set: `VERA_GOOGLE_CLIENT_ID`, `VERA_GOOGLE_CLIENT_SECRET`, `VERA_GOOGLE_STATE_SECRET`, and `VERA_GOOGLE_REDIRECT_URI` (`https://gateway-production-e368.up.railway.app/vera/google/callback`). The installed plugin worker resolves the SDK from `/app/openclaw.mjs` because it lives outside the OpenClaw package. A bare callback request returns 400, not 503, so config loaded. WhatsApp Cloud API still rejects non-template outbound outside the 24-hour window; held digests wait for the next lawyer inbound.
 
-2. No 07:40 Europe/Rome digest job. Jobs present on 2026-10-09: heartbeat `e7c258bc-fbe6-4f59-b665-4f531667736f` (every 30 min) and skill-collection-review `57938a83-1055-4b42-bac1-d5114b45ae1d` (weekly). The README command still says `--channel whatsapp`; the live channel is `kapso-whatsapp`.
-3. Lexroom bearer expires `2026-10-09T21:59:35.000Z`. Research and draft fail after that until refresh. Machine API keys (`lrsk-...`, `X-API-Key`) are not accepted by Research or Drafting. Login is `POST https://api.lexroom.ai/v1/login` with `X-Client-Type: app_lex`. `LEXROOM_EMAIL` and `LEXROOM_PASSWORD` exist on the separate Railway project `verus-legal`, not on Vera. Do not print them. MFA can return 403 `mfa_step_up_required`.
+2. Prove a morning or urgent wake on the live number (collector → plan → WhatsApp phrasing, or silent `NO_REPLY`). The live channel is `kapso-whatsapp`.
+3. Lexroom bearer on the volume expires; refresh `LEXROOM_ACCESS_TOKEN` when research/draft fail. Machine API keys (`lrsk-...`, `X-API-Key`) are not accepted by Research or Drafting. Login is `POST https://api.lexroom.ai/v1/login` with `X-Client-Type: app_lex`. `LEXROOM_EMAIL` and `LEXROOM_PASSWORD` exist on the separate Railway project `verus-legal`, not on Vera. Do not print them. MFA can return 403 `mfa_step_up_required`.
 
-Later, not started: case 2 (email wake), one agent per lawyer, and hard per-matter memory walls.
+Later, not started: one agent per lawyer, and hard per-matter memory walls.
 
 ## Live Railway
 
@@ -66,9 +66,9 @@ Do not modify the other projects: `verus-legal`, `product-roast-bot`, `lexroom-m
 | Control UI    | `https://gateway-production-e368.up.railway.app/openclaw`                                                                                               |
 | Health        | `GET /healthz` returns `{"ok":true,"status":"live"}`                                                                                                    |
 | Region        | `us-west2`, 1 replica                                                                                                                                   |
-| Image         | `docker.io/openclaw/openclaw:2026.9.8` plus a bundled Vera copy                                                                                         |
-| Latest deploy | `ad59c9f5-7f4e-46a3-90cf-5d0a18e0325f` ("Use Claude setup token instead of API key"), SUCCESS, 2026-10-09T12:56Z. Boot imported `anthropic:manual` as a token profile and did not print the token. |
-| Logs          | `https://railway.com/project/6884818a-0e95-49d8-9052-22712801dbd0/service/96a03ba4-d4bf-4769-9851-e3a506f73805?id=a799d262-f93a-4ad0-8979-367041caa598` |
+| Image         | `docker.io/openclaw/openclaw:2026.9.9` plus a bundled Vera copy (Instinct memory workers + wake service)                                                 |
+| Latest deploy | `8dbe29b3-99b3-4906-b181-00b2ce38ca22` ("Deploy Instinct Vera on OpenClaw 2026.9.9"), SUCCESS, 2026-10-10T00:15Z. Wake service uses setInterval fallback until the host exposes `ctx.scheduler`. |
+| Logs          | `https://railway.com/project/6884818a-0e95-49d8-9052-22712801dbd0/service/96a03ba4-d4bf-4769-9851-e3a506f73805?id=8dbe29b3-99b3-4906-b181-00b2ce38ca22` |
 
 CLI inside the container is `node /app/openclaw.mjs`. `railway ssh` needs the key loaded in the agent. This VM registered key `vera-deploy`. A fresh machine must register its own key. Do not copy private keys into git.
 
@@ -145,7 +145,7 @@ Railway CLI was 4.68.0. `railway.toml` is deprecated. This deploy did not commit
 `Dockerfile`:
 
 ```dockerfile
-FROM docker.io/openclaw/openclaw:2026.9.8
+FROM docker.io/openclaw/openclaw:2026.9.9
 
 USER root
 COPY vera /opt/lexroom/vera
@@ -172,76 +172,17 @@ pnpm exec esbuild extensions/vera/src/google-account.worker.ts \
   --outfile=/tmp/vera-deploy/vera/src/google-account.worker.js \
   --external:openclaw/plugin-sdk/plugin-state-runtime \
   --external:openclaw/plugin-sdk/sqlite-worker-runtime
+
+pnpm exec esbuild extensions/vera/src/memory.worker.ts \
+  --bundle --platform=node --format=esm \
+  --outfile=/tmp/vera-deploy/vera/src/memory.worker.js \
+  --external:openclaw/plugin-sdk/plugin-state-runtime \
+  --external:openclaw/plugin-sdk/sqlite-worker-runtime
 ```
 
 Copy `extensions/vera` into `/tmp/vera-deploy/vera`, then point `package.json` `openclaw.extensions` at `./index.js`, set `dependencies` to `{}`, and delete `devDependencies`. Keep `openclaw.plugin.json`, `skills/`, and the README. Do not upload secrets in that directory.
 
-`start.sh`:
-
-```sh
-#!/bin/sh
-set -u
-PORT="${OPENCLAW_GATEWAY_PORT:-8080}"
-mkdir -p "${OPENCLAW_STATE_DIR:-/data/.openclaw}" "${OPENCLAW_WORKSPACE_DIR:-/data/workspace}"
-cd /app
-
-node openclaw.mjs plugins install /opt/lexroom/vera --accept-capabilities --force || echo "vera plugin install failed"
-if [ ! -d /data/.openclaw/extensions/kapso-whatsapp ]; then
-  node openclaw.mjs plugins install clawhub:@kapso/openclaw-whatsapp --accept-capabilities || echo "kapso plugin install failed"
-fi
-
-node openclaw.mjs config set plugins.entries.vera.enabled true --strict-json || true
-node openclaw.mjs config set plugins.entries.kapso-whatsapp.enabled true --strict-json || true
-node openclaw.mjs config set 'tools.alsoAllow' '["vera_plan_digest","vera_research","vera_draft","vera_google_connect","vera_read_inbox","vera_read_calendar","vera_send_email","vera_memory_search","vera_memory_list","vera_memory_get","vera_memory_history","vera_todo_list","vera_todo_get"]' --strict-json || true
-node openclaw.mjs config set 'channels["kapso-whatsapp"].enabled' true --strict-json || true
-node openclaw.mjs config set 'channels["kapso-whatsapp"].phoneNumberId' '"1197866140067824"' --strict-json || true
-node openclaw.mjs config set 'channels["kapso-whatsapp"].defaultTo' '"+393403055911"' --strict-json || true
-node openclaw.mjs config set 'channels["kapso-whatsapp"].dmSecurity' '"allowlist"' --strict-json || true
-node openclaw.mjs config set 'channels["kapso-whatsapp"].allowFrom' '["+393403055911","393403055911"]' --strict-json || true
-node openclaw.mjs config set agents.defaults.model.primary '"anthropic/claude-opus-5"' --strict-json || true
-node openclaw.mjs config set gateway.controlUi.allowedOrigins '["https://gateway-production-e368.up.railway.app"]' --strict-json || true
-
-if [ -n "${KAPSO_WEBHOOK_SECRET:-}" ]; then
-  secret_json="$(node -e 'process.stdout.write(JSON.stringify(process.env.KAPSO_WEBHOOK_SECRET))')"
-  node openclaw.mjs config set 'channels["kapso-whatsapp"].webhookSecret' "$secret_json" --strict-json || true
-fi
-if [ -n "${KAPSO_API_KEY:-}" ]; then
-  key_json="$(node -e 'process.stdout.write(JSON.stringify(process.env.KAPSO_API_KEY))')"
-  node openclaw.mjs config set 'channels["kapso-whatsapp"].apiKey' "$key_json" --strict-json || true
-fi
-if [ -n "${LEXROOM_ACCESS_TOKEN:-}" ]; then
-  token_json="$(node -e 'process.stdout.write(JSON.stringify(process.env.LEXROOM_ACCESS_TOKEN))')"
-  node openclaw.mjs config set plugins.entries.vera.config.accessToken "$token_json" --strict-json || true
-fi
-if [ -n "${VERA_GOOGLE_CLIENT_ID:-}" ]; then
-  node openclaw.mjs config set plugins.entries.vera.config.googleClientId "$(node -e 'process.stdout.write(JSON.stringify(process.env.VERA_GOOGLE_CLIENT_ID))')" --strict-json || true
-fi
-if [ -n "${VERA_GOOGLE_CLIENT_SECRET:-}" ]; then
-  node openclaw.mjs config set plugins.entries.vera.config.googleClientSecret "$(node -e 'process.stdout.write(JSON.stringify(process.env.VERA_GOOGLE_CLIENT_SECRET))')" --strict-json || true
-fi
-if [ -n "${VERA_GOOGLE_STATE_SECRET:-}" ]; then
-  node openclaw.mjs config set plugins.entries.vera.config.googleStateSecret "$(node -e 'process.stdout.write(JSON.stringify(process.env.VERA_GOOGLE_STATE_SECRET))')" --strict-json || true
-fi
-if [ -n "${VERA_GOOGLE_CLIENT_ID:-}" ]; then
-  redirect_uri="${VERA_GOOGLE_REDIRECT_URI:-https://gateway-production-e368.up.railway.app/vera/google/callback}"
-  redirect_json="$(REDIRECT_URI="$redirect_uri" node -e 'process.stdout.write(JSON.stringify(process.env.REDIRECT_URI))')"
-  node openclaw.mjs config set plugins.entries.vera.config.googleRedirectUri "$redirect_json" --strict-json || true
-fi
-
-if [ -n "${ANTHROPIC_SETUP_TOKEN:-}" ]; then
-  token_file="$(mktemp)"
-  chmod 600 "$token_file"
-  printf '%s' "$ANTHROPIC_SETUP_TOKEN" > "$token_file"
-  if node openclaw.mjs models auth paste-token --provider anthropic < "$token_file"; then
-    unset ANTHROPIC_API_KEY
-  else
-    echo "anthropic setup-token import failed; keeping API key"
-  fi
-  rm -f "$token_file"
-fi
-
-exec node openclaw.mjs gateway --allow-unconfigured --bind lan --port "$PORT"
-```
+`start.sh` must also set `plugins.entries.vera.hooks.allowConversationAccess` true, disable heartbeat with `agents.defaults.heartbeat.every` `"0m"`, allow the memory/todo tools in `tools.alsoAllow`, and optionally wire `VERA_GOOGLE_PUBSUB_TOPIC` / `VERA_GOOGLE_NOTIFY_TOKEN`. Keep the Kapso, Lexroom, Google OAuth, and Anthropic setup-token blocks from the live `/tmp/vera-deploy/start.sh`.
 
 Gateway 502s during boot are normal until plugin install finishes. Health should return 200 about 10 seconds after the deploy is SUCCESS.
 

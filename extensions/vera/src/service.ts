@@ -365,10 +365,47 @@ export function registerVeraService(deps: VeraServiceDeps): void {
       return result.ok ? { ok: true } : { ok: false, reason: result.reason };
     });
 
+  // Fallback timers for hosts that omit the V2 scheduler field (e.g. OpenClaw 2026.9.8).
+  const fallbackTimers = new Set<ReturnType<typeof setTimeout>>();
+  const scheduleRepeating = (params: {
+    scheduler: { schedule: (job: {
+      id: string;
+      delayMs: number;
+      everyMs?: number;
+      run: () => void | Promise<void>;
+    }) => void } | undefined;
+    id: string;
+    delayMs: number;
+    everyMs: number;
+    run: () => void | Promise<void>;
+  }) => {
+    if (params.scheduler) {
+      params.scheduler.schedule({
+        id: params.id,
+        delayMs: params.delayMs,
+        everyMs: params.everyMs,
+        run: params.run,
+      });
+      return;
+    }
+    api.logger.warn(
+      `vera: Gateway service scheduler missing; using setInterval for ${params.id}`,
+    );
+    const first = setTimeout(() => {
+      fallbackTimers.delete(first);
+      void params.run();
+      const interval = setInterval(() => {
+        void params.run();
+      }, params.everyMs);
+      fallbackTimers.add(interval);
+    }, params.delayMs);
+    fallbackTimers.add(first);
+  };
+
   api.registerService({
     id: "vera-instinct-wake",
     apiVersion: 2,
-    start({ scheduler }) {
+    start(ctx) {
       const tick = async (forceMorning: boolean) => {
         try {
           const memory = await openVeraMemoryFromApi(api);
@@ -398,7 +435,8 @@ export function registerVeraService(deps: VeraServiceDeps): void {
         }
       };
 
-      scheduler.schedule({
+      scheduleRepeating({
+        scheduler: ctx.scheduler,
         id: "vera-poll",
         delayMs: POLL_MS,
         everyMs: POLL_MS,
@@ -418,12 +456,20 @@ export function registerVeraService(deps: VeraServiceDeps): void {
       if (delayMin <= 0) {
         delayMin += 24 * 60;
       }
-      scheduler.schedule({
+      scheduleRepeating({
+        scheduler: ctx.scheduler,
         id: "vera-morning",
         delayMs: delayMin * 60 * 1000,
         everyMs: 24 * 60 * 60 * 1000,
         run: () => tick(true),
       });
+    },
+    stop() {
+      for (const timer of fallbackTimers) {
+        clearTimeout(timer);
+        clearInterval(timer);
+      }
+      fallbackTimers.clear();
     },
   });
 }
