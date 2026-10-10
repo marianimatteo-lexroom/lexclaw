@@ -105,6 +105,47 @@ describe("handleVeraLexroomConnect", () => {
     expect(out.body()).toContain(`name="state" value="${issued.state}"`);
   });
 
+  it("redisplays MFA as HTTP 200 with a sealed ticket", async () => {
+    const now = new Date("2026-10-10T12:00:00.000Z");
+    const store = createStore();
+    const issued = createConnectState(SECRET, now);
+    await store.replacePending(issued.nonce, issued.expiresAtMs);
+    const out = mockRes();
+    await handleVeraLexroomConnect(
+      mockReq({
+        method: "POST",
+        url: "/vera/lexroom/connect",
+        body: new URLSearchParams({
+          state: issued.state,
+          email: "lawyer@lexroom.ai",
+          password: "secret",
+        }).toString(),
+      }),
+      out.res,
+      {
+        config: {
+          lexroomConnectUri: "https://gateway.example/vera/lexroom/connect",
+          lexroomStateSecret: SECRET,
+        },
+        now: () => now,
+        store,
+        log: { error: vi.fn() },
+        login: async () => ({
+          ok: false,
+          reason: "mfa_required",
+          mfaTicket: "ticket-1",
+          method: "totp",
+          error: "Lexroom needs a one-time code from your authenticator.",
+        }),
+      },
+    );
+    expect(out.res.statusCode).toBe(200);
+    expect(out.body()).toContain('name="mfaTicket" value="ticket-1"');
+    expect(out.body()).toContain('name="otp"');
+    expect(out.body()).toContain("Verify and connect");
+    expect(store.pending.size).toBe(1);
+  });
+
   it("stores the account after a successful login POST", async () => {
     const now = new Date("2026-10-10T12:00:00.000Z");
     const store = createStore();

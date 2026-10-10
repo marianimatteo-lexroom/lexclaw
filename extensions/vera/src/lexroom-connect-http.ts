@@ -216,14 +216,25 @@ function renderLoginForm(params: {
   email?: string;
   error?: string;
   needsMfa?: boolean;
+  mfaTicket?: string;
+  method?: string;
 }): string {
   const error = params.error
     ? `<p class="error" role="alert">${escapeHtml(params.error)}</p>`
     : "";
-  const mfa = params.needsMfa
-    ? `<label for="otp">One-time code</label><input id="otp" name="otp" inputmode="numeric" autocomplete="one-time-code" required>`
+  const lead = params.needsMfa
+    ? params.method === "sms"
+      ? "Enter the SMS code Lexroom sent, then connect."
+      : "Enter the authenticator code for this Lexroom account, then connect."
+    : "Sign in with the Lexroom account Vera should use for research and drafts. Your password is sent only to Lexroom.";
+  const mfaTicket = params.mfaTicket
+    ? `<input type="hidden" name="mfaTicket" value="${escapeHtml(params.mfaTicket)}">`
     : "";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Vera · Lexroom</title><style>${PAGE_STYLE}</style></head><body><main class="card"><p class="brand"><i></i>Vera</p><h1>Connect Lexroom</h1><p class="lead">Sign in with the Lexroom account Vera should use for research and drafts. Your password is sent only to Lexroom.</p>${error}<form method="post" action="/vera/lexroom/connect"><input type="hidden" name="state" value="${escapeHtml(params.state)}"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" required value="${escapeHtml(params.email ?? "")}"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required>${mfa}<button type="submit">Connect Lexroom</button></form><p class="note">This page expires with the WhatsApp link. Ask Vera for a new one if it stops working.</p></main></body></html>`;
+  const mfa = params.needsMfa
+    ? `${mfaTicket}<label for="otp">One-time code</label><input id="otp" name="otp" inputmode="numeric" autocomplete="one-time-code" required autofocus>`
+    : "";
+  const passwordRequired = params.needsMfa ? "" : " required";
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Vera · Lexroom</title><style>${PAGE_STYLE}</style></head><body><main class="card"><p class="brand"><i></i>Vera</p><h1>Connect Lexroom</h1><p class="lead">${escapeHtml(lead)}</p>${error}<form method="post" action="/vera/lexroom/connect"><input type="hidden" name="state" value="${escapeHtml(params.state)}"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" required value="${escapeHtml(params.email ?? "")}"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password"${passwordRequired} value="">${mfa}<button type="submit">${params.needsMfa ? "Verify and connect" : "Connect Lexroom"}</button></form><p class="note">This page expires with the WhatsApp link. Ask Vera for a new one if it stops working.</p></main></body></html>`;
 }
 
 function query(req: IncomingMessage): URLSearchParams {
@@ -311,6 +322,7 @@ export async function handleVeraLexroomConnect(
   const email = form.get("email")?.trim() ?? "";
   const password = form.get("password") ?? "";
   const otp = form.get("otp")?.trim() ?? "";
+  const mfaTicket = form.get("mfaTicket")?.trim() ?? "";
   const now = deps.now();
   const parsed = state ? readConnectState(config.settings.stateSecret, state, now) : null;
   if (!parsed || !(await deps.store.hasPending(parsed.nonce, now.getTime()))) {
@@ -331,17 +343,36 @@ export async function handleVeraLexroomConnect(
     email,
     password,
     otp: otp || undefined,
+    mfaTicket: mfaTicket || undefined,
+    stateSecret: config.settings.stateSecret,
     baseUrl: config.settings.baseUrl,
   });
   if (!result.ok) {
     if (result.reason === "mfa_required") {
       writeHtml(
         res,
-        401,
+        200,
         renderLoginForm({
           state,
           email,
           needsMfa: true,
+          mfaTicket: result.mfaTicket,
+          method: result.method,
+          error: result.error,
+        }),
+        true,
+      );
+      return true;
+    }
+    if (result.reason === "invalid_mfa") {
+      writeHtml(
+        res,
+        200,
+        renderLoginForm({
+          state,
+          email,
+          needsMfa: Boolean(result.mfaTicket),
+          mfaTicket: result.mfaTicket,
           error: result.error,
         }),
         true,
