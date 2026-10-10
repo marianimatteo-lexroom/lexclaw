@@ -44,7 +44,7 @@ Case 1 is closer but not fully proven end-to-end. Chat works. Instinct wake serv
 
 1. Gmail and Google Calendar use Vera's Google OAuth API, not MCP and not `gog`. `gog` is a shell login and its callback URL must not be texted. One authorize URL covers read-only Gmail and read-only Calendar. The lawyer opens it from WhatsApp. The Gateway callback is `GET /vera/google/callback`. The refresh token stays in SQLite at `$OPENCLAW_STATE_DIR/vera/google-account.sqlite`.
 
-   Google Cloud project `verus-500517` has the OAuth web client, and the gateway variables are set: `VERA_GOOGLE_CLIENT_ID`, `VERA_GOOGLE_CLIENT_SECRET`, `VERA_GOOGLE_STATE_SECRET`, and `VERA_GOOGLE_REDIRECT_URI` (`https://gateway-production-e368.up.railway.app/vera/google/callback`). The installed plugin worker resolves the SDK from `/app/openclaw.mjs` because it lives outside the OpenClaw package. A bare callback request returns 400, not 503, so config loaded. WhatsApp Cloud API still rejects non-template outbound outside the 24-hour window; held digests wait for the next lawyer inbound.
+   Google Cloud project `verus-500517` has the OAuth web client, and the gateway variables are set: `VERA_GOOGLE_CLIENT_ID`, `VERA_GOOGLE_CLIENT_SECRET`, `VERA_GOOGLE_STATE_SECRET`, and `VERA_GOOGLE_REDIRECT_URI` (`https://vera.verus.legal/vera/google/callback`). Register that redirect URI on the OAuth web client. The installed plugin worker resolves the SDK from `/app/openclaw.mjs` because it lives outside the OpenClaw package. A bare callback request returns 400, not 503, so config loaded. WhatsApp Cloud API still rejects non-template outbound outside the 24-hour window; held digests wait for the next lawyer inbound.
 
 2. Prove a morning or urgent wake on the live number (collector → plan → WhatsApp phrasing, or silent `NO_REPLY`). The live channel is `kapso-whatsapp`.
 3. Lexroom connect is WhatsApp-linked like Google: `vera_lexroom_connect` texts `/vera/lexroom/connect`, the lawyer signs in with Lexroom email/password (MFA when required), and the bearer is stored in `$OPENCLAW_STATE_DIR/vera/lexroom-account.sqlite`. A static `LEXROOM_ACCESS_TOKEN` remains a fallback only. Machine API keys (`lrsk-...`, `X-API-Key`) are not accepted by Research or Drafting. Login is `POST https://api.lexroom.ai/v1/login` with `X-Client-Type: app_lex`. MFA accounts continue through `app.lexroom.ai` (`/api/auth/mfa/start`, `/api/auth/mfa/verify`, `mfa-session-exchange`); the MFA form returns HTTP 200 with a sealed ticket, not 401.
@@ -62,13 +62,13 @@ Do not modify the other projects: `verus-legal`, `product-roast-bot`, `lexroom-m
 | Project       | `vera` `6884818a-0e95-49d8-9052-22712801dbd0`                                                                                                           |
 | Service       | `gateway` `96a03ba4-d4bf-4769-9851-e3a506f73805`                                                                                                        |
 | Volume        | `gateway-volume` `12b5b404-4158-4935-afb2-6b4b8ffedd86` mounted at `/data`                                                                              |
-| Public URL    | `https://gateway-production-e368.up.railway.app`                                                                                                        |
-| Control UI    | `https://gateway-production-e368.up.railway.app/openclaw`                                                                                               |
+| Public URL    | `https://vera.verus.legal` (Railway custom domain; legacy `gateway-production-e368.up.railway.app` may still resolve)                                    |
+| Control UI    | `https://vera.verus.legal/openclaw`                                                                                                                     |
 | Health        | `GET /healthz` returns `{"ok":true,"status":"live"}`                                                                                                    |
 | Region        | `us-west2`, 1 replica                                                                                                                                   |
 | Image         | `docker.io/openclaw/openclaw:2026.9.9` plus a bundled Vera copy (Instinct memory workers + wake service)                                                 |
-| Latest deploy | `d7519a93-c6ff-4a7c-aed5-94e04ca09aed` ("Fix Lexroom MFA connect (app challenge, HTTP 200)"), SUCCESS, 2026-10-10T16:27Z. Wake service uses setInterval fallback until the host exposes `ctx.scheduler`. |
-| Logs          | `https://railway.com/project/6884818a-0e95-49d8-9052-22712801dbd0/service/96a03ba4-d4bf-4769-9851-e3a506f73805?id=d7519a93-c6ff-4a7c-aed5-94e04ca09aed` |
+| Latest deploy | `997f81c7-b46c-408e-9c08-40cc69d468ba` ("Point Vera pages and links at vera.verus.legal"), SUCCESS, 2026-10-10T17:01Z. Wake service uses setInterval fallback until the host exposes `ctx.scheduler`. |
+| Logs          | `https://railway.com/project/6884818a-0e95-49d8-9052-22712801dbd0/service/96a03ba4-d4bf-4769-9851-e3a506f73805?id=997f81c7-b46c-408e-9c08-40cc69d468ba` |
 
 CLI inside the container is `node /app/openclaw.mjs`. `railway ssh` needs the key loaded in the agent. This VM registered key `vera-deploy`. A fresh machine must register its own key. Do not copy private keys into git.
 
@@ -97,7 +97,7 @@ Production sender Lexroom `+1 202-490-8196`. `phone_number_id` `1197866140067824
 
 Lawyer test number: Matteo Mariani `+393403055911` (digits `393403055911`, WhatsApp user id `IT.1702791984232084`). Allowlist must include both `+E.164` and digits. Conversation seen: `4f122b80-fd4f-4e96-b56b-df17a1472f52`.
 
-Railway webhook `9c97a689-b99f-4d48-b79e-5269c43c342e`, URL `https://gateway-production-e368.up.railway.app/kapso/webhook`, active, payload v2, event `whatsapp.message.received`. Doctor reported registration ok. A POST with no valid signature returns 401 `invalid_signature`.
+Railway webhook `9c97a689-b99f-4d48-b79e-5269c43c342e`, URL `https://vera.verus.legal/kapso/webhook`, active, payload v2, event `whatsapp.message.received`. Doctor reported registration ok. A POST with no valid signature returns 401 `invalid_signature`.
 
 The earlier Cursor-automation webhook `54268d25-ac7c-45bb-ae4b-3de20e61ea34` was paused (`active` false). Leave it paused so messages are not delivered twice. Do not record its bearer token.
 
@@ -128,7 +128,9 @@ Set on service `gateway`. Values stay in Railway.
 - `VERA_GOOGLE_CLIENT_ID`
 - `VERA_GOOGLE_CLIENT_SECRET`
 - `VERA_GOOGLE_STATE_SECRET`
-- `VERA_GOOGLE_REDIRECT_URI` (optional; defaults to the public `/vera/google/callback`)
+- `VERA_PUBLIC_ORIGIN=https://vera.verus.legal` (Control UI origin + default connect hosts)
+- `VERA_GOOGLE_REDIRECT_URI=https://vera.verus.legal/vera/google/callback`
+- `VERA_LEXROOM_CONNECT_URI=https://vera.verus.legal/vera/lexroom/connect`
 
 The container runs as root because the volume is root-owned. Plugin files must be `chown root:root`. A `node`-owned copy (uid 1000) is blocked as suspicious ownership and then fails with "Plugin artifact has no valid plugin manifest".
 
@@ -203,9 +205,9 @@ The internal API doc must not be committed.
 ## Verify
 
 ```bash
-curl -sS https://gateway-production-e368.up.railway.app/healthz
+curl -sS https://vera.verus.legal/healthz
 ```
 
-Over SSH, the identity check should show name Vera, channel true, apiKey set, and phone set. Logs should include `kapso-whatsapp` and `vera` in the listening plugin list.
+Over SSH, the identity check should show name Vera, channel true, apiKey set, and phone set. Logs should include `kapso-whatsapp` and `vera` in the listening plugin list. Google and Lexroom connect links must use `https://vera.verus.legal/...`.
 
 Text `+1 202-490-8196` from `+39 340 305 5911`.
