@@ -67,8 +67,8 @@ Do not modify the other projects: `verus-legal`, `product-roast-bot`, `lexroom-m
 | Health        | `GET /healthz` returns `{"ok":true,"status":"live"}`                                                                                                    |
 | Region        | `us-west2`, 1 replica                                                                                                                                   |
 | Image         | `docker.io/openclaw/openclaw:2026.9.9` plus a bundled Vera copy (Instinct memory workers + wake service)                                                 |
-| Latest deploy | `8dbe29b3-99b3-4906-b181-00b2ce38ca22` ("Deploy Instinct Vera on OpenClaw 2026.9.9"), SUCCESS, 2026-10-10T00:15Z. Wake service uses setInterval fallback until the host exposes `ctx.scheduler`. |
-| Logs          | `https://railway.com/project/6884818a-0e95-49d8-9052-22712801dbd0/service/96a03ba4-d4bf-4769-9851-e3a506f73805?id=8dbe29b3-99b3-4906-b181-00b2ce38ca22` |
+| Latest deploy | `d7519a93-c6ff-4a7c-aed5-94e04ca09aed` ("Fix Lexroom MFA connect (app challenge, HTTP 200)"), SUCCESS, 2026-10-10T16:27Z. Wake service uses setInterval fallback until the host exposes `ctx.scheduler`. |
+| Logs          | `https://railway.com/project/6884818a-0e95-49d8-9052-22712801dbd0/service/96a03ba4-d4bf-4769-9851-e3a506f73805?id=d7519a93-c6ff-4a7c-aed5-94e04ca09aed` |
 
 CLI inside the container is `node /app/openclaw.mjs`. `railway ssh` needs the key loaded in the agent. This VM registered key `vera-deploy`. A fresh machine must register its own key. Do not copy private keys into git.
 
