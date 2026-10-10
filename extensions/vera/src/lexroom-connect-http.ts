@@ -395,11 +395,11 @@ export async function handleVeraLexroomConnect(
     deps.log.error(`vera lexroom login failed: ${result.error}`);
     writeHtml(
       res,
-      502,
+      200,
       renderLoginForm({
         state,
         email,
-        error: "Vera could not finish Lexroom sign-in. Try again shortly.",
+        error: result.error || "Vera could not finish Lexroom sign-in. Try again shortly.",
       }),
       true,
     );

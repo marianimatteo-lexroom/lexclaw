@@ -89,8 +89,11 @@ describe("loginLexroomAccount", () => {
           },
         );
       }
+      if (url.endsWith("/auth/mfa")) {
+        return new Response("", { status: 200 });
+      }
       if (url.endsWith("/api/auth/mfa/start")) {
-        expect(JSON.parse(String(init?.body))).toEqual({ method: "totp" });
+        expect(JSON.parse(String(init?.body))).toMatchObject({ method: "totp" });
         expect(new Headers(init?.headers).get("Cookie")).toContain(
           "__Secure-next-auth.session-token=pending-mfa",
         );
@@ -127,12 +130,16 @@ describe("loginLexroomAccount", () => {
     ].join(".");
     const mfaTicket = sealLexroomMfaTicket(STATE_SECRET, {
       email: "lawyer@lexroom.ai",
+      password: "secret",
       method: "totp",
       cookies: { "__Secure-next-auth.session-token": "pending-mfa" },
       appBaseUrl: "https://app.lexroom.ai",
     });
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url.endsWith("/api/auth/mfa/start")) {
+        return jsonResponse({ resendAfterSeconds: 0 }, 200);
+      }
       if (url.endsWith("/api/auth/mfa/verify")) {
         expect(JSON.parse(String(init?.body))).toEqual({
           code: "123456",
@@ -180,6 +187,53 @@ describe("loginLexroomAccount", () => {
     });
   });
 
+  it("still asks for MFA when start is forbidden but a session cookie exists", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/login")) {
+        return jsonResponse({ detail: "mfa_step_up_required", code: "mfa_step_up_required" }, 403);
+      }
+      if (url.endsWith("/api/auth/csrf")) {
+        return jsonResponse(
+          { csrfToken: "csrf-token" },
+          200,
+          {
+            "set-cookie":
+              "__Host-next-auth.csrf-token=csrf-token%7Chash; Path=/; HttpOnly; Secure; SameSite=Strict",
+          },
+        );
+      }
+      if (url.endsWith("/api/auth/callback/credentials")) {
+        return jsonResponse(
+          { url: "https://app.lexroom.ai/auth/mfa" },
+          200,
+          {
+            "set-cookie":
+              "__Secure-next-auth.session-token=pending-mfa; Path=/; HttpOnly; Secure; SameSite=Lax",
+          },
+        );
+      }
+      if (url.endsWith("/auth/mfa")) {
+        return new Response("", { status: 200 });
+      }
+      if (url.endsWith("/api/auth/mfa/start")) {
+        return jsonResponse({ message: "Forbidden" }, 403);
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    const result = await loginLexroomAccount({
+      email: "lawyer@lexroom.ai",
+      password: "secret",
+      stateSecret: STATE_SECRET,
+      fetchImpl,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "mfa_required",
+      method: "totp",
+    });
+  });
+
   it("maps authentication failures", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse(
@@ -204,6 +258,7 @@ describe("loginLexroomAccount", () => {
   it("rejects an expired MFA ticket", async () => {
     const mfaTicket = sealLexroomMfaTicket(STATE_SECRET, {
       email: "lawyer@lexroom.ai",
+      password: "secret",
       method: "totp",
       cookies: { session: "x" },
       appBaseUrl: "https://app.lexroom.ai",

@@ -39,8 +39,9 @@ export type LexroomLoginResult = LexroomLoginSuccess | LexroomLoginFailure;
 type CookieJar = Map<string, string>;
 
 type MfaTicketPayload = {
-  v: 1;
+  v: 2;
   email: string;
+  password: string;
   method: string;
   cookies: Record<string, string>;
   appBaseUrl: string;
@@ -86,8 +87,9 @@ export function sealLexroomMfaTicket(
   nowMs = Date.now(),
 ): string {
   const body: MfaTicketPayload = {
-    v: 1,
+    v: 2,
     email: payload.email,
+    password: payload.password,
     method: payload.method,
     cookies: payload.cookies,
     appBaseUrl: payload.appBaseUrl,
@@ -125,9 +127,9 @@ export function openLexroomMfaTicket(
     const plaintext = Buffer.concat([decipher.update(encrypted), decipher.final()]).toString(
       "utf8",
     );
-    const parsed = JSON.parse(plaintext) as Partial<MfaTicketPayload>;
+    const parsed = JSON.parse(plaintext) as Partial<MfaTicketPayload> & { v?: number };
     if (
-      parsed.v !== 1 ||
+      (parsed.v !== 1 && parsed.v !== 2) ||
       typeof parsed.email !== "string" ||
       typeof parsed.method !== "string" ||
       typeof parsed.appBaseUrl !== "string" ||
@@ -140,7 +142,15 @@ export function openLexroomMfaTicket(
     if (parsed.exp <= nowMs) {
       return null;
     }
-    return parsed as MfaTicketPayload;
+    return {
+      v: 2,
+      email: parsed.email,
+      password: typeof parsed.password === "string" ? parsed.password : "",
+      method: parsed.method,
+      cookies: parsed.cookies as Record<string, string>,
+      appBaseUrl: parsed.appBaseUrl,
+      exp: parsed.exp,
+    };
   } catch {
     return null;
   }
@@ -152,17 +162,27 @@ function storeSetCookies(jar: CookieJar, response: Response): void {
       ? response.headers.getSetCookie()
       : [];
   for (const header of headers) {
-    const pair = header.split(";")[0] ?? "";
+    const segments = header.split(";").map((part) => part.trim());
+    const pair = segments[0] ?? "";
     const eq = pair.indexOf("=");
     if (eq <= 0) {
       continue;
     }
     const name = pair.slice(0, eq).trim();
-    const value = pair.slice(eq + 1).trim();
+    const value = pair.slice(eq + 1);
     if (!name) {
       continue;
     }
-    if (!value || /^(?:Max-Age=0|)$/iu.test(value)) {
+    const maxAge = segments.find((part) => part.toLowerCase().startsWith("max-age="));
+    if (maxAge && Number.parseInt(maxAge.slice(8), 10) === 0) {
+      jar.delete(name);
+      continue;
+    }
+    if (segments.some((part) => part.toLowerCase().startsWith("expires=") && part.includes("1970"))) {
+      jar.delete(name);
+      continue;
+    }
+    if (!value) {
       jar.delete(name);
       continue;
     }
@@ -172,6 +192,15 @@ function storeSetCookies(jar: CookieJar, response: Response): void {
 
 function cookieHeader(jar: CookieJar): string {
   return [...jar.entries()].map(([name, value]) => `${name}=${value}`).join("; ");
+}
+
+function hasSessionCookie(jar: CookieJar): boolean {
+  for (const name of jar.keys()) {
+    if (name.includes("session-token") || name.includes("sessionToken")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function readJson(response: Response): Promise<unknown> {
@@ -208,6 +237,48 @@ async function fetchCsrf(
   return token;
 }
 
+async function fetchFollow(
+  fetchImpl: FetchLike,
+  url: string,
+  init: RequestInit,
+  jar: CookieJar,
+  signal?: AbortSignal,
+): Promise<Response> {
+  let current = url;
+  let method = (init.method ?? "GET").toUpperCase();
+  let body = init.body;
+  let headers = new Headers(init.headers);
+  for (let hop = 0; hop < 8; hop += 1) {
+    if (jar.size > 0) {
+      headers.set("Cookie", cookieHeader(jar));
+    } else {
+      headers.delete("Cookie");
+    }
+    const response = await fetchImpl(current, {
+      method,
+      headers,
+      body,
+      signal,
+      redirect: "manual",
+    });
+    storeSetCookies(jar, response);
+    if (response.status < 300 || response.status >= 400) {
+      return response;
+    }
+    const location = response.headers.get("location");
+    if (!location) {
+      return response;
+    }
+    // Drain the body so the connection can be reused.
+    await response.arrayBuffer().catch(() => undefined);
+    current = new URL(location, current).toString();
+    method = "GET";
+    body = undefined;
+    headers = new Headers({ Accept: headers.get("Accept") || "*/*" });
+  }
+  throw new Error("redirect");
+}
+
 async function postNextAuthCredentials(params: {
   fetchImpl: FetchLike;
   appBase: string;
@@ -223,26 +294,25 @@ async function postNextAuthCredentials(params: {
     callbackUrl: `${params.appBase}/`,
     ...params.fields,
   });
-  const response = await params.fetchImpl(
+  const response = await fetchFollow(
+    params.fetchImpl,
     `${params.appBase}/api/auth/callback/${params.provider}`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         Accept: "application/json",
-        Cookie: cookieHeader(params.jar),
       },
       body: body.toString(),
-      signal: params.signal,
-      redirect: "manual",
     },
+    params.jar,
+    params.signal,
   );
-  storeSetCookies(params.jar, response);
   const json = await readJson(response);
   const url =
     json && typeof json === "object" && typeof (json as { url?: unknown }).url === "string"
       ? (json as { url: string }).url
-      : response.headers.get("location") ?? "";
+      : response.headers.get("location") ?? response.url ?? "";
   return { ok: response.ok, status: response.status, url };
 }
 
@@ -254,17 +324,22 @@ async function postAppJson(params: {
   body: Record<string, unknown>;
   signal?: AbortSignal;
 }): Promise<{ status: number; json: unknown }> {
-  const response = await params.fetchImpl(`${params.appBase}${params.path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      Cookie: cookieHeader(params.jar),
+  const response = await fetchFollow(
+    params.fetchImpl,
+    `${params.appBase}${params.path}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Origin: params.appBase,
+        Referer: `${params.appBase}/auth/mfa`,
+      },
+      body: JSON.stringify(params.body),
     },
-    body: JSON.stringify(params.body),
-    signal: params.signal,
-  });
-  storeSetCookies(params.jar, response);
+    params.jar,
+    params.signal,
+  );
   return { status: response.status, json: await readJson(response) };
 }
 
@@ -274,15 +349,16 @@ async function readAppSession(params: {
   jar: CookieJar;
   signal?: AbortSignal;
 }): Promise<{ accessToken: string; email: string }> {
-  const response = await params.fetchImpl(`${params.appBase}/api/auth/session`, {
-    method: "GET",
-    headers: {
-      Accept: "application/json",
-      Cookie: cookieHeader(params.jar),
+  const response = await fetchFollow(
+    params.fetchImpl,
+    `${params.appBase}/api/auth/session`,
+    {
+      method: "GET",
+      headers: { Accept: "application/json" },
     },
-    signal: params.signal,
-  });
-  storeSetCookies(params.jar, response);
+    params.jar,
+    params.signal,
+  );
   const json = await readJson(response);
   if (!response.ok || !json || typeof json !== "object") {
     return { accessToken: "", email: "" };
@@ -303,7 +379,7 @@ function mfaRequiredUrl(url: string): boolean {
     const path = new URL(url, DEFAULT_LEXROOM_APP_BASE_URL).pathname;
     return path === "/auth/mfa" || path.startsWith("/auth/mfa/");
   } catch {
-    return url.includes("/auth/mfa");
+    return false;
   }
 }
 
@@ -324,27 +400,129 @@ async function startMfaChallenge(params: {
   fetchImpl: FetchLike;
   appBase: string;
   jar: CookieJar;
+  preferredMethod?: string;
   signal?: AbortSignal;
 }): Promise<{ ok: true; method: string } | { ok: false; status: number }> {
+  const methods = [
+    ...(params.preferredMethod ? [params.preferredMethod] : []),
+    ...MFA_METHODS,
+  ].filter((method, index, all) => all.indexOf(method) === index);
   let lastStatus = 0;
-  for (const method of MFA_METHODS) {
+  for (const method of methods) {
     const started = await postAppJson({
       fetchImpl: params.fetchImpl,
       appBase: params.appBase,
       jar: params.jar,
       path: "/api/auth/mfa/start",
-      body: { method },
+      body: { method, purpose: "step_up" },
       signal: params.signal,
     });
     lastStatus = started.status;
     if (started.status >= 200 && started.status < 300) {
       return { ok: true, method };
     }
-    if (started.status === 401 || started.status === 409 || started.status === 410) {
-      return { ok: false, status: started.status };
+    // Some Lexroom builds already have an active challenge; treat as ready.
+    if (started.status === 409) {
+      return { ok: true, method };
     }
   }
-  return { ok: false, status: lastStatus };
+  // Empty body fallback (lets Lexroom pick the default method).
+  const fallback = await postAppJson({
+    fetchImpl: params.fetchImpl,
+    appBase: params.appBase,
+    jar: params.jar,
+    path: "/api/auth/mfa/start",
+    body: {},
+    signal: params.signal,
+  });
+  if (fallback.status >= 200 && fallback.status < 300) {
+    return { ok: true, method: params.preferredMethod || "totp" };
+  }
+  return { ok: false, status: lastStatus || fallback.status };
+}
+
+async function establishMfaSession(params: {
+  email: string;
+  password: string;
+  appBase: string;
+  fetchImpl: FetchLike;
+  signal?: AbortSignal;
+}): Promise<
+  | { ok: true; jar: CookieJar; method: string }
+  | { ok: false; reason: "invalid_credentials" | "lexroom_error"; error: string }
+> {
+  const jar: CookieJar = new Map();
+  const signedIn = await postNextAuthCredentials({
+    fetchImpl: params.fetchImpl,
+    appBase: params.appBase,
+    jar,
+    provider: "credentials",
+    fields: {
+      email: params.email,
+      password: params.password,
+    },
+    signal: params.signal,
+  });
+  const errorStatus = authErrorStatus(signedIn.url);
+  if (errorStatus === 401 || errorStatus === 403) {
+    return {
+      ok: false,
+      reason: "invalid_credentials",
+      error: "Those Lexroom credentials were not accepted.",
+    };
+  }
+  if (!mfaRequiredUrl(signedIn.url)) {
+    // Non-MFA completion through the app session.
+    const session = await readAppSession({
+      fetchImpl: params.fetchImpl,
+      appBase: params.appBase,
+      jar,
+      signal: params.signal,
+    });
+    if (session.accessToken) {
+      return {
+        ok: false,
+        reason: "lexroom_error",
+        error: "Lexroom signed in without an MFA challenge; retry connect.",
+      };
+    }
+    return {
+      ok: false,
+      reason: "lexroom_error",
+      error: "Lexroom did not start the MFA challenge for this account.",
+    };
+  }
+  // Touch the MFA page so any server-set challenge cookies land in the jar.
+  await fetchFollow(
+    params.fetchImpl,
+    `${params.appBase}/auth/mfa`,
+    {
+      method: "GET",
+      headers: { Accept: "text/html,application/json" },
+    },
+    jar,
+    params.signal,
+  ).then(async (response) => {
+    await response.arrayBuffer().catch(() => undefined);
+  });
+  const started = await startMfaChallenge({
+    fetchImpl: params.fetchImpl,
+    appBase: params.appBase,
+    jar,
+    signal: params.signal,
+  });
+  if (started.ok) {
+    return { ok: true, jar, method: started.method };
+  }
+  // Keep going when Lexroom already established a pending MFA session cookie.
+  if (hasSessionCookie(jar)) {
+    return { ok: true, jar, method: "totp" };
+  }
+  return {
+    ok: false,
+    reason: "lexroom_error",
+    error: `Lexroom MFA challenge failed (${started.status || "no-session"}). Try again shortly.`,
+  };
 }
 
 async function beginMfaViaApp(params: {
@@ -356,67 +534,31 @@ async function beginMfaViaApp(params: {
   fetchImpl: FetchLike;
 }): Promise<LexroomLoginFailure> {
   const appBase = appBaseUrl(params.appBaseUrl);
-  const jar: CookieJar = new Map();
   try {
-    const signedIn = await postNextAuthCredentials({
-      fetchImpl: params.fetchImpl,
+    const established = await establishMfaSession({
+      email: params.email,
+      password: params.password,
       appBase,
-      jar,
-      provider: "credentials",
-      fields: {
-        email: params.email,
-        password: params.password,
-      },
+      fetchImpl: params.fetchImpl,
       signal: params.signal,
     });
-    const errorStatus = authErrorStatus(signedIn.url);
-    if (errorStatus === 401 || errorStatus === 403) {
-      return {
-        ok: false,
-        reason: "invalid_credentials",
-        error: "Those Lexroom credentials were not accepted.",
-      };
-    }
-    if (!mfaRequiredUrl(signedIn.url)) {
-      return {
-        ok: false,
-        reason: "lexroom_error",
-        error: "Lexroom did not start the MFA challenge for this account.",
-      };
-    }
-    const started = await startMfaChallenge({
-      fetchImpl: params.fetchImpl,
-      appBase,
-      jar,
-      signal: params.signal,
-    });
-    if (!started.ok) {
-      if (started.status === 401) {
-        return {
-          ok: false,
-          reason: "invalid_credentials",
-          error: "Those Lexroom credentials were not accepted.",
-        };
-      }
-      return {
-        ok: false,
-        reason: "lexroom_error",
-        error: "Lexroom could not start the MFA challenge. Try again shortly.",
-      };
+    if (!established.ok) {
+      return established;
     }
     const mfaTicket = sealLexroomMfaTicket(params.stateSecret, {
       email: params.email,
-      method: started.method,
-      cookies: Object.fromEntries(jar.entries()),
+      password: params.password,
+      method: established.method,
+      cookies: Object.fromEntries(established.jar.entries()),
       appBaseUrl: appBase,
     });
     return {
       ok: false,
       reason: "mfa_required",
       mfaTicket,
-      method: started.method,
+      method: established.method,
       error:
-        started.method === "sms"
+        established.method === "sms"
           ? "Lexroom sent a one-time code by SMS. Enter it below."
           : "Lexroom needs a one-time code from your authenticator.",
     };
@@ -440,9 +582,37 @@ async function completeMfaViaApp(params: {
       error: "The MFA step expired. Enter your Lexroom password again.",
     };
   }
-  const jar: CookieJar = new Map(Object.entries(opened.cookies));
   const appBase = opened.appBaseUrl;
   try {
+    let jar: CookieJar = new Map(Object.entries(opened.cookies));
+    if (!hasSessionCookie(jar) && opened.password) {
+      const refreshed = await establishMfaSession({
+        email: opened.email,
+        password: opened.password,
+        appBase,
+        fetchImpl: params.fetchImpl,
+        signal: params.signal,
+      });
+      if (!refreshed.ok) {
+        return refreshed.reason === "invalid_credentials"
+          ? {
+              ok: false,
+              reason: "invalid_mfa",
+              error: "The MFA step expired. Enter your Lexroom password again.",
+            }
+          : refreshed;
+      }
+      jar = refreshed.jar;
+    } else {
+      await startMfaChallenge({
+        fetchImpl: params.fetchImpl,
+        appBase,
+        jar,
+        preferredMethod: opened.method,
+        signal: params.signal,
+      });
+    }
+
     const verified = await postAppJson({
       fetchImpl: params.fetchImpl,
       appBase,
@@ -454,72 +624,129 @@ async function completeMfaViaApp(params: {
       },
       signal: params.signal,
     });
-    if (verified.status === 400 || verified.status === 401 || verified.status === 422) {
-      return {
-        ok: false,
-        reason: "invalid_mfa",
-        mfaTicket: params.mfaTicket,
-        error: "That one-time code was not accepted. Try again.",
-      };
-    }
-    if (verified.status === 409 || verified.status === 410) {
-      return {
-        ok: false,
-        reason: "invalid_mfa",
-        error: "The MFA step expired. Enter your Lexroom password again.",
-      };
-    }
-    if (verified.status < 200 || verified.status >= 300) {
-      return {
-        ok: false,
-        reason: "lexroom_error",
-        error: `Lexroom returned ${verified.status} while verifying MFA.`,
-      };
-    }
-    const needsExchange =
-      !verified.json ||
-      typeof verified.json !== "object" ||
-      (verified.json as { needsSessionExchange?: unknown }).needsSessionExchange !== false;
-    if (needsExchange) {
-      const exchanged = await postNextAuthCredentials({
-        fetchImpl: params.fetchImpl,
+    if (verified.status === 403 && opened.password) {
+      const refreshed = await establishMfaSession({
+        email: opened.email,
+        password: opened.password,
         appBase,
-        jar,
-        provider: "mfa-session-exchange",
-        fields: {},
+        fetchImpl: params.fetchImpl,
         signal: params.signal,
       });
-      if (authErrorStatus(exchanged.url) != null || !exchanged.ok) {
-        return {
-          ok: false,
-          reason: "lexroom_error",
-          error: "Lexroom verified MFA but did not finish the sign-in session.",
-        };
+      if (refreshed.ok) {
+        jar = refreshed.jar;
+        const retry = await postAppJson({
+          fetchImpl: params.fetchImpl,
+          appBase,
+          jar,
+          path: "/api/auth/mfa/verify",
+          body: {
+            code: params.otp,
+            rememberDevice: false,
+          },
+          signal: params.signal,
+        });
+        return finishVerifiedMfa({
+          verified: retry,
+          jar,
+          opened,
+          mfaTicket: params.mfaTicket,
+          fetchImpl: params.fetchImpl,
+          signal: params.signal,
+        });
       }
     }
-    const session = await readAppSession({
-      fetchImpl: params.fetchImpl,
-      appBase,
+    return finishVerifiedMfa({
+      verified,
       jar,
+      opened,
+      mfaTicket: params.mfaTicket,
+      fetchImpl: params.fetchImpl,
       signal: params.signal,
     });
-    if (!session.accessToken) {
-      return {
-        ok: false,
-        reason: "lexroom_error",
-        error: "Lexroom MFA finished without an access token.",
-      };
-    }
-    return {
-      ok: true,
-      email: session.email || opened.email,
-      accessToken: session.accessToken,
-      refreshToken: "",
-      accessExpiresAtMs: accessTokenExpiresAtMs(session.accessToken),
-    };
   } catch {
     return { ok: false, reason: "lexroom_error", error: "Vera could not reach Lexroom." };
   }
+}
+
+async function finishVerifiedMfa(params: {
+  verified: { status: number; json: unknown };
+  jar: CookieJar;
+  opened: MfaTicketPayload;
+  mfaTicket: string;
+  fetchImpl: FetchLike;
+  signal?: AbortSignal;
+}): Promise<LexroomLoginResult> {
+  const { verified, jar, opened } = params;
+  if (verified.status === 400 || verified.status === 401 || verified.status === 422) {
+    return {
+      ok: false,
+      reason: "invalid_mfa",
+      mfaTicket: params.mfaTicket,
+      error: "That one-time code was not accepted. Try again.",
+    };
+  }
+  if (verified.status === 409 || verified.status === 410) {
+    return {
+      ok: false,
+      reason: "invalid_mfa",
+      error: "The MFA step expired. Enter your Lexroom password again.",
+    };
+  }
+  if (verified.status === 403) {
+    return {
+      ok: false,
+      reason: "invalid_mfa",
+      error: "The MFA step expired. Enter your Lexroom password again.",
+    };
+  }
+  if (verified.status < 200 || verified.status >= 300) {
+    return {
+      ok: false,
+      reason: "lexroom_error",
+      error: `Lexroom returned ${verified.status} while verifying MFA.`,
+    };
+  }
+  const needsExchange =
+    !verified.json ||
+    typeof verified.json !== "object" ||
+    (verified.json as { needsSessionExchange?: unknown }).needsSessionExchange !== false;
+  if (needsExchange) {
+    const exchanged = await postNextAuthCredentials({
+      fetchImpl: params.fetchImpl,
+      appBase: opened.appBaseUrl,
+      jar,
+      provider: "mfa-session-exchange",
+      fields: {},
+      signal: params.signal,
+    });
+    if (authErrorStatus(exchanged.url) != null || !exchanged.ok) {
+      return {
+        ok: false,
+        reason: "lexroom_error",
+        error: "Lexroom verified MFA but did not finish the sign-in session.",
+      };
+    }
+  }
+  const session = await readAppSession({
+    fetchImpl: params.fetchImpl,
+    appBase: opened.appBaseUrl,
+    jar,
+    signal: params.signal,
+  });
+  if (!session.accessToken) {
+    return {
+      ok: false,
+      reason: "lexroom_error",
+      error: "Lexroom MFA finished without an access token.",
+    };
+  }
+  return {
+    ok: true,
+    email: session.email || opened.email,
+    accessToken: session.accessToken,
+    refreshToken: "",
+    accessExpiresAtMs: accessTokenExpiresAtMs(session.accessToken),
+  };
 }
 
 async function loginViaApi(params: {
