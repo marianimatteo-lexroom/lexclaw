@@ -13,7 +13,11 @@
   "openclaw": {
     "extensions": ["./index.ts"],
     "build": {
-      "workerEntries": ["./src/google-account.worker.ts", "./src/memory.worker.ts"]
+      "workerEntries": [
+        "./src/google-account.worker.ts",
+        "./src/lexroom-account.worker.ts",
+        "./src/memory.worker.ts"
+      ]
     }
   }
 }

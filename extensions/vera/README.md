@@ -22,11 +22,14 @@ Disable the Gateway model heartbeat for this install (`agents.defaults.heartbeat
       vera: {
         enabled: true,
         config: {
-          accessToken: "${LEXROOM_ACCESS_TOKEN}",
+          // optional static fallback; prefer vera_lexroom_connect
+          // accessToken: "${LEXROOM_ACCESS_TOKEN}",
           googleClientId: "${VERA_GOOGLE_CLIENT_ID}",
           googleClientSecret: "${VERA_GOOGLE_CLIENT_SECRET}",
           googleRedirectUri: "https://gateway.example/vera/google/callback",
           googleStateSecret: "${VERA_GOOGLE_STATE_SECRET}",
+          // optional explicit Lexroom connect URL; defaults from googleRedirectUri origin
+          // lexroomConnectUri: "https://gateway.example/vera/lexroom/connect",
           // optional: projects/.../topics/... for Gmail watch
           // googlePubSubTopic: "${VERA_GOOGLE_PUBSUB_TOPIC}",
           // googleNotifyToken: "${VERA_GOOGLE_NOTIFY_TOKEN}",
@@ -39,6 +42,7 @@ Disable the Gateway model heartbeat for this install (`agents.defaults.heartbeat
       "vera_plan_digest",
       "vera_research",
       "vera_draft",
+      "vera_lexroom_connect",
       "vera_google_connect",
       "vera_read_inbox",
       "vera_read_calendar",
@@ -54,7 +58,11 @@ Disable the Gateway model heartbeat for this install (`agents.defaults.heartbeat
 }
 ```
 
-Research and drafting need a bearer token from `POST /v1/login` on `https://api.lexroom.ai`, sent with `X-Client-Type: app_lex`. Machine API keys are not accepted by those endpoints yet. Keep the token out of git. If the account uses MFA, finish that sign-in before saving the token.
+## Lexroom account
+
+Research and drafting call `https://api.lexroom.ai` with `Authorization: Bearer` and `X-Client-Type: app_lex`. Machine API keys are not accepted by those endpoints yet.
+
+The lawyer connects Lexroom the same way as Google: WhatsApp gets one link from `vera_lexroom_connect`, opens `/vera/lexroom/connect`, and signs in with Lexroom email/password (plus MFA when Lexroom requires it). The password is posted only to Lexroom. The bearer stays in `$OPENCLAW_STATE_DIR/vera/lexroom-account.sqlite`. The connect URL defaults from the `googleRedirectUri` origin; override with `lexroomConnectUri` when needed. The state HMAC reuses `googleStateSecret` unless `lexroomStateSecret` is set. Links expire after 30 minutes. When the saved bearer expires, `vera_research` / `vera_draft` return `not_connected` and Vera asks for a new link. A static `accessToken` in config remains a fallback only.
 
 ## Google account
 

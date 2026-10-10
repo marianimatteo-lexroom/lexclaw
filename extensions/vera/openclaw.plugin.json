@@ -38,6 +38,12 @@
       },
       "googleNotifyToken": {
         "type": "string"
+      },
+      "lexroomConnectUri": {
+        "type": "string"
+      },
+      "lexroomStateSecret": {
+        "type": "string"
       }
     }
   },
@@ -46,6 +52,7 @@
       "vera_plan_digest",
       "vera_research",
       "vera_draft",
+      "vera_lexroom_connect",
       "vera_google_connect",
       "vera_read_inbox",
       "vera_read_calendar",
@@ -66,6 +73,9 @@
       "optional": true
     },
     "vera_draft": {
+      "optional": true
+    },
+    "vera_lexroom_connect": {
       "optional": true
     },
     "vera_google_connect": {

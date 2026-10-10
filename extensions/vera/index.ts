@@ -18,7 +18,15 @@ import {
   executeVeraReadInbox,
   executeVeraSendEmail,
 } from "./src/google-tools.js";
+import { openVeraLexroomAccountFromApi } from "./src/lexroom-account.js";
 import { runDraft, runResearch, type LexroomConfig } from "./src/lexroom-client.js";
+import { handleVeraLexroomConnect } from "./src/lexroom-connect-http.js";
+import {
+  executeVeraLexroomConnect,
+  lexroomConnectConfigFrom,
+  resolveLexroomConfig,
+  sendLexroomConnectedNotice,
+} from "./src/lexroom-tools.js";
 import { MEMORY_FOLDERS } from "./src/memory-contract.js";
 import {
   executeVeraMemoryGet,
@@ -97,6 +105,18 @@ const tools = defineToolPlugin({
             "Bearer token required by POST /vera/google/notify. At least 16 characters. Do not commit it.",
         }),
       ),
+      lexroomConnectUri: Type.Optional(
+        Type.String({
+          description:
+            "Public https URL whose path is /vera/lexroom/connect. Defaults from googleRedirectUri origin when omitted.",
+        }),
+      ),
+      lexroomStateSecret: Type.Optional(
+        Type.String({
+          description:
+            "HMAC secret for Lexroom connect links. Falls back to googleStateSecret. Do not commit it.",
+        }),
+      ),
     },
     { additionalProperties: false },
   ),
@@ -148,8 +168,12 @@ const tools = defineToolPlugin({
       ),
       optional: true,
       async execute(params, config: LexroomConfig, context) {
+        const resolved = await resolveLexroomConfig({ config, api: context.api });
+        if (!resolved.ok) {
+          return resolved;
+        }
         return await runResearch({
-          config,
+          config: resolved.config,
           matterId: params.matterId,
           query: params.query,
           libraryDocumentIds: params.libraryDocumentIds,
@@ -176,15 +200,41 @@ const tools = defineToolPlugin({
       ),
       optional: true,
       async execute(params, config: LexroomConfig, context) {
+        if (!params.confirmed) {
+          return await runDraft({
+            config,
+            matterId: params.matterId,
+            prompt: params.prompt,
+            confirmed: false,
+            modules: params.modules,
+            parentResearchId: params.parentResearchId,
+            signal: context.signal,
+          });
+        }
+        const resolved = await resolveLexroomConfig({ config, api: context.api });
+        if (!resolved.ok) {
+          return resolved;
+        }
         return await runDraft({
-          config,
+          config: resolved.config,
           matterId: params.matterId,
           prompt: params.prompt,
-          confirmed: params.confirmed,
+          confirmed: true,
           modules: params.modules,
           parentResearchId: params.parentResearchId,
           signal: context.signal,
         });
+      },
+    }),
+    tool({
+      name: "vera_lexroom_connect",
+      label: "Connect Lexroom",
+      description:
+        "Check whether this lawyer connected Lexroom for research and drafts. When they have not, or the saved bearer expired, return one WhatsApp ask and a single Vera-hosted Lexroom sign-in link. Does not send the message.",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      optional: true,
+      async execute(_params, config, context) {
+        return await executeVeraLexroomConnect(lexroomConnectConfigFrom(config), context.api);
       },
     }),
     tool({
@@ -446,6 +496,37 @@ const entry = definePluginEntry({
       auth: "plugin",
       match: "exact",
       handler: (req, res) => handleVeraGoogleNotify(req, res, api),
+    });
+
+    api.registerHttpRoute({
+      path: "/vera/lexroom/connect",
+      auth: "plugin",
+      match: "exact",
+      handler: async (req, res) => {
+        try {
+          const store = await openVeraLexroomAccountFromApi(api);
+          return await handleVeraLexroomConnect(req, res, {
+            config: lexroomConnectConfigFrom(api.pluginConfig),
+            now: () => new Date(),
+            store,
+            log: api.logger,
+            notifyConnected: (email) =>
+              sendLexroomConnectedNotice({
+                config: api.config,
+                email,
+                loadAdapter: (channelId) => api.runtime.channel.outbound.loadAdapter(channelId),
+              }),
+          });
+        } catch (error) {
+          api.logger.error(
+            `vera lexroom connect failed: ${error instanceof Error ? error.message : "unknown"}`,
+          );
+          res.statusCode = 500;
+          res.setHeader("content-type", "text/plain; charset=utf-8");
+          res.end("Vera could not finish connecting Lexroom.");
+          return true;
+        }
+      },
     });
   },
 });

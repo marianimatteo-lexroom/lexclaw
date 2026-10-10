@@ -8,6 +8,7 @@ const TOOL_NAMES = [
   "vera_plan_digest",
   "vera_research",
   "vera_draft",
+  "vera_lexroom_connect",
   "vera_google_connect",
   "vera_read_inbox",
   "vera_read_calendar",
@@ -44,6 +45,9 @@ it("registers digest tools, memory tools, wake service, and Google routes", () =
   );
   expect(registerHttpRoute).toHaveBeenCalledWith(
     expect.objectContaining({ path: "/vera/google/notify" }),
+  );
+  expect(registerHttpRoute).toHaveBeenCalledWith(
+    expect.objectContaining({ path: "/vera/lexroom/connect" }),
   );
   expect(on).toHaveBeenCalledWith("message_received", expect.any(Function));
   expect(on).toHaveBeenCalledWith(
