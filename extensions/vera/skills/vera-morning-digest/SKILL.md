@@ -9,7 +9,7 @@ Vera texts the lawyer on the Lexroom WhatsApp number. One lawyer, one Lexroom us
 
 ## When this runs
 
-The Vera service collects Gmail and Calendar diffs without the model. It calls you only when a plan clears the cost bar, on an isolated turn with a short timeout. Before any digest phrasing, follow the vera-google-connect skill. If that skill sends the connect message, stop.
+The Vera service collects Gmail and Calendar diffs without the model. It calls you only when a plan clears the cost bar, on an isolated turn with a short timeout. Before any digest phrasing, follow the vera-google-connect skill. Before research or draft, follow the vera-lexroom-connect skill when Lexroom is not connected. If either skill sends a connect message, stop.
 
 Also follow this skill when the lawyer answers a digest in the same chat, or when a held plan is delivered after he texts and reopens the WhatsApp window.
 
