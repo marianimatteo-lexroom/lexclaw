@@ -38,6 +38,11 @@ import {
 } from "./src/memory-tools.js";
 import { openVeraMemoryFromApi } from "./src/memory.js";
 import { recordLawyerInbound, registerVeraService } from "./src/service.js";
+import {
+  markKapsoMessageRead,
+  readInboundChannelId,
+  readInboundMessageId,
+} from "./src/whatsapp-read.js";
 import { handleVeraGoogleNotify } from "./src/watch.js";
 
 const signalSchema = Type.Object(
@@ -408,20 +413,26 @@ const entry = definePluginEntry({
     tools.register(api);
     registerVeraService({ api });
 
-    api.on("message_received", async (event) => {
+    api.on("message_received", async (event, ctx) => {
+      const channelId = readInboundChannelId(event, ctx);
+      const readReceipt = markKapsoMessageRead({
+        config: api.config,
+        channelId,
+        accountId: typeof ctx.accountId === "string" ? ctx.accountId : undefined,
+        messageId: readInboundMessageId(event, ctx),
+      }).then((result) => {
+        if (!result.ok) {
+          api.logger.warn(`vera whatsapp read receipt failed: ${result.error}`);
+        }
+      });
       try {
-        const channelId =
-          typeof event.channelId === "string"
-            ? event.channelId
-            : typeof (event as { channel?: unknown }).channel === "string"
-              ? ((event as { channel: string }).channel)
-              : undefined;
         await recordLawyerInbound({ api, atMs: Date.now(), channelId });
       } catch (error) {
         api.logger.error(
           `vera inbound wake record failed: ${error instanceof Error ? error.message : "unknown"}`,
         );
       }
+      await readReceipt;
     });
 
     api.on(
