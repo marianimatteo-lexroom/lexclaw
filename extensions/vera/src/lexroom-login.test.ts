@@ -187,6 +187,62 @@ describe("loginLexroomAccount", () => {
     });
   });
 
+  it("surfaces API MFA enrollment without starting an OTP challenge", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/login")) {
+        return jsonResponse(
+          { detail: "mfa_enrollment_required", code: "mfa_enrollment_required" },
+          403,
+        );
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    const result = await loginLexroomAccount({
+      email: "lawyer@lexroom.ai",
+      password: "secret",
+      stateSecret: STATE_SECRET,
+      fetchImpl,
+    });
+    expect(result).toMatchObject({ ok: false, reason: "lexroom_error" });
+    expect(result.ok ? "" : result.error).toContain("MFA setup");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks the lawyer to finish Lexroom MFA setup instead of an OTP form", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/login")) {
+        return jsonResponse({ detail: "mfa_step_up_required", code: "mfa_step_up_required" }, 403);
+      }
+      if (url.endsWith("/api/auth/csrf")) {
+        return jsonResponse(
+          { csrfToken: "csrf-token" },
+          200,
+          {
+            "set-cookie":
+              "__Host-next-auth.csrf-token=csrf-token%7Chash; Path=/; HttpOnly; Secure; SameSite=Strict",
+          },
+        );
+      }
+      if (url.endsWith("/api/auth/callback/credentials")) {
+        return jsonResponse({ url: "https://app.lexroom.ai/auth/mfa/setup" }, 200);
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    const result = await loginLexroomAccount({
+      email: "lawyer@lexroom.ai",
+      password: "secret",
+      stateSecret: STATE_SECRET,
+      fetchImpl,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "lexroom_error",
+    });
+    expect(result.ok ? "" : result.error).toContain("MFA setup");
+  });
+
   it("still asks for MFA when start is forbidden but a session cookie exists", async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

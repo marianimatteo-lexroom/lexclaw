@@ -374,14 +374,26 @@ async function readAppSession(params: {
   };
 }
 
-function mfaRequiredUrl(url: string): boolean {
+function mfaSetupUrl(url: string): boolean {
   try {
     const path = new URL(url, DEFAULT_LEXROOM_APP_BASE_URL).pathname;
-    return path === "/auth/mfa" || path.startsWith("/auth/mfa/");
+    return path === "/auth/mfa/setup" || path.startsWith("/auth/mfa/setup/");
   } catch {
     return false;
   }
 }
+
+function mfaStepUpUrl(url: string): boolean {
+  try {
+    const path = new URL(url, DEFAULT_LEXROOM_APP_BASE_URL).pathname;
+    return path === "/auth/mfa";
+  } catch {
+    return false;
+  }
+}
+
+const MFA_SETUP_ERROR =
+  "This Lexroom account still needs MFA setup in Lexroom. Open app.lexroom.ai, finish authenticator setup, then try this Vera link again.";
 
 function authErrorStatus(url: string): number | null {
   try {
@@ -448,7 +460,8 @@ async function establishMfaSession(params: {
   fetchImpl: FetchLike;
   signal?: AbortSignal;
 }): Promise<
-  | { ok: true; jar: CookieJar; method: string }
+  | { ok: true; kind: "mfa"; jar: CookieJar; method: string }
+  | { ok: true; kind: "session"; email: string; accessToken: string }
   | { ok: false; reason: "invalid_credentials" | "lexroom_error"; error: string }
 > {
   const jar: CookieJar = new Map();
@@ -471,8 +484,15 @@ async function establishMfaSession(params: {
       error: "Those Lexroom credentials were not accepted.",
     };
   }
-  if (!mfaRequiredUrl(signedIn.url)) {
-    // Non-MFA completion through the app session.
+  // Lexroom asks unfinished accounts to enroll MFA before any OTP challenge.
+  if (mfaSetupUrl(signedIn.url)) {
+    return {
+      ok: false,
+      reason: "lexroom_error",
+      error: MFA_SETUP_ERROR,
+    };
+  }
+  if (!mfaStepUpUrl(signedIn.url)) {
     const session = await readAppSession({
       fetchImpl: params.fetchImpl,
       appBase: params.appBase,
@@ -481,9 +501,10 @@ async function establishMfaSession(params: {
     });
     if (session.accessToken) {
       return {
-        ok: false,
-        reason: "lexroom_error",
-        error: "Lexroom signed in without an MFA challenge; retry connect.",
+        ok: true,
+        kind: "session",
+        email: session.email || params.email,
+        accessToken: session.accessToken,
       };
     }
     return {
@@ -512,11 +533,11 @@ async function establishMfaSession(params: {
     signal: params.signal,
   });
   if (started.ok) {
-    return { ok: true, jar, method: started.method };
+    return { ok: true, kind: "mfa", jar, method: started.method };
   }
   // Keep going when Lexroom already established a pending MFA session cookie.
   if (hasSessionCookie(jar)) {
-    return { ok: true, jar, method: "totp" };
+    return { ok: true, kind: "mfa", jar, method: "totp" };
   }
   return {
     ok: false,
@@ -532,7 +553,7 @@ async function beginMfaViaApp(params: {
   appBaseUrl?: string;
   signal?: AbortSignal;
   fetchImpl: FetchLike;
-}): Promise<LexroomLoginFailure> {
+}): Promise<LexroomLoginResult> {
   const appBase = appBaseUrl(params.appBaseUrl);
   try {
     const established = await establishMfaSession({
@@ -544,6 +565,15 @@ async function beginMfaViaApp(params: {
     });
     if (!established.ok) {
       return established;
+    }
+    if (established.kind === "session") {
+      return {
+        ok: true,
+        email: established.email,
+        accessToken: established.accessToken,
+        refreshToken: "",
+        accessExpiresAtMs: accessTokenExpiresAtMs(established.accessToken),
+      };
     }
     const mfaTicket = sealLexroomMfaTicket(params.stateSecret, {
       email: params.email,
@@ -602,6 +632,15 @@ async function completeMfaViaApp(params: {
             }
           : refreshed;
       }
+      if (refreshed.kind === "session") {
+        return {
+          ok: true,
+          email: refreshed.email,
+          accessToken: refreshed.accessToken,
+          refreshToken: "",
+          accessExpiresAtMs: accessTokenExpiresAtMs(refreshed.accessToken),
+        };
+      }
       jar = refreshed.jar;
     } else {
       await startMfaChallenge({
@@ -632,7 +671,16 @@ async function completeMfaViaApp(params: {
         fetchImpl: params.fetchImpl,
         signal: params.signal,
       });
-      if (refreshed.ok) {
+      if (refreshed.ok && refreshed.kind === "session") {
+        return {
+          ok: true,
+          email: refreshed.email,
+          accessToken: refreshed.accessToken,
+          refreshToken: "",
+          accessExpiresAtMs: accessTokenExpiresAtMs(refreshed.accessToken),
+        };
+      }
+      if (refreshed.ok && refreshed.kind === "mfa") {
         jar = refreshed.jar;
         const retry = await postAppJson({
           fetchImpl: params.fetchImpl,
@@ -774,6 +822,13 @@ async function loginViaApi(params: {
   const json = await readJson(response);
   if (!response.ok) {
     const { detail, code } = detailCode(json);
+    if (detail === "mfa_enrollment_required" || code === "mfa_enrollment_required") {
+      return {
+        ok: false,
+        reason: "lexroom_error",
+        error: MFA_SETUP_ERROR,
+      };
+    }
     if (detail === "mfa_step_up_required" || code === "mfa_step_up_required") {
       return { ok: false, reason: "mfa_step_up" };
     }
