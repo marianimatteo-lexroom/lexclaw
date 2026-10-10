@@ -282,7 +282,6 @@ export async function runVeraReconcilePass(params: {
   const matterIds = [...new Set(aliases.map((entry) => entry.matterId))];
   const atMs = params.now.getTime();
 
-  const week = day.slice(0, 4) + "-W" + String(Math.ceil(Number(day.slice(8, 10)) / 7)).padStart(2, "0");
   for (const matterId of matterIds) {
     const label = aliases.find((entry) => entry.matterId === matterId)?.title ?? matterId;
     const todos = await params.memory.listTodos(matterId);
@@ -295,22 +294,6 @@ export async function runVeraReconcilePass(params: {
     ].join("\n");
     await params.memory.upsertRecord(
       buildDailyTimelineRecord({ matterId, day, body, atMs }),
-      "create",
-      atMs,
-    );
-    await params.memory.upsertRecord(
-      {
-        id: `${matterId}-weekly-${week}`,
-        matterId,
-        folder: "timeline/weekly",
-        type: "timeline",
-        title: `Weekly ${week}`,
-        aliases: [week, "this week", matterId],
-        body: `- Rollup from ${day}\n${body}`,
-        validFromMs: atMs,
-        validToMs: null,
-        supersededBy: null,
-      },
       "create",
       atMs,
     );

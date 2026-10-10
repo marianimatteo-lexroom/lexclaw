@@ -184,7 +184,90 @@ pnpm exec esbuild extensions/vera/src/memory.worker.ts \
 
 Copy `extensions/vera` into `/tmp/vera-deploy/vera`, then point `package.json` `openclaw.extensions` at `./index.js`, set `dependencies` to `{}`, and delete `devDependencies`. Keep `openclaw.plugin.json`, `skills/`, and the README. Do not upload secrets in that directory.
 
-`start.sh` must also set `plugins.entries.vera.hooks.allowConversationAccess` true, disable heartbeat with `agents.defaults.heartbeat.every` `"0m"`, allow the memory/todo tools in `tools.alsoAllow`, and optionally wire `VERA_GOOGLE_PUBSUB_TOPIC` / `VERA_GOOGLE_NOTIFY_TOKEN`. Keep the Kapso, Lexroom, Google OAuth, and Anthropic setup-token blocks from the live `/tmp/vera-deploy/start.sh`.
+`start.sh`:
+
+```sh
+#!/bin/sh
+set -u
+PORT="${OPENCLAW_GATEWAY_PORT:-8080}"
+mkdir -p "${OPENCLAW_STATE_DIR:-/data/.openclaw}" "${OPENCLAW_WORKSPACE_DIR:-/data/workspace}"
+cd /app
+
+node openclaw.mjs plugins install /opt/lexroom/vera --accept-capabilities --force || echo "vera plugin install failed"
+if [ ! -d /data/.openclaw/extensions/kapso-whatsapp ]; then
+  node openclaw.mjs plugins install clawhub:@kapso/openclaw-whatsapp --accept-capabilities || echo "kapso plugin install failed"
+fi
+
+node openclaw.mjs config set plugins.entries.vera.enabled true --strict-json || true
+node openclaw.mjs config set plugins.entries.vera.hooks.allowConversationAccess true --strict-json || true
+node openclaw.mjs config set plugins.entries.kapso-whatsapp.enabled true --strict-json || true
+node openclaw.mjs config set 'tools.alsoAllow' '["vera_plan_digest","vera_research","vera_draft","vera_lexroom_connect","vera_google_connect","vera_read_inbox","vera_read_calendar","vera_send_email","vera_memory_search","vera_memory_list","vera_memory_get","vera_memory_history","vera_todo_list","vera_todo_get"]' --strict-json || true
+node openclaw.mjs config set 'channels["kapso-whatsapp"].enabled' true --strict-json || true
+node openclaw.mjs config set 'channels["kapso-whatsapp"].phoneNumberId' '"1197866140067824"' --strict-json || true
+node openclaw.mjs config set 'channels["kapso-whatsapp"].defaultTo' '"+393403055911"' --strict-json || true
+node openclaw.mjs config set 'channels["kapso-whatsapp"].dmSecurity' '"allowlist"' --strict-json || true
+node openclaw.mjs config set 'channels["kapso-whatsapp"].allowFrom' '["+393403055911","393403055911"]' --strict-json || true
+node openclaw.mjs config set agents.defaults.model.primary '"anthropic/claude-opus-5"' --strict-json || true
+node openclaw.mjs config set 'agents.defaults.heartbeat.every' '"0m"' --strict-json || true
+PUBLIC_ORIGIN="${VERA_PUBLIC_ORIGIN:-}"
+if [ -z "$PUBLIC_ORIGIN" ] && [ -n "${RAILWAY_PUBLIC_DOMAIN:-}" ]; then
+  PUBLIC_ORIGIN="https://${RAILWAY_PUBLIC_DOMAIN}"
+fi
+if [ -z "$PUBLIC_ORIGIN" ]; then
+  PUBLIC_ORIGIN="https://vera.verus.legal"
+fi
+node openclaw.mjs config set gateway.controlUi.allowedOrigins "$(PUBLIC_ORIGIN="$PUBLIC_ORIGIN" node -e 'process.stdout.write(JSON.stringify([process.env.PUBLIC_ORIGIN]))')" --strict-json || true
+
+if [ -n "${KAPSO_WEBHOOK_SECRET:-}" ]; then
+  secret_json="$(node -e 'process.stdout.write(JSON.stringify(process.env.KAPSO_WEBHOOK_SECRET))')"
+  node openclaw.mjs config set 'channels["kapso-whatsapp"].webhookSecret' "$secret_json" --strict-json || true
+fi
+if [ -n "${KAPSO_API_KEY:-}" ]; then
+  key_json="$(node -e 'process.stdout.write(JSON.stringify(process.env.KAPSO_API_KEY))')"
+  node openclaw.mjs config set 'channels["kapso-whatsapp"].apiKey' "$key_json" --strict-json || true
+fi
+if [ -n "${LEXROOM_ACCESS_TOKEN:-}" ]; then
+  token_json="$(node -e 'process.stdout.write(JSON.stringify(process.env.LEXROOM_ACCESS_TOKEN))')"
+  node openclaw.mjs config set plugins.entries.vera.config.accessToken "$token_json" --strict-json || true
+fi
+if [ -n "${VERA_GOOGLE_CLIENT_ID:-}" ]; then
+  node openclaw.mjs config set plugins.entries.vera.config.googleClientId "$(node -e 'process.stdout.write(JSON.stringify(process.env.VERA_GOOGLE_CLIENT_ID))')" --strict-json || true
+fi
+if [ -n "${VERA_GOOGLE_CLIENT_SECRET:-}" ]; then
+  node openclaw.mjs config set plugins.entries.vera.config.googleClientSecret "$(node -e 'process.stdout.write(JSON.stringify(process.env.VERA_GOOGLE_CLIENT_SECRET))')" --strict-json || true
+fi
+if [ -n "${VERA_GOOGLE_STATE_SECRET:-}" ]; then
+  node openclaw.mjs config set plugins.entries.vera.config.googleStateSecret "$(node -e 'process.stdout.write(JSON.stringify(process.env.VERA_GOOGLE_STATE_SECRET))')" --strict-json || true
+fi
+if [ -n "${VERA_GOOGLE_CLIENT_ID:-}" ]; then
+  redirect_uri="${VERA_GOOGLE_REDIRECT_URI:-${PUBLIC_ORIGIN}/vera/google/callback}"
+  redirect_json="$(REDIRECT_URI="$redirect_uri" node -e 'process.stdout.write(JSON.stringify(process.env.REDIRECT_URI))')"
+  node openclaw.mjs config set plugins.entries.vera.config.googleRedirectUri "$redirect_json" --strict-json || true
+  connect_uri="${VERA_LEXROOM_CONNECT_URI:-${PUBLIC_ORIGIN}/vera/lexroom/connect}"
+  connect_json="$(CONNECT_URI="$connect_uri" node -e 'process.stdout.write(JSON.stringify(process.env.CONNECT_URI))')"
+  node openclaw.mjs config set plugins.entries.vera.config.lexroomConnectUri "$connect_json" --strict-json || true
+fi
+if [ -n "${VERA_GOOGLE_PUBSUB_TOPIC:-}" ]; then
+  node openclaw.mjs config set plugins.entries.vera.config.googlePubSubTopic "$(node -e 'process.stdout.write(JSON.stringify(process.env.VERA_GOOGLE_PUBSUB_TOPIC))')" --strict-json || true
+fi
+if [ -n "${VERA_GOOGLE_NOTIFY_TOKEN:-}" ]; then
+  node openclaw.mjs config set plugins.entries.vera.config.googleNotifyToken "$(node -e 'process.stdout.write(JSON.stringify(process.env.VERA_GOOGLE_NOTIFY_TOKEN))')" --strict-json || true
+fi
+
+if [ -n "${ANTHROPIC_SETUP_TOKEN:-}" ]; then
+  token_file="$(mktemp)"
+  chmod 600 "$token_file"
+  printf '%s' "$ANTHROPIC_SETUP_TOKEN" > "$token_file"
+  if node openclaw.mjs models auth paste-token --provider anthropic < "$token_file"; then
+    unset ANTHROPIC_API_KEY
+  else
+    echo "anthropic setup-token import failed; keeping API key"
+  fi
+  rm -f "$token_file"
+fi
+
+exec node openclaw.mjs gateway --allow-unconfigured --bind lan --port "$PORT"
+```
 
 Gateway 502s during boot are normal until plugin install finishes. Health should return 200 about 10 seconds after the deploy is SUCCESS.
 
