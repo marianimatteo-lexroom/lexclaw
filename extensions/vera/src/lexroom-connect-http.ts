@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { LexroomAccountStore } from "./lexroom-account-contract.js";
+import { canonicalLexroomEmail, type LexroomAccountStore } from "./lexroom-account-contract.js";
 import {
   readConnectState,
   readLexroomConnectConfig,
@@ -406,29 +406,38 @@ export async function handleVeraLexroomConnect(
     return true;
   }
 
-  const pending = await deps.store.consumePending(parsed.nonce, now.getTime());
-  if (!pending) {
+  const savedEmail = canonicalLexroomEmail(result.email);
+  try {
+    await deps.store.upsertAccount({
+      email: savedEmail,
+      accessToken: result.accessToken,
+      refreshToken: result.refreshToken,
+      accessExpiresAtMs: result.accessExpiresAtMs,
+      connectedAtMs: now.getTime(),
+    });
+  } catch (error) {
+    deps.log.error(
+      `vera lexroom account save failed: ${error instanceof Error ? error.message : "unknown"}`,
+    );
     writeHtml(
       res,
-      400,
-      renderStatusPage({
-        heading: "Link expired",
-        message:
-          "This connect link is no longer valid. Return to WhatsApp and ask Vera for a new link.",
+      200,
+      renderLoginForm({
+        state,
+        email: savedEmail,
+        error: "Vera could not save the Lexroom sign-in. Submit this form again.",
       }),
+      true,
     );
     return true;
   }
 
-  await deps.store.upsertAccount({
-    email: result.email,
-    accessToken: result.accessToken,
-    refreshToken: result.refreshToken,
-    accessExpiresAtMs: result.accessExpiresAtMs,
-    connectedAtMs: now.getTime(),
-  });
+  const pending = await deps.store.consumePending(parsed.nonce, now.getTime());
+  if (!pending) {
+    deps.log.error("vera lexroom connect saved the account after the link was already used");
+  }
   if (deps.notifyConnected) {
-    const notice = await deps.notifyConnected(result.email);
+    const notice = await deps.notifyConnected(savedEmail);
     if (!notice.ok) {
       deps.log.error(`vera lexroom connect confirmation was not sent: ${notice.error}`);
     }
@@ -439,7 +448,7 @@ export async function handleVeraLexroomConnect(
     renderStatusPage({
       heading: "Connected",
       message: "Lexroom is connected to Vera for research and drafts.",
-      email: result.email,
+      email: savedEmail,
     }),
   );
   return true;

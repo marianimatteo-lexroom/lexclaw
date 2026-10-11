@@ -24,6 +24,7 @@ import { handleVeraLexroomConnect } from "./src/lexroom-connect-http.js";
 import {
   executeVeraLexroomConnect,
   lexroomConnectConfigFrom,
+  releaseRejectedLexroomAccount,
   resolveLexroomConfig,
   sendLexroomConnectedNotice,
 } from "./src/lexroom-tools.js";
@@ -160,7 +161,7 @@ const tools = defineToolPlugin({
       name: "vera_research",
       label: "Lexroom research",
       description:
-        "Run Lexroom research for one matter. Pass libraryDocumentIds only for documents that belong to that matter. The private library is not searched unless those ids are present.",
+        "Run Lexroom research for one matter. Pass libraryDocumentIds only for documents that belong to that matter. The private library is not searched unless those ids are present. A rejected or expired Lexroom sign-in returns reason not_connected.",
       parameters: Type.Object(
         {
           matterId: Type.String({ minLength: 1 }),
@@ -177,7 +178,7 @@ const tools = defineToolPlugin({
         if (!resolved.ok) {
           return resolved;
         }
-        return await runResearch({
+        const result = await runResearch({
           config: resolved.config,
           matterId: params.matterId,
           query: params.query,
@@ -186,13 +187,20 @@ const tools = defineToolPlugin({
           parentResearchId: params.parentResearchId,
           signal: context.signal,
         });
+        await releaseRejectedLexroomAccount({
+          api: context.api,
+          source: resolved.source,
+          accessToken: resolved.config.accessToken,
+          result,
+        });
+        return result;
       },
     }),
     tool({
       name: "vera_draft",
       label: "Lexroom draft",
       description:
-        "Draft a legal act for one matter. Set confirmed true only after the lawyer agrees in the chat. Any other value returns confirmation_required and does not call Lexroom.",
+        "Draft a legal act for one matter. Set confirmed true only after the lawyer agrees in the chat. Any other value returns confirmation_required and does not call Lexroom. A rejected or expired Lexroom sign-in returns reason not_connected.",
       parameters: Type.Object(
         {
           matterId: Type.String({ minLength: 1 }),
@@ -220,7 +228,7 @@ const tools = defineToolPlugin({
         if (!resolved.ok) {
           return resolved;
         }
-        return await runDraft({
+        const result = await runDraft({
           config: resolved.config,
           matterId: params.matterId,
           prompt: params.prompt,
@@ -229,13 +237,20 @@ const tools = defineToolPlugin({
           parentResearchId: params.parentResearchId,
           signal: context.signal,
         });
+        await releaseRejectedLexroomAccount({
+          api: context.api,
+          source: resolved.source,
+          accessToken: resolved.config.accessToken,
+          result,
+        });
+        return result;
       },
     }),
     tool({
       name: "vera_lexroom_connect",
       label: "Connect Lexroom",
       description:
-        "Check whether this lawyer connected Lexroom for research and drafts. When they have not, or the saved bearer expired, return one WhatsApp ask and a single Vera-hosted Lexroom sign-in link. Does not send the message.",
+        "Check whether this lawyer's Lexroom sign-in still works. When there is no saved bearer, or it is expired or rejected, return connected false, a reason of token_expired or token_rejected when a saved bearer failed, and one WhatsApp ask with a fresh sign-in link. Does not send the message.",
       parameters: Type.Object({}, { additionalProperties: false }),
       optional: true,
       async execute(_params, config, context) {

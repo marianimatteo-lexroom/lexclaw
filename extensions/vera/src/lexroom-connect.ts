@@ -32,10 +32,17 @@ export type LexroomConnectAsk = {
   message: string;
 };
 
+export type LexroomConnectDisconnectReason = "token_expired" | "token_rejected";
+
 export type LexroomConnectResult =
   | { ok: false; error: string }
   | { ok: true; connected: true; email: string }
-  | { ok: true; connected: false; ask: LexroomConnectAsk };
+  | {
+      ok: true;
+      connected: false;
+      ask: LexroomConnectAsk;
+      reason?: LexroomConnectDisconnectReason;
+    };
 
 const NOT_CONFIGURED =
   "Vera Lexroom connect needs lexroomConnectUri (or googleRedirectUri) and a state secret (lexroomStateSecret or googleStateSecret) in plugins.entries.vera.config.";
@@ -201,6 +208,16 @@ export function accessTokenExpiresAtMs(accessToken: string): number | null {
   }
 }
 
+/** True when the stored row is still the bearer Lexroom rejected. */
+export function sameStoredAccessToken(
+  storedAccessToken: string | null | undefined,
+  rejectedAccessToken: string | undefined,
+): boolean {
+  return Boolean(
+    storedAccessToken && rejectedAccessToken && storedAccessToken === rejectedAccessToken,
+  );
+}
+
 export function isLexroomAccessLive(params: {
   accessToken: string;
   accessExpiresAtMs: number | null;
@@ -223,6 +240,7 @@ export async function prepareLexroomConnect(params: {
   now: Date;
   account: { email: string; accessToken: string; accessExpiresAtMs: number | null } | null;
   savePending: (nonce: string, expiresAtMs: number) => Promise<void>;
+  reason?: LexroomConnectDisconnectReason;
 }): Promise<LexroomConnectResult> {
   if (
     params.account &&
@@ -247,9 +265,48 @@ export async function prepareLexroomConnect(params: {
   return {
     ok: true,
     connected: false,
+    ...(params.reason ? { reason: params.reason } : {}),
     ask: {
       url,
       message: lexroomConnectMessage(url),
     },
   };
+}
+
+export async function planLexroomConnect(params: {
+  config: LexroomConnectConfig;
+  now: Date;
+  account: { email: string; accessToken: string; accessExpiresAtMs: number | null } | null;
+  savePending: (nonce: string, expiresAtMs: number) => Promise<void>;
+  clearAccount: () => Promise<void>;
+  probeAccess: (accessToken: string) => Promise<"live" | "rejected" | "unknown">;
+}): Promise<LexroomConnectResult> {
+  let account = params.account;
+  let reason: LexroomConnectDisconnectReason | undefined;
+  if (account) {
+    const unexpired = isLexroomAccessLive({
+      accessToken: account.accessToken,
+      accessExpiresAtMs: account.accessExpiresAtMs,
+      now: params.now,
+    });
+    if (!unexpired) {
+      reason = "token_expired";
+      account = null;
+      await params.clearAccount();
+    } else {
+      const probed = await params.probeAccess(account.accessToken);
+      if (probed === "rejected") {
+        reason = "token_rejected";
+        account = null;
+        await params.clearAccount();
+      }
+    }
+  }
+  return await prepareLexroomConnect({
+    config: params.config,
+    now: params.now,
+    account,
+    savePending: params.savePending,
+    ...(reason ? { reason } : {}),
+  });
 }

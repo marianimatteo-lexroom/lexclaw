@@ -15,7 +15,9 @@ Call `vera_lexroom_connect`. Do not invent a URL. Do not ask for the Lexroom pas
 
 When the result is `ok: false`, the entire reply is exactly `NO_REPLY`. The tool error names the missing connect settings. Do not text that error to the lawyer.
 
-When `connected` is true, do not ask again and do not send the link.
+When `connected` is true, do not ask again and do not send the link. That means Vera checked the saved bearer and Lexroom still accepts it.
+
+When `connected` is false and `ask` is present, send that one message. `reason` `token_expired` or `token_rejected` means a saved sign-in stopped working. A missing `reason` is a first connection. Both still use the same ask.
 
 When `ask` is present, send exactly one WhatsApp message:
 

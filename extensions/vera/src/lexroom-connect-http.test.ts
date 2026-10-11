@@ -196,4 +196,113 @@ describe("handleVeraLexroomConnect", () => {
     expect(notify).toHaveBeenCalledWith("lawyer@lexroom.ai");
     expect(store.pending.size).toBe(0);
   });
+
+  it("overwrites the stored account when the same lawyer signs in again", async () => {
+    const now = new Date("2026-10-10T12:00:00.000Z");
+    const store = createStore();
+    store.account = {
+      email: "lawyer@lexroom.ai",
+      accessToken: "old-token-value",
+      refreshToken: "old-refresh",
+      accessExpiresAtMs: now.getTime() + 60_000,
+      connectedAtMs: now.getTime() - 86_400_000,
+    };
+    const issued = createConnectState(SECRET, now);
+    await store.replacePending(issued.nonce, issued.expiresAtMs);
+    const out = mockRes();
+    const seenEmail: string[] = [];
+    const next = "new-token-value";
+    await handleVeraLexroomConnect(
+      mockReq({
+        method: "POST",
+        url: "/vera/lexroom/connect",
+        body: new URLSearchParams({
+          state: issued.state,
+          email: "Matteo.Mariani+Verus@Lexroom.ai",
+          password: "secret",
+        }).toString(),
+      }),
+      out.res,
+      {
+        config: {
+          lexroomConnectUri: "https://gateway.example/vera/lexroom/connect",
+          lexroomStateSecret: SECRET,
+        },
+        now: () => now,
+        store,
+        log: { error: vi.fn() },
+        login: async (params) => {
+          seenEmail.push(params.email);
+          return {
+            ok: true,
+            email: "Matteo.Mariani+Verus@Lexroom.ai",
+            accessToken: next,
+            refreshToken: "new-refresh",
+            accessExpiresAtMs: now.getTime() + 3_600_000,
+          };
+        },
+      },
+    );
+    expect(out.res.statusCode).toBe(200);
+    expect(out.body()).toContain("Connected");
+    expect(seenEmail).toEqual(["Matteo.Mariani+Verus@Lexroom.ai"]);
+    expect(store.account).toMatchObject({
+      email: "matteo.mariani+verus@lexroom.ai",
+      accessToken: next,
+      refreshToken: "new-refresh",
+    });
+    expect(store.pending.size).toBe(0);
+  });
+
+  it("keeps the old account and the link when the save fails", async () => {
+    const now = new Date("2026-10-10T12:00:00.000Z");
+    const store = createStore();
+    store.account = {
+      email: "lawyer@lexroom.ai",
+      accessToken: "old-token-value",
+      refreshToken: "old-refresh",
+      accessExpiresAtMs: now.getTime() + 60_000,
+      connectedAtMs: now.getTime() - 86_400_000,
+    };
+    const issued = createConnectState(SECRET, now);
+    await store.replacePending(issued.nonce, issued.expiresAtMs);
+    const out = mockRes();
+    await handleVeraLexroomConnect(
+      mockReq({
+        method: "POST",
+        url: "/vera/lexroom/connect",
+        body: new URLSearchParams({
+          state: issued.state,
+          email: "lawyer@lexroom.ai",
+          password: "secret",
+        }).toString(),
+      }),
+      out.res,
+      {
+        config: {
+          lexroomConnectUri: "https://gateway.example/vera/lexroom/connect",
+          lexroomStateSecret: SECRET,
+        },
+        now: () => now,
+        store: {
+          ...store,
+          upsertAccount: async () => {
+            throw new Error("disk full");
+          },
+        },
+        log: { error: vi.fn() },
+        login: async () => ({
+          ok: true,
+          email: "lawyer@lexroom.ai",
+          accessToken: "new-token-value",
+          refreshToken: "new-refresh",
+          accessExpiresAtMs: now.getTime() + 3_600_000,
+        }),
+      },
+    );
+    expect(out.res.statusCode).toBe(200);
+    expect(out.body()).toContain("could not save");
+    expect(store.account?.accessToken).toBe("old-token-value");
+    expect(store.pending.size).toBe(1);
+  });
 });

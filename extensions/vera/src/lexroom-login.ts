@@ -5,6 +5,7 @@ import {
   randomBytes,
 } from "node:crypto";
 import { DEFAULT_LEXROOM_BASE_URL, LEXROOM_CLIENT_TYPE } from "./lexroom-client.js";
+import { canonicalLexroomEmail } from "./lexroom-account-contract.js";
 import { accessTokenExpiresAtMs } from "./lexroom-connect.js";
 
 type FetchLike = typeof fetch;
@@ -370,7 +371,7 @@ async function readAppSession(params: {
   const record = user as Record<string, unknown>;
   return {
     accessToken: readString(record, ["accessToken", "access_token", "access"]),
-    email: readString(record, ["email", "user_email", "username"]).toLowerCase(),
+    email: canonicalLexroomEmail(readString(record, ["email", "user_email", "username"])),
   };
 }
 
@@ -860,7 +861,9 @@ async function loginViaApi(params: {
     };
   }
   const refreshToken = readString(record, ["refresh", "refresh_token", "refreshToken"]);
-  const emailFromBody = readString(record, ["email", "user_email", "username"]);
+  const emailFromBody = canonicalLexroomEmail(
+    readString(record, ["email", "user_email", "username"]),
+  );
   return {
     ok: true,
     email: emailFromBody || params.email,
@@ -882,7 +885,7 @@ export async function loginLexroomAccount(params: {
   signal?: AbortSignal;
   fetchImpl?: FetchLike;
 }): Promise<LexroomLoginResult> {
-  const email = params.email.trim().toLowerCase();
+  const email = canonicalLexroomEmail(params.email);
   const password = params.password;
   const otp = params.otp?.trim() ?? "";
   const mfaTicket = params.mfaTicket?.trim() ?? "";

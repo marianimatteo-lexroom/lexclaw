@@ -4,11 +4,16 @@ import { openVeraLexroomAccountFromApi } from "./lexroom-account.js";
 import {
   isLexroomAccessLive,
   lexroomConnectConfigFrom,
-  prepareLexroomConnect,
+  planLexroomConnect,
+  sameStoredAccessToken,
   type LexroomConnectConfig,
   type LexroomConnectResult,
 } from "./lexroom-connect.js";
-import type { LexroomConfig } from "./lexroom-client.js";
+import {
+  invalidateLexroomAccessCache,
+  probeLexroomAccess,
+  type LexroomConfig,
+} from "./lexroom-client.js";
 import {
   readVeraWhatsAppTarget,
   VERA_WHATSAPP_CHANNEL,
@@ -98,7 +103,7 @@ export async function executeVeraLexroomConnect(
   }
   try {
     const account = await store.readAccount();
-    return await prepareLexroomConnect({
+    return await planLexroomConnect({
       config,
       now,
       account: account
@@ -109,6 +114,23 @@ export async function executeVeraLexroomConnect(
           }
         : null,
       savePending: (nonce, expiresAtMs) => store.replacePending(nonce, expiresAtMs),
+      clearAccount: async () => {
+        if (!account) {
+          return;
+        }
+        invalidateLexroomAccessCache(account.accessToken);
+        const current = await store.readAccount();
+        if (!sameStoredAccessToken(current?.accessToken, account.accessToken)) {
+          return;
+        }
+        await store.clearAccount();
+      },
+      probeAccess: (accessToken) =>
+        probeLexroomAccess({
+          accessToken,
+          baseUrl: config.baseUrl,
+          nowMs: now.getTime(),
+        }),
     });
   } catch (error) {
     api.logger.error(
@@ -189,6 +211,35 @@ export async function resolveLexroomConfig(params: {
     reason: "not_connected",
     error: "Lexroom is not connected. Call vera_lexroom_connect and send that link.",
   };
+}
+
+export async function releaseRejectedLexroomAccount(params: {
+  api: StoreApi;
+  source: "account" | "config" | undefined;
+  accessToken?: string;
+  result: { ok: boolean; reason?: string };
+}): Promise<void> {
+  if (params.result.ok || params.result.reason !== "not_connected" || params.source !== "account") {
+    return;
+  }
+  if (params.accessToken) {
+    invalidateLexroomAccessCache(params.accessToken);
+  }
+  const store = await openStore(params.api);
+  if (isStoreFailure(store)) {
+    return;
+  }
+  try {
+    const current = await store.readAccount();
+    if (!sameStoredAccessToken(current?.accessToken, params.accessToken)) {
+      return;
+    }
+    await store.clearAccount();
+  } catch (error) {
+    params.api.logger.error(
+      `vera lexroom account clear failed: ${error instanceof Error ? error.message : "unknown"}`,
+    );
+  }
 }
 
 export { lexroomConnectConfigFrom };

@@ -53,7 +53,35 @@ export type DraftOutcome =
       content: string;
     };
 
-export type LexroomFailure = { ok: false; error: string };
+export type LexroomFailure = {
+  ok: false;
+  error: string;
+  reason?: "not_connected";
+};
+
+const ACCESS_PROBE_TTL_MS = 60_000;
+
+type AccessProbe = { atMs: number; verdict: "live" | "rejected" };
+
+const accessProbes = new Map<string, AccessProbe>();
+
+export function invalidateLexroomAccessCache(accessToken?: string): void {
+  if (!accessToken) {
+    accessProbes.clear();
+    return;
+  }
+  accessProbes.delete(accessToken);
+}
+
+class LexroomResponseError extends Error {
+  readonly authFailure: boolean;
+
+  constructor(message: string, authFailure: boolean) {
+    super(message);
+    this.name = "LexroomResponseError";
+    this.authFailure = authFailure;
+  }
+}
 
 type FetchLike = typeof fetch;
 
@@ -83,7 +111,11 @@ function headers(accessToken: string): Headers {
   return result;
 }
 
-async function errorMessage(response: Response): Promise<string> {
+function isCredentialRejected(status: number): boolean {
+  return status === 401 || status === 403;
+}
+
+async function errorMessage(response: Response): Promise<{ message: string; authFailure: boolean }> {
   const status = response.status;
   let detail = "";
   try {
@@ -94,13 +126,30 @@ async function errorMessage(response: Response): Promise<string> {
   } catch {
     detail = "";
   }
+  const authFailure = isCredentialRejected(status);
   if (detail === "mfa_step_up_required") {
-    return "Lexroom requires a verified sign-in. Complete MFA, then refresh the Vera access token.";
+    return {
+      message: "Lexroom requires a verified sign-in. Complete MFA, then refresh the Vera access token.",
+      authFailure,
+    };
   }
   if (status === 401) {
-    return "Lexroom rejected the access token. Sign in again and update Vera's access token.";
+    return {
+      message: "Lexroom rejected the access token. Sign in again and update Vera's access token.",
+      authFailure,
+    };
   }
-  return detail ? `Lexroom returned ${status}: ${detail}` : `Lexroom returned ${status}`;
+  return {
+    message: detail ? `Lexroom returned ${status}: ${detail}` : `Lexroom returned ${status}`,
+    authFailure,
+  };
+}
+
+function failureFrom(error: unknown, fallback: string): LexroomFailure {
+  if (error instanceof LexroomResponseError && error.authFailure) {
+    return { ok: false, reason: "not_connected", error: error.message };
+  }
+  return { ok: false, error: error instanceof Error ? error.message : fallback };
 }
 
 function clip(text: string | undefined): string {
@@ -269,9 +318,43 @@ async function postJson(
     signal,
   });
   if (!response.ok) {
-    throw new Error(await errorMessage(response));
+    const failure = await errorMessage(response);
+    throw new LexroomResponseError(failure.message, failure.authFailure);
   }
   return response;
+}
+
+export async function probeLexroomAccess(params: {
+  accessToken: string;
+  baseUrl?: string;
+  nowMs?: number;
+  fetchImpl?: FetchLike;
+  signal?: AbortSignal;
+}): Promise<"live" | "rejected" | "unknown"> {
+  const nowMs = params.nowMs ?? Date.now();
+  const cached = accessProbes.get(params.accessToken);
+  if (cached && nowMs - cached.atMs < ACCESS_PROBE_TTL_MS) {
+    return cached.verdict;
+  }
+  const fetchImpl = params.fetchImpl ?? fetch;
+  try {
+    const response = await fetchImpl(`${baseUrl(params)}/v1/user`, {
+      method: "GET",
+      headers: headers(params.accessToken),
+      signal: params.signal,
+    });
+    if (response.ok) {
+      accessProbes.set(params.accessToken, { atMs: nowMs, verdict: "live" });
+      return "live";
+    }
+    if (isCredentialRejected(response.status)) {
+      accessProbes.set(params.accessToken, { atMs: nowMs, verdict: "rejected" });
+      return "rejected";
+    }
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
 }
 
 async function loadAmaResearch(
@@ -372,7 +455,7 @@ export async function runResearch(input: {
       sources: sourcesFromResearch(merged),
     };
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : "Lexroom research failed" };
+    return failureFrom(error, "Lexroom research failed");
   }
 }
 
@@ -457,6 +540,6 @@ export async function runDraft(input: {
       content: clip(draftText(snapshot)),
     };
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : "Lexroom drafting failed" };
+    return failureFrom(error, "Lexroom drafting failed");
   }
 }
