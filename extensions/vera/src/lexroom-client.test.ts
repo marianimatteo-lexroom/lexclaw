@@ -47,9 +47,12 @@ describe("runResearch", () => {
       if (url.endsWith("/v1/ask_me_anything")) {
         expect(init?.method).toBe("POST");
         expect(new Headers(init?.headers).get("X-Client-Type")).toBe("app_lex");
+        expect(new Headers(init?.headers).get("X-Request-ID")).toMatch(/^[0-9a-f-]{36}$/u);
         expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer test-token");
         expect(JSON.parse(requestBody(init?.body))).toEqual({
           query: "Onere della prova",
+          documents: [],
+          is_temporary: false,
           search_on_user_data: true,
           library_documents: [{ document_ids: ["doc-verdi"] }],
           search_on_modules: ["Lavoro"],
@@ -59,16 +62,29 @@ describe("runResearch", () => {
             research: { id: "res-1", status: "RUNNING", answer: { text: "partial" } },
           })}\n`,
           JSON.stringify({
-            research: {
-              id: "res-1",
-              status: "DONE",
-              answer: { text: "La prova grava sul datore." },
-            },
+            id: "res-1",
+            status: "DONE",
+            answer: "La prova grava sul datore.</END> [1]",
           }),
         ]);
       }
-      expect(url).toBe("https://api.lexroom.ai/v1/cited_public_sources/res-1");
-      return jsonResponse({ cited_sources: [{ title: "Cass. civ. 12345/2024" }, { title: " " }] });
+      expect(url).toBe("https://api.lexroom.ai/v1/ask_me_anything/res-1");
+      expect(init?.method).toBe("GET");
+      return jsonResponse({
+        research: {
+          id: "res-1",
+          status: "DONE",
+          answer: { text: "La prova grava sul datore. [1]" },
+          documents: [
+            {
+              files: [
+                { citation_id: 1, title: "Cass. civ. 12345/2024", section_title: " " },
+                { title: " " },
+              ],
+            },
+          ],
+        },
+      });
     });
 
     const result = await runResearch({
@@ -85,7 +101,7 @@ describe("runResearch", () => {
       matterId: "verdi",
       researchId: "res-1",
       status: "DONE",
-      answer: "La prova grava sul datore.",
+      answer: "La prova grava sul datore. [Cass. civ. 12345/2024]",
       sources: [{ title: "Cass. civ. 12345/2024" }],
     });
   });
@@ -93,11 +109,13 @@ describe("runResearch", () => {
   it("does not search the private library when no document ids are passed", async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input);
-      if (url.endsWith("/cited_public_sources/res-2")) {
-        return jsonResponse({ cited_sources: [] });
+      if (url.endsWith("/v1/ask_me_anything/res-2")) {
+        return new Response(null, { status: 204 });
       }
       expect(JSON.parse(requestBody(init?.body))).toEqual({
         query: "Termini",
+        documents: [],
+        is_temporary: false,
         search_on_user_data: false,
       });
       return streamResponse([
@@ -130,6 +148,52 @@ describe("runResearch", () => {
         "Lexroom requires a verified sign-in. Complete MFA, then refresh the Vera access token.",
     });
   });
+
+  it("keeps the stream answer when the stored AMA research only has sources", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.endsWith("/v1/ask_me_anything/res-2")) {
+        return jsonResponse({
+          research: {
+            id: "res-2",
+            status: "DONE",
+            answer: "",
+            documents: [{ title: "Codice civile", section_title: "art. 1218" }],
+          },
+        });
+      }
+      return streamResponse([
+        `${JSON.stringify({
+          research: { id: "res-2", status: "DONE", answer: { text: "Risposta</END>" } },
+        })}\n`,
+      ]);
+    });
+
+    const result = await runResearch({
+      config,
+      matterId: "verdi",
+      query: "Termini",
+      fetchImpl,
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      answer: "Risposta",
+      sources: [{ title: "Codice civile / art. 1218" }],
+    });
+  });
+
+  it("surfaces a stream error from LEXROOM_AMA", async () => {
+    const fetchImpl = vi.fn(async () =>
+      streamResponse([`${JSON.stringify({ error: "quota exceeded" })}\n`]),
+    );
+    const result = await runResearch({
+      config,
+      matterId: "verdi",
+      query: "Termini",
+      fetchImpl,
+    });
+    expect(result).toEqual({ ok: false, error: "quota exceeded" });
+  });
 });
 
 describe("runDraft", () => {
@@ -157,11 +221,16 @@ describe("runDraft", () => {
       const url = requestUrl(input);
       calls.push(url);
       if (url.endsWith("/v2/ai/drafting/selectors")) {
-        expect(JSON.parse(requestBody(init?.body))).toEqual({ prompt: "Atto di citazione" });
+        expect(JSON.parse(requestBody(init?.body))).toEqual({
+          prompt: "Atto di citazione",
+          template: null,
+        });
         return jsonResponse({ modules: [{ name: "Civile" }] });
       }
       expect(JSON.parse(requestBody(init?.body))).toEqual({
         prompt: "Atto di citazione",
+        documents: [],
+        template: null,
         modules: ["Civile"],
       });
       return streamResponse([
@@ -169,7 +238,11 @@ describe("runDraft", () => {
           research: {
             id: "draft-1",
             status: "DONE",
-            draft: { title: "Atto di citazione", content: "Premesso che" },
+            draft: {
+              title: "Atto di citazione",
+              content: "Bozza",
+              edited_content: "Premesso che",
+            },
           },
         })}\n`,
       ]);
