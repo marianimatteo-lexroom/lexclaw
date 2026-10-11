@@ -15,6 +15,7 @@ import type {
   SqliteWorkerCommand,
 } from "openclaw/plugin-sdk/sqlite-worker-runtime";
 import {
+  canonicalLexroomEmail,
   VERA_LEXROOM_ACCOUNT_ID,
   type LexroomAccountRecord,
   type VeraLexroomOperations,
@@ -132,8 +133,9 @@ function assertNonce(nonce: string): void {
   }
 }
 
-function assertAccount(account: LexroomAccountRecord): void {
-  if (!EMAIL.test(account.email) || account.email.length > 320) {
+function assertAccount(account: LexroomAccountRecord): string {
+  const email = canonicalLexroomEmail(account.email);
+  if (!EMAIL.test(email) || email.length > 320) {
     throw new Error("Vera Lexroom account email is invalid");
   }
   if (account.accessToken.trim().length < 8 || account.accessToken.length > 8192) {
@@ -145,6 +147,7 @@ function assertAccount(account: LexroomAccountRecord): void {
   if (!Number.isFinite(account.connectedAtMs)) {
     throw new Error("Vera Lexroom connected time is invalid");
   }
+  return email;
 }
 
 class VeraLexroomDatabaseStore {
@@ -228,7 +231,7 @@ class VeraLexroomDatabaseStore {
   }
 
   upsertAccount(account: LexroomAccountRecord): undefined {
-    assertAccount(account);
+    const email = assertAccount(account);
     runSqliteImmediateTransactionSync(
       this.db,
       () => {
@@ -240,7 +243,7 @@ class VeraLexroomDatabaseStore {
           this.db,
           this.query.insertInto("vera_lexroom_account").values({
             id: VERA_LEXROOM_ACCOUNT_ID,
-            email: account.email,
+            email,
             access_token: account.accessToken,
             refresh_token: account.refreshToken,
             access_expires_at_ms: account.accessExpiresAtMs,

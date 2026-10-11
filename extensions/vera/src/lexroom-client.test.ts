@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { runDraft, runResearch } from "./lexroom-client.js";
+import {
+  invalidateLexroomAccessCache,
+  probeLexroomAccess,
+  runDraft,
+  runResearch,
+} from "./lexroom-client.js";
 
 const config = { accessToken: "test-token", baseUrl: "https://api.lexroom.ai" };
 
@@ -144,8 +149,24 @@ describe("runResearch", () => {
     });
     expect(result).toEqual({
       ok: false,
+      reason: "not_connected",
       error:
         "Lexroom requires a verified sign-in. Complete MFA, then refresh the Vera access token.",
+    });
+  });
+
+  it("maps a rejected access token to not_connected", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ detail: "invalid token" }, 401));
+    const result = await runResearch({
+      config,
+      matterId: "verdi",
+      query: "Termini",
+      fetchImpl,
+    });
+    expect(result).toEqual({
+      ok: false,
+      reason: "not_connected",
+      error: "Lexroom rejected the access token. Sign in again and update Vera's access token.",
     });
   });
 
@@ -193,6 +214,51 @@ describe("runResearch", () => {
       fetchImpl,
     });
     expect(result).toEqual({ ok: false, error: "quota exceeded" });
+  });
+});
+
+describe("probeLexroomAccess", () => {
+  it("caches a rejected probe and skips the cache for an unknown status", async () => {
+    const token = "rejected-probe-token";
+    invalidateLexroomAccessCache(token);
+    const now = Date.parse("2026-10-10T12:00:00.000Z");
+    const fetchImpl = vi.fn(async () => jsonResponse({ detail: "no" }, 401));
+    await expect(
+      probeLexroomAccess({
+        accessToken: token,
+        baseUrl: "https://api.lexroom.ai",
+        nowMs: now,
+        fetchImpl,
+      }),
+    ).resolves.toBe("rejected");
+    await expect(
+      probeLexroomAccess({
+        accessToken: token,
+        baseUrl: "https://api.lexroom.ai",
+        nowMs: now + 30_000,
+        fetchImpl,
+      }),
+    ).resolves.toBe("rejected");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    const unknown = "unknown-probe-token";
+    invalidateLexroomAccessCache(unknown);
+    const unknownFetch = vi.fn(async () => jsonResponse({}, 500));
+    await probeLexroomAccess({
+      accessToken: unknown,
+      baseUrl: "https://api.lexroom.ai",
+      nowMs: now,
+      fetchImpl: unknownFetch,
+    });
+    await probeLexroomAccess({
+      accessToken: unknown,
+      baseUrl: "https://api.lexroom.ai",
+      nowMs: now + 1_000,
+      fetchImpl: unknownFetch,
+    });
+    expect(unknownFetch).toHaveBeenCalledTimes(2);
+    invalidateLexroomAccessCache(token);
+    invalidateLexroomAccessCache(unknown);
   });
 });
 
@@ -267,6 +333,23 @@ describe("runDraft", () => {
       status: "DONE",
       title: "Atto di citazione",
       content: "Premesso che",
+    });
+  });
+
+  it("maps a rejected access token to not_connected", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ detail: "forbidden" }, 403));
+    const result = await runDraft({
+      config,
+      matterId: "bianchi",
+      prompt: "Atto di citazione",
+      confirmed: true,
+      modules: ["Civile"],
+      fetchImpl,
+    });
+    expect(result).toEqual({
+      ok: false,
+      reason: "not_connected",
+      error: "Lexroom returned 403: forbidden",
     });
   });
 });

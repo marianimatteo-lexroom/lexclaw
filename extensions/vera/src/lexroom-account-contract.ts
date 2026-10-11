@@ -1,6 +1,14 @@
 /** One lawyer per Vera install. Research runs may have no WhatsApp sender id. */
 export const VERA_LEXROOM_ACCOUNT_ID = "lawyer";
 
+/**
+ * One stored row per install, keyed by {@link VERA_LEXROOM_ACCOUNT_ID}, not by
+ * email. Plus-aliases (`name+tag@host`) stay intact and still replace that row.
+ */
+export function canonicalLexroomEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
 export type LexroomAccountRecord = {
   email: string;
   accessToken: string;
