@@ -10,11 +10,22 @@ export type LexroomConfig = {
   timeoutMs?: number;
 };
 
+type ResearchAnswer = string | { text?: string };
+
+type ResearchDocumentFile = {
+  title?: unknown;
+  section_title?: unknown;
+  citation_id?: unknown;
+  files?: unknown;
+};
+
 type ResearchSnapshot = {
   id?: string;
   status?: string;
-  answer?: { text?: string };
-  draft?: { id?: string; title?: string; content?: string };
+  error?: unknown;
+  answer?: ResearchAnswer;
+  documents?: unknown;
+  draft?: { id?: string; title?: string; content?: string; edited_content?: string };
 };
 
 export type CitedSource = {
@@ -66,6 +77,7 @@ function headers(accessToken: string): Headers {
   const result = new Headers();
   result.set("Authorization", `Bearer ${accessToken}`);
   result.set("X-Client-Type", LEXROOM_CLIENT_TYPE);
+  result.set("X-Request-ID", crypto.randomUUID());
   result.set("Content-Type", "application/json");
   result.set("Accept", "application/x-ndjson, application/json");
   return result;
@@ -98,6 +110,111 @@ function clip(text: string | undefined): string {
   return text.length > MAX_ANSWER_CHARS ? `${text.slice(0, MAX_ANSWER_CHARS)}\n…` : text;
 }
 
+function snapshotFromLine(parsed: unknown): ResearchSnapshot {
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Lexroom stream line did not contain a research snapshot");
+  }
+  const record = parsed as { research?: unknown; error?: unknown };
+  const nested = record.research;
+  const research =
+    nested && typeof nested === "object" ? (nested as ResearchSnapshot) : (record as ResearchSnapshot);
+  const error =
+    typeof research.error === "string"
+      ? research.error
+      : typeof record.error === "string" && nested === undefined
+        ? record.error
+        : undefined;
+  if (error?.trim()) {
+    throw new Error(error.trim().slice(0, 200));
+  }
+  if (
+    nested === undefined &&
+    !("status" in record) &&
+    !("answer" in record) &&
+    !("draft" in record) &&
+    !("id" in record)
+  ) {
+    throw new Error("Lexroom stream line did not contain a research snapshot");
+  }
+  return research;
+}
+
+function answerText(answer: ResearchAnswer | undefined): string {
+  const raw = typeof answer === "string" ? answer : answer?.text;
+  return raw ? raw.replaceAll("</END>", "") : "";
+}
+
+function documentFiles(documents: unknown): ResearchDocumentFile[] {
+  if (!Array.isArray(documents)) {
+    return [];
+  }
+  const files: ResearchDocumentFile[] = [];
+  for (const document of documents) {
+    if (!document || typeof document !== "object") {
+      continue;
+    }
+    const nested = (document as ResearchDocumentFile).files;
+    if (Array.isArray(nested)) {
+      for (const file of nested) {
+        if (file && typeof file === "object") {
+          files.push(file as ResearchDocumentFile);
+        }
+      }
+      continue;
+    }
+    files.push(document as ResearchDocumentFile);
+  }
+  return files;
+}
+
+function sourceTitle(file: ResearchDocumentFile): string {
+  const title = typeof file.title === "string" ? file.title.trim() : "";
+  const section = typeof file.section_title === "string" ? file.section_title.trim() : "";
+  if (title && section && title !== section) {
+    return `${title} / ${section}`;
+  }
+  return title || section;
+}
+
+function readableAnswer(snapshot: ResearchSnapshot): string {
+  let text = answerText(snapshot.answer);
+  for (const file of documentFiles(snapshot.documents)) {
+    const citationId = file.citation_id;
+    if (citationId === undefined || citationId === null || citationId === "") {
+      continue;
+    }
+    const title = sourceTitle(file);
+    if (!title) {
+      continue;
+    }
+    text = text.replaceAll(`[${citationId}]`, `[${title}]`);
+  }
+  return text;
+}
+
+function sourcesFromResearch(snapshot: ResearchSnapshot): CitedSource[] {
+  const seen = new Set<string>();
+  const sources: CitedSource[] = [];
+  for (const file of documentFiles(snapshot.documents)) {
+    const title = sourceTitle(file);
+    if (!title || seen.has(title)) {
+      continue;
+    }
+    seen.add(title);
+    sources.push({ title });
+    if (sources.length >= 12) {
+      break;
+    }
+  }
+  return sources;
+}
+
+function draftText(snapshot: ResearchSnapshot): string {
+  const edited = snapshot.draft?.edited_content;
+  const content = snapshot.draft?.content;
+  return typeof edited === "string" && edited.length > 0 ? edited : (content ?? "");
+}
+
 async function readResearchStream(response: Response): Promise<ResearchSnapshot> {
   if (!response.body) {
     throw new Error("Lexroom returned an empty research stream");
@@ -111,11 +228,7 @@ async function readResearchStream(response: Response): Promise<ResearchSnapshot>
     if (!trimmed) {
       return;
     }
-    const parsed = JSON.parse(trimmed) as { research?: ResearchSnapshot };
-    if (!parsed.research || typeof parsed.research !== "object") {
-      throw new Error("Lexroom stream line did not contain a research snapshot");
-    }
-    latest = parsed.research;
+    latest = snapshotFromLine(JSON.parse(trimmed) as unknown);
   };
   while (true) {
     const { done, value } = await reader.read();
@@ -161,34 +274,25 @@ async function postJson(
   return response;
 }
 
-async function citedSources(
+async function loadAmaResearch(
   fetchImpl: FetchLike,
   config: LexroomConfig,
   researchId: string,
   signal: AbortSignal,
-): Promise<CitedSource[]> {
-  const response = await fetchImpl(`${baseUrl(config)}/v1/cited_public_sources/${researchId}`, {
+): Promise<ResearchSnapshot | undefined> {
+  const response = await fetchImpl(`${baseUrl(config)}/v1/ask_me_anything/${researchId}`, {
     method: "GET",
     headers: headers(token(config)),
     signal,
   });
-  if (!response.ok) {
-    return [];
+  if (response.status === 204 || !response.ok) {
+    return undefined;
   }
-  const body = (await response.json()) as { cited_sources?: unknown };
-  if (!Array.isArray(body.cited_sources)) {
-    return [];
+  const body = (await response.json()) as { research?: unknown };
+  if (!body.research || typeof body.research !== "object") {
+    return undefined;
   }
-  return body.cited_sources
-    .map((source) => {
-      if (!source || typeof source !== "object") {
-        return undefined;
-      }
-      const title = (source as { title?: unknown }).title;
-      return typeof title === "string" && title.trim() ? { title: title.trim() } : undefined;
-    })
-    .filter((source): source is CitedSource => source !== undefined)
-    .slice(0, 12);
+  return body.research as ResearchSnapshot;
 }
 
 function libraryScope(documentIds: readonly string[] | undefined): {
@@ -238,6 +342,8 @@ export async function runResearch(input: {
       input.config,
       {
         query,
+        documents: [],
+        is_temporary: false,
         ...libraryScope(input.libraryDocumentIds),
         ...(modules.length > 0 ? { search_on_modules: modules } : {}),
         ...(input.parentResearchId?.trim()
@@ -246,18 +352,24 @@ export async function runResearch(input: {
       },
       signal,
     );
-    const snapshot = await readResearchStream(response);
-    const sources =
-      snapshot.status === "DONE" && snapshot.id
-        ? await citedSources(fetchImpl, input.config, snapshot.id, signal)
-        : [];
+    const streamed = await readResearchStream(response);
+    const stored =
+      streamed.status === "DONE" && streamed.id
+        ? await loadAmaResearch(fetchImpl, input.config, streamed.id, signal)
+        : undefined;
+    const snapshot = stored?.status === "DONE" ? stored : streamed;
+    const answered = answerText(snapshot.answer) ? snapshot : streamed;
+    const documented =
+      documentFiles(snapshot.documents).length > 0 ? snapshot : streamed;
+    const merged = { ...answered, documents: documented.documents };
+    const researchId = snapshot.id ?? streamed.id;
     return {
       ok: true,
       matterId,
-      ...(snapshot.id ? { researchId: snapshot.id } : {}),
-      status: snapshot.status ?? "UNKNOWN",
-      answer: clip(snapshot.answer?.text),
-      sources,
+      ...(researchId ? { researchId } : {}),
+      status: snapshot.status ?? streamed.status ?? "UNKNOWN",
+      answer: clip(readableAnswer(merged)),
+      sources: sourcesFromResearch(merged),
     };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "Lexroom research failed" };
@@ -274,7 +386,7 @@ async function selectModules(
     fetchImpl,
     `${baseUrl(config)}/v2/ai/drafting/selectors`,
     config,
-    { prompt },
+    { prompt, template: null },
     signal,
   );
   const body = (await response.json()) as { modules?: Array<{ name?: unknown }> };
@@ -325,6 +437,8 @@ export async function runDraft(input: {
       input.config,
       {
         prompt,
+        documents: [],
+        template: null,
         modules,
         ...(input.parentResearchId?.trim()
           ? { parent_research_id: input.parentResearchId.trim() }
@@ -340,7 +454,7 @@ export async function runDraft(input: {
       ...(snapshot.id ? { researchId: snapshot.id } : {}),
       status: snapshot.status ?? "UNKNOWN",
       ...(snapshot.draft?.title ? { title: snapshot.draft.title } : {}),
-      content: clip(snapshot.draft?.content),
+      content: clip(draftText(snapshot)),
     };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "Lexroom drafting failed" };

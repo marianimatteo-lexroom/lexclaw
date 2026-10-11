@@ -277,9 +277,8 @@ Changing Vera code requires a new image. Workspace identity and OpenClaw config 
 
 Base `https://api.lexroom.ai`. Auth is `Authorization: Bearer` plus `X-Client-Type: app_lex`.
 
-- Research: `POST /v1/ask_me_anything`. NDJSON snapshots, not SSE. Terminal `research.status` is DONE or FAILED. About one minute. Never set `search_on_user_data` true unless the call names that matter's `libraryDocumentIds`.
-- Cited sources: `GET /v1/cited_public_sources/{id}`.
-- Draft: `POST /v2/ai/drafting/selectors`, then `POST /v2/ai/drafting`. Draft does not call the network unless `confirmed` is true.
+- Research (`LEXROOM_AMA`): `POST /v1/ask_me_anything` with `query`, `documents: []`, `is_temporary: false`, and the library scope. Each call also sends `X-Request-ID`. NDJSON lines are either `{research}` or the research object itself. Answer text is a string or `answer.text`; strip `</END>`. After DONE, reload `GET /v1/ask_me_anything/{id}` (`{research}`) for the stored answer and document titles. A 204 means that copy is still loading, so the stream stands. About one minute. Never set `search_on_user_data` true unless the call names that matter's `libraryDocumentIds`.
+- Draft (`LEXROOM_DRAFTING`): `POST /v2/ai/drafting/selectors` with `{prompt, template: null}` when modules are not already chosen, then `POST /v2/ai/drafting` with `{prompt, documents: [], template: null, modules}`. Display text is `draft.edited_content`, otherwise `draft.content`. Draft does not call the network unless `confirmed` is true.
 - `GET /v2/craft/drafting/{id}` hangs. Do not use it.
 - Do not use `/healthcheck` (404).
 
