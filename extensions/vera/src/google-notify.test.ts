@@ -8,7 +8,7 @@ import {
 
 const config = {
   channels: {
-    "kapso-whatsapp": { defaultTo: " +393403055911 " },
+    "kapso-whatsapp": { defaultTo: " +390000000000 " },
   },
 } as OpenClawPluginApi["config"];
 
@@ -21,10 +21,10 @@ describe("sendGoogleConnectedNotice", () => {
       loadAdapter: async () => ({ sendText }),
     });
     expect(result).toEqual({ ok: true });
-    expect(readVeraWhatsAppTarget(config)).toBe("+393403055911");
+    expect(readVeraWhatsAppTarget(config)).toBe("+390000000000");
     expect(sendText).toHaveBeenCalledWith({
       cfg: config,
-      to: "+393403055911",
+      to: "+390000000000",
       text: "Gmail and Calendar are connected. I can send mail when you say so.",
     });
   });
