@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { markKapsoMessageRead, readInboundChannelId, readInboundMessageId } from "./whatsapp-read.js";
 
-const MESSAGE_ID = "wamid.HBgMMzkzNDAzMDU1OTExFQIAEhgUM0IyMjUwOEJBREUwODEyNEQ2MDkA";
+const MESSAGE_ID = "wamid.HBgMMzkwMDAwMDAwMDAwFQIAEhgUM0IyMjUwOEJBREUwODEyNEQ2MDkA";
 
 const config = {
   channels: {
     "kapso-whatsapp": {
       apiKey: "kapso_test_key",
-      phoneNumberId: "1197866140067824",
+      phoneNumberId: "100000000000000",
       baseUrl: "https://api.kapso.ai/meta/whatsapp/",
     },
   },
@@ -31,7 +31,7 @@ describe("markKapsoMessageRead", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0] ?? [];
     expect(url).toBe(
-      "https://api.kapso.ai/meta/whatsapp/v23.0/1197866140067824/messages",
+      "https://api.kapso.ai/meta/whatsapp/v23.0/100000000000000/messages",
     );
     expect(init).toMatchObject({
       method: "POST",
@@ -54,7 +54,7 @@ describe("markKapsoMessageRead", () => {
         channels: {
           "kapso-whatsapp": {
             accounts: {
-              lawyer: { phoneNumberId: 1197866140067824 },
+              lawyer: { phoneNumberId: 100000000000000 },
             },
           },
         },
@@ -84,7 +84,7 @@ describe("markKapsoMessageRead", () => {
       await markKapsoMessageRead({
         config,
         channelId: "kapso-whatsapp",
-        messageId: "393403055911:1791674081",
+        messageId: "390000000000:1791674081",
         env: {},
         fetchImpl,
       }),
