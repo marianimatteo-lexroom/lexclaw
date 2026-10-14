@@ -108,6 +108,8 @@ export type WakeState = {
   lastLawyerInboundAtMs: number | null;
   lastReconcileAtMs: number | null;
   lastCollectAtMs: number | null;
+  /** Last time a digest turn was accepted for delivery. */
+  lastDigestAtMs: number | null;
   heldPlanJson: string | null;
   /** Failed dispatch attempts for the held plan; zero while it waits on the WhatsApp window. */
   heldPlanAttempts: number;
@@ -115,6 +117,8 @@ export type WakeState = {
   heldPlanNextAttemptAtMs: number | null;
   /** When the digest-ready template was claimed for the current held plan; at most one send per plan. */
   heldPlanTemplateAttemptedAtMs: number | null;
+  /** When the current held plan was first held; cleared with heldPlanJson. */
+  heldPlanAtMs: number | null;
   watchExpirationMs: number | null;
   /** JSON string array of open lawyer todo ids from the last collect. */
   openTodoIdsJson: string | null;
