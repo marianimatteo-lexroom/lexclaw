@@ -1,10 +1,19 @@
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import type {
+  OpenClawPluginApi,
+  PluginServiceSchedulerV1,
+} from "openclaw/plugin-sdk/plugin-entry";
 import {
   collectDigest,
   isMorningDigestSlot,
   whatsappWindowOpen,
   type CollectResult,
 } from "./collector.js";
+import { runCollectExclusive } from "./collect-lock.js";
+import {
+  dispatchDigest,
+  type DigestDispatchRequest,
+  type DigestDispatchResult,
+} from "./dispatch-digest.js";
 import { mergeDigestPlans, parseDigestPlan, type DigestPlan } from "./digest.js";
 import { openVeraGoogleAccountFromApi } from "./google-account.js";
 import {
@@ -16,6 +25,7 @@ import {
 import { googleConnectConfigFrom, readGoogleConnectConfig } from "./google-connect.js";
 import { openVeraMemoryFromApi, type MemoryStore } from "./memory.js";
 import { buildDailyTimelineRecord, buildOnePagerRecord } from "./reconcile.js";
+import { nextSlotMs, previousSlotMs } from "./schedule.js";
 
 function readPubSubTopic(config: unknown): string | null {
   if (!config || typeof config !== "object") {
@@ -26,7 +36,7 @@ function readPubSubTopic(config: unknown): string | null {
 }
 
 const POLL_MS = 15 * 60 * 1000;
-const SELF_WAKE_TIMEOUT_SEC = 45;
+const CATCH_UP_DELAY_MS = 30 * 1000;
 const DEFAULT_TZ = "Europe/Rome";
 
 /** A plan whose dispatch failed is retried this many times before waiting for the next morning slot or lawyer message. */
@@ -73,12 +83,7 @@ export function decideDigestDelivery(params: {
 export type VeraServiceDeps = {
   api: OpenClawPluginApi;
   now?: () => Date;
-  dispatchDigestTurn?: (params: {
-    plan: DigestPlan;
-    sessionKey: string;
-    idempotencyKey: string;
-    connectOnly?: boolean;
-  }) => Promise<{ ok: boolean; reason?: string }>;
+  dispatchDigestTurn?: (request: DigestDispatchRequest) => Promise<DigestDispatchResult>;
 };
 
 function dayKey(now: Date, timeZone: string): string {
@@ -143,13 +148,28 @@ export type VeraCollectPassResult = {
  * advance once the digest they produced is delivered or safely held. A pass that
  * batches or fails to dispatch leaves them alone and the next pass re-emits the signals.
  */
-export async function runVeraCollectPass(params: {
+export type VeraCollectPassParams = {
   api: OpenClawPluginApi;
   memory: MemoryStore;
   now: Date;
   forceMorning: boolean;
-  dispatchDigestTurn: NonNullable<VeraServiceDeps["dispatchDigestTurn"]>;
-}): Promise<VeraCollectPassResult> {
+  /** Missed-slot catch-up after boot: never re-sends the Google connect ask on every restart. */
+  catchUp?: boolean;
+  dispatchDigestTurn?: NonNullable<VeraServiceDeps["dispatchDigestTurn"]>;
+};
+
+/**
+ * Entry point for every collect pass. Passes run one at a time; forced passes
+ * (morning slot, catch-up, lawyer reply) each get their own run, while polls and
+ * push notifications coalesce into at most one waiting pass.
+ */
+export function runVeraCollectPass(params: VeraCollectPassParams): Promise<VeraCollectPassResult> {
+  return runCollectExclusive(() => collectPass(params), { coalesce: !params.forceMorning });
+}
+
+async function collectPass(params: VeraCollectPassParams): Promise<VeraCollectPassResult> {
+  const dispatchDigestTurn =
+    params.dispatchDigestTurn ?? ((request) => dispatchDigest(params.api, request));
   const nowMs = params.now.getTime();
   const earlyWake = await params.memory.readWake();
   const earlyHeld = parseDigestPlan(earlyWake.heldPlanJson);
@@ -164,9 +184,9 @@ export async function runVeraCollectPass(params: {
 
   const google = await loadGoogleReads(params.api, params.now);
   if (!google.ok) {
-    if (params.forceMorning && google.error === "not_connected") {
+    if (params.forceMorning && !params.catchUp && google.error === "not_connected") {
       const day = dayKey(params.now, DEFAULT_TZ);
-      const dispatch = await dispatchSafely(params.dispatchDigestTurn, {
+      const dispatch = await dispatchSafely(dispatchDigestTurn, {
         plan: { deliver: false, reason: "nothing_cleared_the_bar" },
         sessionKey: `hook:vera:connect:${day}`,
         idempotencyKey: `vera-connect:${day}`,
@@ -290,7 +310,7 @@ export async function runVeraCollectPass(params: {
 
   const day = dayKey(params.now, timeZone);
   const itemIds = decision.plan.items.map((item) => item.matterId).join(",");
-  const dispatch = await dispatchSafely(params.dispatchDigestTurn, {
+  const dispatch = await dispatchSafely(dispatchDigestTurn, {
     plan: decision.plan,
     sessionKey: `hook:vera:digest:${day}`,
     idempotencyKey: `vera-digest:${day}:${itemIds}`,
@@ -325,8 +345,8 @@ export async function runVeraCollectPass(params: {
 
 async function dispatchSafely(
   dispatch: NonNullable<VeraServiceDeps["dispatchDigestTurn"]>,
-  params: Parameters<NonNullable<VeraServiceDeps["dispatchDigestTurn"]>>[0],
-): Promise<{ ok: boolean; reason?: string }> {
+  params: DigestDispatchRequest,
+): Promise<DigestDispatchResult> {
   try {
     return await dispatch(params);
   } catch (error) {
@@ -393,44 +413,16 @@ export async function runVeraReconcilePass(params: {
 export function registerVeraService(deps: VeraServiceDeps): void {
   const { api } = deps;
   const now = deps.now ?? (() => new Date());
-
   const dispatchDigestTurn =
-    deps.dispatchDigestTurn ??
-    (async (params) => {
-      const hooks = api.runtime.hooks;
-      if (!hooks?.dispatchHookAgentTurn) {
-        return { ok: false, reason: "hooks_unavailable" };
-      }
-      const message = params.connectOnly
-        ? "Follow the vera-google-connect skill now. Do not invent a digest."
-        : [
-            "Run the vera-morning-digest skill phrasing only.",
-            "The collector already ranked the plan. Do not invent signals.",
-            "Write exactly one WhatsApp message from this plan JSON, or NO_REPLY if deliver is false:",
-            JSON.stringify(params.plan),
-          ].join("\n");
-      const result = await hooks.dispatchHookAgentTurn({
-        name: params.connectOnly ? "Vera Google connect" : "Vera digest",
-        agentId: "main",
-        sessionKey: params.sessionKey,
-        message,
-        externalContentSource: "email",
-        deliver: true,
-        timeoutSeconds: SELF_WAKE_TIMEOUT_SEC,
-        idempotencyKey: params.idempotencyKey,
-      });
-      return result.ok ? { ok: true } : { ok: false, reason: result.reason };
-    });
+    deps.dispatchDigestTurn ?? ((request: DigestDispatchRequest) => dispatchDigest(api, request));
 
   // Fallback timers for hosts that omit the V2 scheduler field (e.g. OpenClaw 2026.9.8).
   const fallbackTimers = new Set<ReturnType<typeof setTimeout>>();
+  let stopped = false;
+
+  type ServiceScheduler = Pick<PluginServiceSchedulerV1, "schedule">;
   const scheduleRepeating = (params: {
-    scheduler: { schedule: (job: {
-      id: string;
-      delayMs: number;
-      everyMs?: number;
-      run: () => void | Promise<void>;
-    }) => void } | undefined;
+    scheduler: ServiceScheduler | undefined;
     id: string;
     delayMs: number;
     everyMs: number;
@@ -445,9 +437,7 @@ export function registerVeraService(deps: VeraServiceDeps): void {
       });
       return;
     }
-    api.logger.warn(
-      `vera: Gateway service scheduler missing; using setInterval for ${params.id}`,
-    );
+    api.logger.warn(`vera: Gateway service scheduler missing; using setInterval for ${params.id}`);
     const first = setTimeout(() => {
       fallbackTimers.delete(first);
       void params.run();
@@ -458,12 +448,34 @@ export function registerVeraService(deps: VeraServiceDeps): void {
     }, params.delayMs);
     fallbackTimers.add(first);
   };
+  const scheduleOnce = (params: {
+    scheduler: ServiceScheduler | undefined;
+    id: string;
+    atMs: number;
+    run: () => void | Promise<void>;
+  }) => {
+    if (params.scheduler) {
+      params.scheduler.schedule({ id: params.id, atMs: params.atMs, run: params.run });
+      return;
+    }
+    api.logger.warn(`vera: Gateway service scheduler missing; using setTimeout for ${params.id}`);
+    const timer = setTimeout(
+      () => {
+        fallbackTimers.delete(timer);
+        void params.run();
+      },
+      Math.max(0, params.atMs - now().getTime()),
+    );
+    timer.unref?.();
+    fallbackTimers.add(timer);
+  };
 
   api.registerService({
     id: "vera-instinct-wake",
     apiVersion: 2,
-    start(ctx) {
-      const tick = async (forceMorning: boolean) => {
+    async start(ctx) {
+      stopped = false;
+      const tick = async (forceMorning: boolean, catchUp = false) => {
         try {
           const memory = await openVeraMemoryFromApi(api);
           const pass = await runVeraCollectPass({
@@ -471,6 +483,7 @@ export function registerVeraService(deps: VeraServiceDeps): void {
             memory,
             now: now(),
             forceMorning,
+            catchUp,
             dispatchDigestTurn,
           });
           if (pass.held) {
@@ -492,6 +505,66 @@ export function registerVeraService(deps: VeraServiceDeps): void {
         }
       };
 
+      const resolveTimeZone = async (): Promise<string> => {
+        try {
+          const memory = await openVeraMemoryFromApi(api);
+          const timeZone = (await memory.readProfile())?.timezone ?? DEFAULT_TZ;
+          // An unknown zone name throws here instead of inside the slot math.
+          new Intl.DateTimeFormat("en-GB", { timeZone }).format(0);
+          return timeZone;
+        } catch {
+          return DEFAULT_TZ;
+        }
+      };
+
+      // Each run schedules the next slot from the calendar, so DST days stay at 07:40
+      // and a long run or a slow host never drifts the way a fixed 24h interval would.
+      const armMorning = async (afterMs: number): Promise<void> => {
+        if (stopped) {
+          return;
+        }
+        const atMs = nextSlotMs(afterMs, await resolveTimeZone());
+        scheduleOnce({
+          scheduler: ctx.scheduler,
+          id: "vera-morning",
+          atMs,
+          run: async () => {
+            try {
+              await tick(true);
+            } finally {
+              try {
+                await armMorning(Math.max(now().getTime(), atMs));
+              } catch (error) {
+                api.logger.error(
+                  `vera could not schedule the next morning slot: ${error instanceof Error ? error.message : "unknown"}`,
+                );
+              }
+            }
+          },
+        });
+      };
+
+      // A restart can straddle the 07:40 slot. When nothing was collected since the
+      // latest slot, run the morning pass once shortly after boot.
+      const armCatchUp = async (): Promise<void> => {
+        const memory = await openVeraMemoryFromApi(api);
+        const { lastCollectAtMs } = await memory.readWake();
+        if (lastCollectAtMs === null) {
+          return;
+        }
+        const clock = now().getTime();
+        const slotMs = previousSlotMs(clock, await resolveTimeZone());
+        if (lastCollectAtMs >= slotMs) {
+          return;
+        }
+        scheduleOnce({
+          scheduler: ctx.scheduler,
+          id: "vera-catch-up",
+          atMs: clock + CATCH_UP_DELAY_MS,
+          run: () => tick(true, true),
+        });
+      };
+
       scheduleRepeating({
         scheduler: ctx.scheduler,
         id: "vera-poll",
@@ -499,29 +572,23 @@ export function registerVeraService(deps: VeraServiceDeps): void {
         everyMs: POLL_MS,
         run: () => tick(false),
       });
-
-      const clock = now();
-      const parts = new Intl.DateTimeFormat("en-GB", {
-        timeZone: DEFAULT_TZ,
-        hour: "2-digit",
-        minute: "2-digit",
-        hourCycle: "h23",
-      }).formatToParts(clock);
-      const hour = Number(parts.find((part) => part.type === "hour")?.value ?? "0");
-      const minute = Number(parts.find((part) => part.type === "minute")?.value ?? "0");
-      let delayMin = (7 - hour) * 60 + (40 - minute);
-      if (delayMin <= 0) {
-        delayMin += 24 * 60;
+      try {
+        await armMorning(now().getTime());
+      } catch (error) {
+        api.logger.error(
+          `vera could not schedule the morning slot: ${error instanceof Error ? error.message : "unknown"}`,
+        );
       }
-      scheduleRepeating({
-        scheduler: ctx.scheduler,
-        id: "vera-morning",
-        delayMs: delayMin * 60 * 1000,
-        everyMs: 24 * 60 * 60 * 1000,
-        run: () => tick(true),
-      });
+      try {
+        await armCatchUp();
+      } catch (error) {
+        api.logger.error(
+          `vera catch-up check failed: ${error instanceof Error ? error.message : "unknown"}`,
+        );
+      }
     },
     stop() {
+      stopped = true;
       for (const timer of fallbackTimers) {
         clearTimeout(timer);
         clearInterval(timer);
@@ -541,37 +608,22 @@ export async function recordLawyerInbound(params: {
     return;
   }
   const memory = await openVeraMemoryFromApi(params.api);
-  const wake = await memory.readWake();
   await memory.writeWake({ lastLawyerInboundAtMs: params.atMs });
-  if (!wake.heldPlanJson) {
-    return;
-  }
-  // Re-collect so a stale held plan cannot fire after the calendar moved on.
-  await runVeraCollectPass({
-    api: params.api,
-    memory,
-    now: new Date(params.atMs),
-    forceMorning: true,
-    dispatchDigestTurn: async (dispatchParams) => {
-      const hooks = params.api.runtime.hooks;
-      if (!hooks?.dispatchHookAgentTurn) {
-        return { ok: false, reason: "hooks_unavailable" };
-      }
-      const result = await hooks.dispatchHookAgentTurn({
-        name: "Vera held digest",
-        agentId: "main",
-        sessionKey: dispatchParams.sessionKey,
-        message: [
-          "Run the vera-morning-digest skill phrasing only.",
-          "The lawyer just texted; deliver this fresh plan if deliver is true:",
-          JSON.stringify(dispatchParams.plan),
-        ].join("\n"),
-        externalContentSource: "email",
-        deliver: true,
-        timeoutSeconds: SELF_WAKE_TIMEOUT_SEC,
-        idempotencyKey: `vera-held:${dispatchParams.idempotencyKey}`,
-      });
-      return result.ok ? { ok: true } : { ok: false, reason: result.reason };
-    },
+  // Read the held plan under the collect lock: a pass that is mid-hold has either written
+  // its plan before this read or is not holding one, so the release is never stranded.
+  await runCollectExclusive(async () => {
+    const wake = await memory.readWake();
+    if (!wake.heldPlanJson) {
+      return;
+    }
+    // Re-collect so a stale held plan cannot fire after the calendar moved on.
+    await collectPass({
+      api: params.api,
+      memory,
+      now: new Date(params.atMs),
+      forceMorning: true,
+      dispatchDigestTurn: (request) =>
+        dispatchDigest(params.api, { ...request, afterLawyerReply: true }),
+    });
   });
 }
