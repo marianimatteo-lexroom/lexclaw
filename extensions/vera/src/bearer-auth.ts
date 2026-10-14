@@ -1,5 +1,5 @@
-import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
+import { constantTimeEqual } from "./google-push-auth.js";
 
 const MIN_TOKEN_LENGTH = 16;
 
@@ -22,7 +22,5 @@ export function bearerMatches(req: IncomingMessage, expected: string): boolean {
   if (!presented) {
     return false;
   }
-  const given = Buffer.from(presented);
-  const wanted = Buffer.from(expected);
-  return given.length === wanted.length && timingSafeEqual(given, wanted);
+  return constantTimeEqual(presented, expected);
 }

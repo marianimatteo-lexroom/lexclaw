@@ -42,6 +42,15 @@
       "statusToken": {
         "type": "string"
       },
+      "googleNotifyAudience": {
+        "type": "string"
+      },
+      "googleNotifyIssuer": {
+        "type": "string"
+      },
+      "googleNotifyServiceAccount": {
+        "type": "string"
+      },
       "lexroomConnectUri": {
         "type": "string"
       },

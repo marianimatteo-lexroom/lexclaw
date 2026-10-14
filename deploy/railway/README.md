@@ -51,7 +51,8 @@ Optional, written to config when set and skipped (logged) when unset:
 
 - Kapso: `KAPSO_API_KEY`, `KAPSO_WEBHOOK_SECRET`, `KAPSO_ALLOW_FROM` (comma-separated; defaults to `KAPSO_DEFAULT_TO` with and without the `+`). `KAPSO_BASE_URL` and `KAPSO_WEBHOOK_PATH` are read by the plugin directly, not by `start.sh`.
 - Model: `VERA_MODEL` (default `anthropic/claude-opus-5`), `ANTHROPIC_API_KEY`, `ANTHROPIC_SETUP_TOKEN` (imported on boot; a failed import is fatal unless `ANTHROPIC_API_KEY` is set).
-- Vera: `LEXROOM_ACCESS_TOKEN`, `VERA_GOOGLE_CLIENT_ID`, `VERA_GOOGLE_CLIENT_SECRET`, `VERA_GOOGLE_STATE_SECRET`, `VERA_GOOGLE_REDIRECT_URI`, `VERA_LEXROOM_CONNECT_URI`, `VERA_GOOGLE_PUBSUB_TOPIC`, `VERA_GOOGLE_NOTIFY_TOKEN`.
+- Vera: `LEXROOM_ACCESS_TOKEN`, `VERA_GOOGLE_CLIENT_ID`, `VERA_GOOGLE_CLIENT_SECRET`, `VERA_GOOGLE_STATE_SECRET`, `VERA_GOOGLE_REDIRECT_URI`, `VERA_LEXROOM_CONNECT_URI`, `VERA_GOOGLE_PUBSUB_TOPIC`, `VERA_GOOGLE_NOTIFY_AUDIENCE`, `VERA_GOOGLE_NOTIFY_SERVICE_ACCOUNT`, `VERA_GOOGLE_NOTIFY_TOKEN` (static fallback).
+- Token encryption: `VERA_TOKEN_KEY` (32 random bytes, `openssl rand -base64 32`). The image runs with `NODE_ENV=production`, where Vera refuses to open its Google and Lexroom account stores without it, so set it before connecting either account. `start.sh` logs a warning when it is unset.
 - Monitoring: `VERA_STATUS_TOKEN` (16+ characters) enables `GET /vera/status`. Without it that route returns 401.
 
 ## Verify

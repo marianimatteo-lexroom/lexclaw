@@ -160,6 +160,8 @@ config_set_env plugins.entries.vera.config.googleClientId VERA_GOOGLE_CLIENT_ID
 config_set_env plugins.entries.vera.config.googleClientSecret VERA_GOOGLE_CLIENT_SECRET secret
 config_set_env plugins.entries.vera.config.googleStateSecret VERA_GOOGLE_STATE_SECRET secret
 config_set_env plugins.entries.vera.config.googlePubSubTopic VERA_GOOGLE_PUBSUB_TOPIC
+config_set_env plugins.entries.vera.config.googleNotifyAudience VERA_GOOGLE_NOTIFY_AUDIENCE
+config_set_env plugins.entries.vera.config.googleNotifyServiceAccount VERA_GOOGLE_NOTIFY_SERVICE_ACCOUNT
 config_set_env plugins.entries.vera.config.googleNotifyToken VERA_GOOGLE_NOTIFY_TOKEN secret
 config_set_env plugins.entries.vera.config.statusToken VERA_STATUS_TOKEN secret
 
@@ -170,6 +172,10 @@ if [ -n "${VERA_GOOGLE_CLIENT_ID:-}" ]; then
   config_set plugins.entries.vera.config.lexroomConnectUri "$(json_of_env LEXROOM_CONNECT_URI)"
 else
   log "skip Google redirect and Lexroom connect URIs: VERA_GOOGLE_CLIENT_ID is unset"
+fi
+
+if [ -z "${VERA_TOKEN_KEY:-}" ]; then
+  log "WARNING: VERA_TOKEN_KEY is unset; NODE_ENV=production makes Vera refuse to open its Google and Lexroom account stores (generate one with: openssl rand -base64 32)"
 fi
 
 if [ -z "${VERA_STATUS_TOKEN:-}" ]; then
