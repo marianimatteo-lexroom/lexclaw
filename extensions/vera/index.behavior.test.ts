@@ -551,7 +551,10 @@ describe("message_received hook", () => {
     vi.setSystemTime(new Date("2026-10-10T09:00:00.000Z"));
     fetchMock.mockImplementation(async () => json({ success: true }));
     const { hook } = registerVera();
-    await hook("message_received")({}, inbound);
+    await hook("message_received")(
+      { from: "+390000000000" },
+      { ...inbound, senderId: "390000000000" },
+    );
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] ?? [];
     expect(urlOf(url as RequestInfo)).toBe(KAPSO_URL);
@@ -564,6 +567,7 @@ describe("message_received hook", () => {
       api: expect.anything(),
       atMs: Date.parse("2026-10-10T09:00:00.000Z"),
       channelId: "kapso-whatsapp",
+      senders: ["+390000000000", "390000000000"],
     });
     expect(logger.warn).not.toHaveBeenCalled();
     expect(logger.error).not.toHaveBeenCalled();

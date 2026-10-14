@@ -1,424 +1,161 @@
+import crypto from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { Readable } from "node:stream";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const openVeraMemoryFromApi = vi.hoisted(() => vi.fn());
-const openVeraGoogleAccountFromApi = vi.hoisted(() => vi.fn());
+const runCollect = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("./service.js", () => ({ runVeraCollectPass: runCollect }));
+vi.mock("./memory.js", () => ({ openVeraMemoryFromApi: vi.fn(async () => ({})) }));
 
-vi.mock("./memory.js", () => ({ openVeraMemoryFromApi }));
-vi.mock("./google-account.js", () => ({ openVeraGoogleAccountFromApi }));
+import { createNotifyState, handleVeraGoogleNotify, NOTIFY_MIN_INTERVAL_MS } from "./watch.js";
 
-import { handleVeraGoogleNotify } from "./watch.js";
+const NOW_MS = Date.parse("2026-10-14T12:00:00.000Z");
+const AUDIENCE = "https://gateway.example/vera/google/notify";
+const STATIC_TOKEN = "static-notify-token-0123456789";
+const pair = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
 
-const TOKEN = "test-notify-token-0123456789";
-const NOW = new Date("2026-10-14T10:00:00.000Z");
+function jwt(overrides: Record<string, unknown> = {}): string {
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const head = encode({ alg: "RS256", kid: "kid-1" });
+  const body = encode({
+    iss: "https://accounts.google.com",
+    aud: AUDIENCE,
+    exp: NOW_MS / 1000 + 300,
+    ...overrides,
+  });
+  const signature = crypto
+    .sign("RSA-SHA256", Buffer.from(`${head}.${body}`), pair.privateKey)
+    .toString("base64url");
+  return `${head}.${body}.${signature}`;
+}
 
-const PLUGIN_CONFIG = {
-  googleNotifyToken: TOKEN,
-  googleClientId: "test-client.apps.googleusercontent.com",
-  googleClientSecret: "test-client-secret-value",
-  googleRedirectUri: "https://gateway.example/vera/google/callback",
-  googleStateSecret: "state-secret-test-value",
-};
+function push(historyId: string | number | null): string {
+  const data =
+    historyId === null ? "{}" : JSON.stringify({ emailAddress: "Lawyer@example.com", historyId });
+  return JSON.stringify({ message: { data: Buffer.from(data).toString("base64") } });
+}
 
-const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
-const fetchMock = vi.fn<typeof fetch>();
-const dispatchHookAgentTurn = vi.fn();
+function request(options: { method?: string; bearer?: string; body?: string }): IncomingMessage {
+  const req = Readable.from([Buffer.from(options.body ?? "")]) as unknown as IncomingMessage;
+  req.method = options.method ?? "POST";
+  req.headers = options.bearer ? { authorization: `Bearer ${options.bearer}` } : {};
+  return req;
+}
 
-function makeApi(options: { pluginConfig?: unknown; hooks?: unknown }): OpenClawPluginApi {
+function response() {
+  const headers = new Map<string, string>();
   return {
-    logger,
-    pluginConfig: "pluginConfig" in options ? options.pluginConfig : PLUGIN_CONFIG,
-    runtime: { hooks: "hooks" in options ? options.hooks : { dispatchHookAgentTurn } },
+    statusCode: 0,
+    headers,
+    setHeader(name: string, value: string) {
+      headers.set(name, value);
+    },
+    end() {},
+  };
+}
+
+function api(config: Record<string, unknown>): OpenClawPluginApi {
+  return {
+    pluginConfig: config,
+    logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
+    runtime: { hooks: {} },
   } as unknown as OpenClawPluginApi;
 }
 
-function makeReq(method: string, authorization: string | null): IncomingMessage {
-  return {
-    method,
-    headers: authorization === null ? {} : { authorization },
-  } as unknown as IncomingMessage;
-}
+const JWT_CONFIG = { googleNotifyAudience: AUDIENCE };
 
-function makeRes() {
-  const res = { statusCode: 0, body: undefined as string | undefined, ended: false };
-  return Object.assign(res, {
-    end(body?: string) {
-      res.body = body;
-      res.ended = true;
-    },
-  }) as unknown as ServerResponse & { body: string | undefined; ended: boolean };
-}
-
-async function push(api: OpenClawPluginApi, authorization: string | null = `Bearer ${TOKEN}`) {
-  const res = makeRes();
-  const handled = await handleVeraGoogleNotify(makeReq("POST", authorization), res, api);
-  return { handled, res };
-}
-
-function useMemory(overrides: Record<string, unknown> = {}) {
-  const memory = {
-    readGmailSnapshot: vi.fn(async () => []),
-    readCalendarSnapshot: vi.fn(async () => []),
-    listMatterAliases: vi.fn(async () => []),
-    listTodos: vi.fn(async () => []),
-    readWake: vi.fn(async () => ({
-      lastLawyerInboundAtMs: null,
-      lastReconcileAtMs: null,
-      lastCollectAtMs: null,
-      heldPlanJson: null,
-      watchExpirationMs: null,
-      openTodoIdsJson: null,
-    })),
-    readProfile: vi.fn(async () => null),
-    replaceGmailSnapshot: vi.fn(async () => {}),
-    replaceCalendarSnapshot: vi.fn(async () => {}),
-    writeWake: vi.fn(async (_patch: Record<string, unknown>) => {}),
-    ...overrides,
+describe("handleVeraGoogleNotify", () => {
+  let nowMs = NOW_MS;
+  let certs: { getKey: ReturnType<typeof vi.fn> };
+  let state = createNotifyState();
+  const deps = () => ({ certs, now: () => nowMs, state });
+  const call = async (
+    config: Record<string, unknown>,
+    options: Parameters<typeof request>[0],
+  ): Promise<number> => {
+    const res = response();
+    await handleVeraGoogleNotify(
+      request(options),
+      res as unknown as ServerResponse,
+      api(config),
+      deps(),
+    );
+    return res.statusCode;
   };
-  openVeraMemoryFromApi.mockResolvedValue(memory);
-  return memory;
-}
 
-function useGoogleAccount(connected: boolean) {
-  openVeraGoogleAccountFromApi.mockResolvedValue({
-    readAccount: async () =>
-      connected
-        ? {
-            email: "lawyer@example.com",
-            refreshToken: "test-refresh-token",
-            accessToken: "test-google-access-token",
-            accessExpiresAtMs: NOW.getTime() + 3_600_000,
-            connectedAtMs: 1,
-            scopes: "openid email https://www.googleapis.com/auth/gmail.send",
-          }
-        : null,
+  beforeEach(() => {
+    nowMs = NOW_MS;
+    state = createNotifyState();
+    runCollect.mockClear();
+    certs = { getKey: vi.fn(async (kid: string) => (kid === "kid-1" ? pair.publicKey : null)) };
   });
-}
 
-function useGoogleApis(options: { inboxIds?: string[]; events?: unknown[] } = {}) {
-  fetchMock.mockImplementation(async (input) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    if (url.includes("/calendar/v3/")) {
-      return new Response(JSON.stringify({ items: options.events ?? [] }), { status: 200 });
-    }
-    const id = /\/messages\/([^?/]+)/u.exec(url)?.[1];
-    if (id) {
-      return new Response(
-        JSON.stringify({
-          id,
-          snippet: "snippet",
-          payload: { headers: [{ name: "Subject", value: "Hello" }] },
-        }),
-        { status: 200 },
-      );
-    }
-    return new Response(
-      JSON.stringify(
-        options.inboxIds
-          ? { messages: options.inboxIds.map((messageId) => ({ id: messageId })) }
-          : {},
-      ),
-      { status: 200 },
+  it("collects for a valid Google OIDC token", async () => {
+    expect(await call(JWT_CONFIG, { bearer: jwt(), body: push(100) })).toBe(204);
+    expect(runCollect).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects invalid, expired, wrong-audience, and missing credentials", async () => {
+    const body = push(100);
+    expect(await call(JWT_CONFIG, { bearer: jwt({ exp: NOW_MS / 1000 - 600 }), body })).toBe(401);
+    expect(await call(JWT_CONFIG, { bearer: jwt({ aud: "https://other.example" }), body })).toBe(
+      401,
     );
+    expect(await call(JWT_CONFIG, { bearer: `${jwt().slice(0, -4)}AAAA`, body })).toBe(401);
+    expect(await call(JWT_CONFIG, { body })).toBe(401);
+    expect(await call({}, { bearer: jwt(), body })).toBe(401);
+    expect(await call(JWT_CONFIG, { method: "GET", bearer: jwt() })).toBe(405);
+    expect(runCollect).not.toHaveBeenCalled();
   });
-}
 
-beforeEach(() => {
-  vi.clearAllMocks();
-  fetchMock.mockReset();
-  dispatchHookAgentTurn.mockReset();
-  dispatchHookAgentTurn.mockResolvedValue({ ok: true });
-  vi.stubGlobal("fetch", fetchMock);
-  vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(NOW);
-});
+  it("answers 503 when Google's signing keys cannot be fetched", async () => {
+    const { GoogleCertsUnavailableError } = await import("./google-push-auth.js");
+    certs.getKey.mockRejectedValue(new GoogleCertsUnavailableError("down"));
+    expect(await call(JWT_CONFIG, { bearer: jwt(), body: push(100) })).toBe(503);
+  });
 
-afterEach(() => {
-  vi.useRealTimers();
-  vi.unstubAllGlobals();
-});
-
-describe("handleVeraGoogleNotify auth", () => {
-  it("rejects non-POST methods before checking the token", async () => {
-    const res = makeRes();
-    expect(await handleVeraGoogleNotify(makeReq("GET", `Bearer ${TOKEN}`), res, makeApi({}))).toBe(
-      true,
+  it("keeps the static bearer as a constant-time fallback", async () => {
+    const config = { ...JWT_CONFIG, googleNotifyToken: STATIC_TOKEN };
+    expect(await call(config, { bearer: STATIC_TOKEN, body: push(100) })).toBe(204);
+    expect(await call(config, { bearer: `${STATIC_TOKEN}x`, body: push(101) })).toBe(401);
+    expect(await call({ googleNotifyToken: "short" }, { bearer: "short", body: push(1) })).toBe(
+      401,
     );
-    expect(res.statusCode).toBe(405);
-    expect(res.body).toBe("method not allowed");
-    expect(openVeraMemoryFromApi).not.toHaveBeenCalled();
+    expect(runCollect).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
-    ["no Authorization header", null],
-    ["an empty header", ""],
-    ["the wrong token", "Bearer test-notify-token-9999999999"],
-    ["a token prefix", `Bearer ${TOKEN.slice(0, -1)}`],
-    ["a token with extra characters", `Bearer ${TOKEN}x`],
-    ["the bare token without a scheme", TOKEN],
-    ["a different scheme", `Basic ${TOKEN}`],
-    ["a scheme with no token", "Bearer "],
-  ])("answers 401 and does no work for %s", async (_label, authorization) => {
-    const { handled, res } = await push(makeApi({}), authorization);
-    expect(handled).toBe(true);
-    expect(res.statusCode).toBe(401);
-    expect(res.body).toBe("unauthorized");
-    expect(openVeraMemoryFromApi).not.toHaveBeenCalled();
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(dispatchHookAgentTurn).not.toHaveBeenCalled();
+  it("skips work when the push has no new history", async () => {
+    const config = { googleNotifyToken: STATIC_TOKEN };
+    const bearer = STATIC_TOKEN;
+    expect(await call(config, { bearer, body: push(null) })).toBe(204);
+    expect(await call(config, { bearer, body: "not json" })).toBe(204);
+    expect(await call(config, { bearer, body: push(200) })).toBe(204);
+    expect(runCollect).toHaveBeenCalledTimes(1);
+    nowMs += NOTIFY_MIN_INTERVAL_MS + 1;
+    expect(await call(config, { bearer, body: push(200) })).toBe(204);
+    expect(await call(config, { bearer, body: push(150) })).toBe(204);
+    expect(runCollect).toHaveBeenCalledTimes(1);
+    expect(await call(config, { bearer, body: push(201) })).toBe(204);
+    expect(runCollect).toHaveBeenCalledTimes(2);
   });
 
-  it.each([
-    ["missing", {}],
-    ["blank", { googleNotifyToken: "   " }],
-    ["shorter than 16 characters", { googleNotifyToken: "short-token" }],
-    ["not a string", { googleNotifyToken: 1234567890123456 }],
-  ])("refuses every push when the notify token is %s", async (_label, pluginConfig) => {
-    const api = makeApi({ pluginConfig });
-    const shortBearer = "Bearer short-token";
-    for (const authorization of [
-      shortBearer,
-      "Bearer ",
-      "Bearer undefined",
-      "Bearer 1234567890123456",
-    ]) {
-      const { res } = await push(api, authorization);
-      expect(res.statusCode).toBe(401);
-    }
-    expect(openVeraMemoryFromApi).not.toHaveBeenCalled();
+  it("rate limits collect passes and lets the same push retry later", async () => {
+    const config = { googleNotifyToken: STATIC_TOKEN };
+    const bearer = STATIC_TOKEN;
+    expect(await call(config, { bearer, body: push(10) })).toBe(204);
+    expect(await call(config, { bearer, body: push(11) })).toBe(429);
+    nowMs += NOTIFY_MIN_INTERVAL_MS;
+    expect(await call(config, { bearer, body: push(11) })).toBe(204);
+    expect(runCollect).toHaveBeenCalledTimes(2);
   });
 
-  it("refuses when the plugin config itself is absent", async () => {
-    const { res } = await push(makeApi({ pluginConfig: undefined }));
-    expect(res.statusCode).toBe(401);
-  });
-
-  it("accepts a case-insensitive Bearer scheme and surrounding whitespace", async () => {
-    useMemory();
-    useGoogleAccount(false);
-    const { res } = await push(makeApi({}), `  bearer   ${TOKEN}  `);
-    expect(res.statusCode).toBe(204);
-  });
-});
-
-describe("handleVeraGoogleNotify push handling", () => {
-  it("acknowledges a valid push with 204 when Google is not connected, doing no Google work", async () => {
-    const memory = useMemory();
-    useGoogleAccount(false);
-    const { handled, res } = await push(makeApi({}));
-    expect(handled).toBe(true);
-    expect(res.statusCode).toBe(204);
-    expect(res.ended).toBe(true);
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(dispatchHookAgentTurn).not.toHaveBeenCalled();
-    expect(memory.writeWake).not.toHaveBeenCalled();
-  });
-
-  it("acknowledges a push with empty Gmail and Calendar history without waking the model", async () => {
-    const memory = useMemory();
-    useGoogleAccount(true);
-    useGoogleApis();
-    const { res } = await push(makeApi({}));
-    expect(res.statusCode).toBe(204);
-    expect(memory.replaceGmailSnapshot).toHaveBeenCalledWith([]);
-    expect(memory.replaceCalendarSnapshot).toHaveBeenCalledWith([]);
-    expect(memory.writeWake).toHaveBeenCalledWith({
-      lastCollectAtMs: NOW.getTime(),
-      openTodoIdsJson: "[]",
-      heldPlanJson: null,
-    });
-    expect(dispatchHookAgentTurn).not.toHaveBeenCalled();
-  });
-
-  it("ignores Gmail messages that match no matter alias", async () => {
-    const memory = useMemory();
-    useGoogleAccount(true);
-    useGoogleApis({ inboxIds: ["msg-1", "msg-2"] });
-    const { res } = await push(makeApi({}));
-    expect(res.statusCode).toBe(204);
-    expect(memory.replaceGmailSnapshot).toHaveBeenCalledWith([
-      expect.objectContaining({ messageId: "msg-1", subject: "Hello" }),
-      expect.objectContaining({ messageId: "msg-2", subject: "Hello" }),
-    ]);
-    expect(dispatchHookAgentTurn).not.toHaveBeenCalled();
-  });
-
-  it("dispatches one digest turn for an urgent matter hit when the WhatsApp window is open", async () => {
-    const memory = useMemory({
-      listMatterAliases: vi.fn(async () => [
-        { matterId: "matter-a", alias: "Alpha", title: "Alpha matter" },
-      ]),
-      readWake: vi.fn(async () => ({
-        lastLawyerInboundAtMs: NOW.getTime() - 60_000,
-        lastReconcileAtMs: null,
-        lastCollectAtMs: null,
-        heldPlanJson: null,
-        watchExpirationMs: null,
-        openTodoIdsJson: null,
-      })),
-    });
-    useGoogleAccount(true);
-    useGoogleApis({
-      events: [
-        {
-          id: "event-1",
-          summary: "Alpha hearing",
-          status: "confirmed",
-          start: { dateTime: "2026-10-14T12:00:00.000Z" },
-          end: { dateTime: "2026-10-14T13:00:00.000Z" },
-        },
-      ],
-    });
-    const { res } = await push(makeApi({}));
-    expect(res.statusCode).toBe(204);
-    expect(dispatchHookAgentTurn).toHaveBeenCalledTimes(1);
-    const call = dispatchHookAgentTurn.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(call).toMatchObject({
-      name: "Vera digest",
-      agentId: "main",
-      sessionKey: "hook:vera:digest:2026-10-14",
-      externalContentSource: "email",
-      deliver: true,
-      timeoutSeconds: 45,
-      idempotencyKey: "vera-digest:2026-10-14:matter-a",
-    });
-    expect(String(call.message)).toContain("Alpha matter");
-    expect(memory.writeWake).toHaveBeenCalledWith(
-      expect.objectContaining({ lastCollectAtMs: NOW.getTime(), heldPlanJson: null }),
-    );
-  });
-
-  it("holds the plan instead of dispatching when the WhatsApp window is closed", async () => {
-    const memory = useMemory({
-      listMatterAliases: vi.fn(async () => [
-        { matterId: "matter-a", alias: "Alpha", title: "Alpha matter" },
-      ]),
-    });
-    useGoogleAccount(true);
-    useGoogleApis({
-      events: [
-        {
-          id: "event-1",
-          summary: "Alpha hearing",
-          status: "confirmed",
-          start: { dateTime: "2026-10-14T12:00:00.000Z" },
-          end: { dateTime: "2026-10-14T13:00:00.000Z" },
-        },
-      ],
-    });
-    const { res } = await push(makeApi({}));
-    expect(res.statusCode).toBe(204);
-    expect(dispatchHookAgentTurn).not.toHaveBeenCalled();
-    const held = memory.writeWake.mock.calls.find(([patch]) => patch.heldPlanJson);
-    expect(held).toBeDefined();
-    expect(JSON.parse(String(held?.[0].heldPlanJson))).toMatchObject({ deliver: true });
-  });
-
-  describe("when the hook dispatcher cannot deliver", () => {
-    const openWindowMemory = () =>
-      useMemory({
-        listMatterAliases: vi.fn(async () => [
-          { matterId: "matter-a", alias: "Alpha", title: "Alpha matter" },
-        ]),
-        readWake: vi.fn(async () => ({
-          lastLawyerInboundAtMs: NOW.getTime() - 60_000,
-          lastReconcileAtMs: null,
-          lastCollectAtMs: null,
-          heldPlanJson: null,
-          watchExpirationMs: null,
-          openTodoIdsJson: null,
-        })),
-      });
-    const alphaEvent = {
-      id: "event-1",
-      summary: "Alpha hearing",
-      status: "confirmed",
-      start: { dateTime: "2026-10-14T12:00:00.000Z" },
-      end: { dateTime: "2026-10-14T13:00:00.000Z" },
-    };
-
-    it("still answers 204 and does not record a collect when hooks are unavailable", async () => {
-      const memory = openWindowMemory();
-      useGoogleAccount(true);
-      useGoogleApis({ events: [alphaEvent] });
-      const { res } = await push(makeApi({ hooks: undefined }));
-      expect(res.statusCode).toBe(204);
-      expect(memory.writeWake).not.toHaveBeenCalledWith(
-        expect.objectContaining({ lastCollectAtMs: expect.any(Number) }),
-      );
-    });
-
-    it("still answers 204 when the dispatcher rejects the turn", async () => {
-      const memory = openWindowMemory();
-      useGoogleAccount(true);
-      useGoogleApis({ events: [alphaEvent] });
-      dispatchHookAgentTurn.mockResolvedValue({ ok: false, reason: "queue_full" });
-      const { res } = await push(makeApi({}));
-      expect(res.statusCode).toBe(204);
-      expect(dispatchHookAgentTurn).toHaveBeenCalledTimes(1);
-      expect(memory.writeWake).not.toHaveBeenCalledWith(
-        expect.objectContaining({ lastCollectAtMs: expect.any(Number) }),
-      );
-    });
-  });
-
-  // Real bug, tracked here without changing behavior: runVeraCollectPass replaces the Gmail and
-  // Calendar snapshots before it dispatches. When dispatch fails the plan is neither held nor
-  // re-derivable, because the next pass diffs against the new snapshot and sees nothing new.
-  it.skip("keeps an undelivered plan as held when the dispatcher rejects it", async () => {
-    const memory = useMemory({
-      listMatterAliases: vi.fn(async () => [
-        { matterId: "matter-a", alias: "Alpha", title: "Alpha matter" },
-      ]),
-      readWake: vi.fn(async () => ({
-        lastLawyerInboundAtMs: NOW.getTime() - 60_000,
-        lastReconcileAtMs: null,
-        lastCollectAtMs: null,
-        heldPlanJson: null,
-        watchExpirationMs: null,
-        openTodoIdsJson: null,
-      })),
-    });
-    useGoogleAccount(true);
-    useGoogleApis({
-      events: [
-        {
-          id: "event-1",
-          summary: "Alpha hearing",
-          status: "confirmed",
-          start: { dateTime: "2026-10-14T12:00:00.000Z" },
-          end: { dateTime: "2026-10-14T13:00:00.000Z" },
-        },
-      ],
-    });
-    dispatchHookAgentTurn.mockResolvedValue({ ok: false, reason: "queue_full" });
-    const { res } = await push(makeApi({}));
-    expect(res.statusCode).toBe(204);
-    expect(memory.writeWake).toHaveBeenCalledWith(
-      expect.objectContaining({ heldPlanJson: expect.any(String) }),
-    );
-  });
-
-  it("answers 500 and logs when the collect pass throws", async () => {
-    useMemory({
-      readGmailSnapshot: vi.fn(async () => {
-        throw new Error("sqlite is locked");
-      }),
-    });
-    useGoogleAccount(true);
-    useGoogleApis();
-    const { handled, res } = await push(makeApi({}));
-    expect(handled).toBe(true);
-    expect(res.statusCode).toBe(500);
-    expect(res.body).toBe("notify failed");
-    expect(logger.error).toHaveBeenCalledWith("vera google notify failed: sqlite is locked");
-  });
-
-  it("answers 500 when the memory store cannot open", async () => {
-    openVeraMemoryFromApi.mockRejectedValue(new Error("worker crashed"));
-    const { res } = await push(makeApi({}));
-    expect(res.statusCode).toBe(500);
-    expect(logger.error).toHaveBeenCalledWith("vera google notify failed: worker crashed");
+  it("does not record history when the collect pass fails", async () => {
+    const config = { googleNotifyToken: STATIC_TOKEN };
+    runCollect.mockRejectedValueOnce(new Error("boom"));
+    expect(await call(config, { bearer: STATIC_TOKEN, body: push(10) })).toBe(500);
+    nowMs += NOTIFY_MIN_INTERVAL_MS;
+    expect(await call(config, { bearer: STATIC_TOKEN, body: push(10) })).toBe(204);
+    expect(runCollect).toHaveBeenCalledTimes(2);
   });
 });
