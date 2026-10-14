@@ -19,6 +19,7 @@ import {
   type GoogleAccountRecord,
   type VeraGoogleOperations,
 } from "./google-account-contract.js";
+import { resolveTokenCipher, type TokenCipher } from "./token-crypto.js";
 
 /**
  * The installed plugin lives under the state directory, outside the OpenClaw
@@ -116,6 +117,9 @@ type VeraGoogleDatabase = {
   };
 };
 
+const REFRESH_TOKEN_CONTEXT = "vera_google_account.refresh_token";
+const ACCESS_TOKEN_CONTEXT = "vera_google_account.access_token";
+
 const NONCE = /^[A-Za-z0-9_-]{16,128}$/u;
 const EMAIL = /^[^\s@]+@[^\s@]+$/u;
 
@@ -156,8 +160,55 @@ class VeraGoogleDatabaseStore {
   constructor(
     private readonly db: DatabaseSync,
     private readonly maintenance: { close(): void },
+    private readonly cipher: TokenCipher,
   ) {
     this.query = getNodeSqliteKysely<VeraGoogleDatabase>(db);
+  }
+
+  /** Re-writes rows saved before encryption existed. A no-op without a key. */
+  migrateLegacyTokens(): void {
+    if (!this.cipher.encrypting) {
+      return;
+    }
+    runSqliteImmediateTransactionSync(
+      this.db,
+      () => {
+        const row = executeSqliteQueryTakeFirstSync(
+          this.db,
+          this.query
+            .selectFrom("vera_google_account")
+            .select(["refresh_token", "access_token"])
+            .where("id", "=", VERA_GOOGLE_ACCOUNT_ID),
+        );
+        if (!row) {
+          return;
+        }
+        const refresh = this.cipher.open(row.refresh_token, REFRESH_TOKEN_CONTEXT);
+        const access =
+          row.access_token === null
+            ? null
+            : this.cipher.open(row.access_token, ACCESS_TOKEN_CONTEXT);
+        if (!refresh.legacy && !access?.legacy) {
+          return;
+        }
+        executeSqliteQuerySync(
+          this.db,
+          this.query
+            .updateTable("vera_google_account")
+            .set({
+              refresh_token: this.cipher.seal(refresh.value, REFRESH_TOKEN_CONTEXT),
+              access_token:
+                access === null ? null : this.cipher.seal(access.value, ACCESS_TOKEN_CONTEXT),
+            })
+            .where("id", "=", VERA_GOOGLE_ACCOUNT_ID),
+        );
+      },
+      {
+        busyTimeoutMs: 5000,
+        databaseLabel: "vera google account",
+        operationLabel: "vera.google.account.encrypt-legacy",
+      },
+    );
   }
 
   replacePending(nonce: string, expiresAtMs: number): undefined {
@@ -232,8 +283,11 @@ class VeraGoogleDatabaseStore {
           this.query.insertInto("vera_google_account").values({
             id: VERA_GOOGLE_ACCOUNT_ID,
             email: account.email,
-            refresh_token: account.refreshToken,
-            access_token: account.accessToken,
+            refresh_token: this.cipher.seal(account.refreshToken, REFRESH_TOKEN_CONTEXT),
+            access_token:
+              account.accessToken === null
+                ? null
+                : this.cipher.seal(account.accessToken, ACCESS_TOKEN_CONTEXT),
             access_expires_at_ms: account.accessExpiresAtMs,
             connected_at_ms: account.connectedAtMs,
             scopes: account.scopes,
@@ -269,8 +323,11 @@ class VeraGoogleDatabaseStore {
     }
     return {
       email: row.email,
-      refreshToken: row.refresh_token,
-      accessToken: row.access_token,
+      refreshToken: this.cipher.open(row.refresh_token, REFRESH_TOKEN_CONTEXT).value,
+      accessToken:
+        row.access_token === null
+          ? null
+          : this.cipher.open(row.access_token, ACCESS_TOKEN_CONTEXT).value,
       accessExpiresAtMs: row.access_expires_at_ms,
       connectedAtMs: row.connected_at_ms,
       scopes: row.scopes,
@@ -295,6 +352,7 @@ class VeraGoogleDatabaseStore {
 }
 
 function openVeraGoogleDatabase(dbPath: string): VeraGoogleDatabaseStore {
+  const cipher = resolveTokenCipher();
   fs.mkdirSync(path.dirname(dbPath), { recursive: true, mode: 0o700 });
   fs.chmodSync(path.dirname(dbPath), 0o700);
   if (!fs.existsSync(dbPath)) {
@@ -322,7 +380,9 @@ function openVeraGoogleDatabase(dbPath: string): VeraGoogleDatabaseStore {
     for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`]) {
       chmodIfExists(file);
     }
-    return new VeraGoogleDatabaseStore(db, maintenance);
+    const store = new VeraGoogleDatabaseStore(db, maintenance, cipher);
+    store.migrateLegacyTokens();
+    return store;
   } catch (error) {
     try {
       maintenance?.close();

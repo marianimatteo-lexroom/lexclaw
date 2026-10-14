@@ -14,6 +14,7 @@ import {
   watchGmailInbox,
 } from "./google-api.js";
 import { googleConnectConfigFrom, readGoogleConnectConfig } from "./google-connect.js";
+import { isConfiguredLawyerSender } from "./google-notify.js";
 import { openVeraMemoryFromApi, type MemoryStore } from "./memory.js";
 import { buildDailyTimelineRecord, buildOnePagerRecord } from "./reconcile.js";
 
@@ -36,7 +37,10 @@ const HELD_PLAN_BACKOFF_MAX_MS = 2 * 60 * 60 * 1000;
 
 /** Delay before retry number `attempts + 1`: 15m, 30m, 60m, then 2h. */
 export function heldPlanBackoffMs(attempts: number): number {
-  return Math.min(HELD_PLAN_BACKOFF_BASE_MS * 2 ** Math.max(0, attempts - 1), HELD_PLAN_BACKOFF_MAX_MS);
+  return Math.min(
+    HELD_PLAN_BACKOFF_BASE_MS * 2 ** Math.max(0, attempts - 1),
+    HELD_PLAN_BACKOFF_MAX_MS,
+  );
 }
 
 type DeliverablePlan = Extract<DigestPlan, { deliver: true }>;
@@ -59,8 +63,7 @@ export function decideDigestDelivery(params: {
   if (!plan.deliver) {
     return { action: "silent" };
   }
-  const morning =
-    params.forceMorning || isMorningDigestSlot(params.now, params.timeZone);
+  const morning = params.forceMorning || isMorningDigestSlot(params.now, params.timeZone);
   if (!morning && !params.result.urgent) {
     return { action: "batch" };
   }
@@ -130,35 +133,131 @@ async function loadGoogleReads(api: OpenClawPluginApi, now: Date) {
   };
 }
 
-export type VeraCollectPassResult = {
+export type VeraCollectTrigger = "poll" | "morning" | "notify" | "inbound";
+
+export type VeraCollectOutcome = {
   collected: boolean;
   delivered: boolean;
   held: boolean;
   reason?: string;
   result?: CollectResult;
+  decision: DigestDeliveryDecision["action"] | "connect" | "none";
+  /** Unknown until the wake row is read, so absent when Google reads fail first. */
+  windowOpen?: boolean;
 };
+
+type CollectPassParams = {
+  api: OpenClawPluginApi;
+  memory: MemoryStore;
+  now: Date;
+  forceMorning: boolean;
+  dispatchDigestTurn: NonNullable<VeraServiceDeps["dispatchDigestTurn"]>;
+};
+
+export type VeraCollectLogEvent = {
+  event: "vera.collect";
+  at: string;
+  trigger: VeraCollectTrigger;
+  /** `collected` advances lastCollectAt; `skipped` means Google was unavailable; `error` threw. */
+  result: "collected" | "skipped" | "error";
+  decision: VeraCollectOutcome["decision"];
+  dispatchReason: string | null;
+  delivered: boolean;
+  held: boolean;
+  urgent: boolean | null;
+  forceMorning: boolean;
+  windowOpen: boolean | null;
+  deliverable: boolean | null;
+  durationMs: number;
+  error?: string;
+};
+
+/**
+ * One JSON line per collect pass. The "no collect in 45 minutes" alert keys off
+ * the absence of `result: "collected"`; see extensions/vera/README.md#monitoring.
+ */
+export function logVeraCollectEvent(
+  logger: Pick<OpenClawPluginApi["logger"], "info" | "error">,
+  event: VeraCollectLogEvent,
+): void {
+  const line = JSON.stringify(event);
+  if (event.result === "error") {
+    logger.error(line);
+  } else {
+    logger.info(line);
+  }
+}
+
+export async function runVeraCollectPass(
+  params: CollectPassParams & { trigger: VeraCollectTrigger },
+): Promise<VeraCollectOutcome> {
+  const startedMs = Date.now();
+  const base = {
+    event: "vera.collect" as const,
+    at: params.now.toISOString(),
+    trigger: params.trigger,
+    forceMorning: params.forceMorning,
+  };
+  try {
+    const outcome = await collectPass(params);
+    logVeraCollectEvent(params.api.logger, {
+      ...base,
+      result: outcome.collected ? "collected" : "skipped",
+      decision: outcome.decision,
+      dispatchReason: outcome.reason ?? null,
+      delivered: outcome.delivered,
+      held: outcome.held,
+      urgent: outcome.result?.urgent ?? null,
+      windowOpen: outcome.windowOpen ?? null,
+      deliverable: outcome.result?.plan.deliver ?? null,
+      durationMs: Date.now() - startedMs,
+    });
+    return outcome;
+  } catch (error) {
+    logVeraCollectEvent(params.api.logger, {
+      ...base,
+      result: "error",
+      decision: "none",
+      dispatchReason: null,
+      delivered: false,
+      held: false,
+      urgent: null,
+      windowOpen: null,
+      deliverable: null,
+      durationMs: Date.now() - startedMs,
+      error: error instanceof Error ? error.message : "unknown",
+    });
+    throw error;
+  }
+}
 
 /**
  * Snapshots and open-todo ids are the diff baseline for the next pass, so they only
  * advance once the digest they produced is delivered or safely held. A pass that
  * batches or fails to dispatch leaves them alone and the next pass re-emits the signals.
  */
-export async function runVeraCollectPass(params: {
-  api: OpenClawPluginApi;
-  memory: MemoryStore;
-  now: Date;
-  forceMorning: boolean;
-  dispatchDigestTurn: NonNullable<VeraServiceDeps["dispatchDigestTurn"]>;
-}): Promise<VeraCollectPassResult> {
+async function collectPass(params: CollectPassParams): Promise<VeraCollectOutcome> {
   const nowMs = params.now.getTime();
   const earlyWake = await params.memory.readWake();
   const earlyHeld = parseDigestPlan(earlyWake.heldPlanJson);
   if (earlyHeld && !params.forceMorning) {
     if (earlyWake.heldPlanAttempts >= HELD_PLAN_MAX_ATTEMPTS) {
-      return { collected: false, delivered: false, held: true, reason: "retries_exhausted" };
+      return {
+        collected: false,
+        delivered: false,
+        held: true,
+        reason: "retries_exhausted",
+        decision: "none",
+      };
     }
     if (earlyWake.heldPlanNextAttemptAtMs !== null && nowMs < earlyWake.heldPlanNextAttemptAtMs) {
-      return { collected: false, delivered: false, held: true, reason: "retry_backoff" };
+      return {
+        collected: false,
+        delivered: false,
+        held: true,
+        reason: "retry_backoff",
+        decision: "none",
+      };
     }
   }
 
@@ -177,9 +276,16 @@ export async function runVeraCollectPass(params: {
         delivered: dispatch.ok,
         held: false,
         reason: dispatch.ok ? "connect_dispatched" : (dispatch.reason ?? "connect_rejected"),
+        decision: "connect",
       };
     }
-    return { collected: false, delivered: false, held: false, reason: google.error };
+    return {
+      collected: false,
+      delivered: false,
+      held: false,
+      reason: google.error,
+      decision: "none",
+    };
   }
 
   const [previousGmail, previousCalendar, aliases, todos, wake, profile] = await Promise.all([
@@ -244,6 +350,8 @@ export async function runVeraCollectPass(params: {
     now: params.now,
     lastLawyerInboundAtMs: wake.lastLawyerInboundAtMs,
   });
+  const windowOpen = whatsappWindowOpen(wake.lastLawyerInboundAtMs, nowMs);
+  const heldPlanAtMs = wake.heldPlanJson ? (wake.heldPlanAtMs ?? nowMs) : nowMs;
 
   const commitSnapshots = async () => {
     await params.memory.replaceGmailSnapshot(result.gmailSnapshot);
@@ -251,6 +359,7 @@ export async function runVeraCollectPass(params: {
   };
   const noHeldPlan = {
     heldPlanJson: null,
+    heldPlanAtMs: null,
     heldPlanAttempts: 0,
     heldPlanNextAttemptAtMs: null,
   } as const;
@@ -263,6 +372,8 @@ export async function runVeraCollectPass(params: {
       held: false,
       result,
       reason: "batched_until_morning",
+      decision: "batch",
+      windowOpen,
     };
   }
 
@@ -273,7 +384,14 @@ export async function runVeraCollectPass(params: {
       openTodoIdsJson: JSON.stringify(openTodoIds),
       ...noHeldPlan,
     });
-    return { collected: true, delivered: false, held: false, result };
+    return {
+      collected: true,
+      delivered: false,
+      held: false,
+      result,
+      decision: "silent",
+      windowOpen,
+    };
   }
 
   if (decision.action === "hold") {
@@ -282,10 +400,19 @@ export async function runVeraCollectPass(params: {
       lastCollectAtMs: nowMs,
       openTodoIdsJson: JSON.stringify(openTodoIds),
       heldPlanJson: JSON.stringify(decision.plan),
+      heldPlanAtMs,
       heldPlanAttempts: 0,
       heldPlanNextAttemptAtMs: null,
     });
-    return { collected: true, delivered: false, held: true, result, reason: "whatsapp_window_closed" };
+    return {
+      collected: true,
+      delivered: false,
+      held: true,
+      result,
+      reason: "whatsapp_window_closed",
+      decision: "hold",
+      windowOpen,
+    };
   }
 
   const day = dayKey(params.now, timeZone);
@@ -300,8 +427,12 @@ export async function runVeraCollectPass(params: {
     const priorAttempts =
       wake.heldPlanAttempts >= HELD_PLAN_MAX_ATTEMPTS ? 0 : wake.heldPlanAttempts;
     const attempts = priorAttempts + 1;
+    // The collector is alive even though the dispatch failed; snapshots stay put so the
+    // next pass re-emits the signals.
     await params.memory.writeWake({
+      lastCollectAtMs: nowMs,
       heldPlanJson: JSON.stringify(decision.plan),
+      heldPlanAtMs,
       heldPlanAttempts: attempts,
       heldPlanNextAttemptAtMs:
         attempts >= HELD_PLAN_MAX_ATTEMPTS ? null : nowMs + heldPlanBackoffMs(attempts),
@@ -312,15 +443,25 @@ export async function runVeraCollectPass(params: {
       held: true,
       result,
       reason: dispatch.reason ?? "dispatch_rejected",
+      decision: "dispatch",
+      windowOpen,
     };
   }
   await commitSnapshots();
   await params.memory.writeWake({
     lastCollectAtMs: nowMs,
+    lastDigestAtMs: nowMs,
     openTodoIdsJson: JSON.stringify(openTodoIds),
     ...noHeldPlan,
   });
-  return { collected: true, delivered: true, held: false, result };
+  return {
+    collected: true,
+    delivered: true,
+    held: false,
+    result,
+    decision: "dispatch",
+    windowOpen,
+  };
 }
 
 async function dispatchSafely(
@@ -425,12 +566,16 @@ export function registerVeraService(deps: VeraServiceDeps): void {
   // Fallback timers for hosts that omit the V2 scheduler field (e.g. OpenClaw 2026.9.8).
   const fallbackTimers = new Set<ReturnType<typeof setTimeout>>();
   const scheduleRepeating = (params: {
-    scheduler: { schedule: (job: {
-      id: string;
-      delayMs: number;
-      everyMs?: number;
-      run: () => void | Promise<void>;
-    }) => void } | undefined;
+    scheduler:
+      | {
+          schedule: (job: {
+            id: string;
+            delayMs: number;
+            everyMs?: number;
+            run: () => void | Promise<void>;
+          }) => void;
+        }
+      | undefined;
     id: string;
     delayMs: number;
     everyMs: number;
@@ -445,9 +590,7 @@ export function registerVeraService(deps: VeraServiceDeps): void {
       });
       return;
     }
-    api.logger.warn(
-      `vera: Gateway service scheduler missing; using setInterval for ${params.id}`,
-    );
+    api.logger.warn(`vera: Gateway service scheduler missing; using setInterval for ${params.id}`);
     const first = setTimeout(() => {
       fallbackTimers.delete(first);
       void params.run();
@@ -466,20 +609,14 @@ export function registerVeraService(deps: VeraServiceDeps): void {
       const tick = async (forceMorning: boolean) => {
         try {
           const memory = await openVeraMemoryFromApi(api);
-          const pass = await runVeraCollectPass({
+          await runVeraCollectPass({
             api,
             memory,
             now: now(),
             forceMorning,
+            trigger: forceMorning ? "morning" : "poll",
             dispatchDigestTurn,
           });
-          if (pass.held) {
-            api.logger.info(`vera held digest: ${pass.reason ?? "unknown"}`);
-          } else if (pass.delivered) {
-            api.logger.info("vera digest dispatched");
-          } else if (pass.collected && pass.result && !pass.result.plan.deliver) {
-            api.logger.info("vera collect silent: nothing cleared the bar");
-          }
           const clock = now();
           const profile = await memory.readProfile();
           if (forceMorning || isMorningDigestSlot(clock, profile?.timezone ?? DEFAULT_TZ)) {
@@ -536,8 +673,18 @@ export async function recordLawyerInbound(params: {
   atMs: number;
   /** Only Kapso WhatsApp from the lawyer should open the Cloud API window. */
   channelId?: string;
+  /** Sender ids from the inbound event; one must be the configured lawyer number. */
+  senders: unknown[];
 }): Promise<void> {
   if (params.channelId && params.channelId !== "kapso-whatsapp") {
+    return;
+  }
+  // The channel allowlist is not enough: this opens the paid WhatsApp window and
+  // releases a held digest, so only the configured lawyer may do that.
+  if (!isConfiguredLawyerSender(params.api.config, ...params.senders)) {
+    params.api.logger.warn(
+      "vera ignored an inbound message that is not from the configured lawyer",
+    );
     return;
   }
   const memory = await openVeraMemoryFromApi(params.api);
@@ -552,6 +699,7 @@ export async function recordLawyerInbound(params: {
     memory,
     now: new Date(params.atMs),
     forceMorning: true,
+    trigger: "inbound",
     dispatchDigestTurn: async (dispatchParams) => {
       const hooks = params.api.runtime.hooks;
       if (!hooks?.dispatchHookAgentTurn) {
