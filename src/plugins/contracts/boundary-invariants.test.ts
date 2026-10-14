@@ -31,6 +31,8 @@ const BUNDLED_TYPED_HOOK_REGISTRATION_FILES = [
   "extensions/memory-lancedb/index.ts",
   "extensions/onepassword/index.ts",
   "extensions/qa-lab/src/gateway-registration.ts",
+  "extensions/vera/index.ts",
+  "extensions/vera/src/status-reactions.ts",
   "extensions/visitor-access/index.ts",
   "extensions/workboard/index.ts",
 ] as const;
@@ -50,6 +52,8 @@ const BUNDLED_TYPED_HOOK_REGISTRATION_GUARDS = {
   "extensions/memory-lancedb/index.ts": ["agent_end", "before_prompt_build", "session_end"],
   "extensions/onepassword/index.ts": ["before_tool_call", "tool_result_persist"],
   "extensions/qa-lab/src/gateway-registration.ts": ["before_agent_run"],
+  "extensions/vera/index.ts": ["before_prompt_build", "message_received"],
+  "extensions/vera/src/status-reactions.ts": ["agent_end", "before_tool_call", "llm_input"],
   "extensions/visitor-access/index.ts": ["gateway_start"],
   "extensions/workboard/index.ts": ["agent_end", "gateway_start", "gateway_stop", "subagent_ended"],
 } as const satisfies Record<
