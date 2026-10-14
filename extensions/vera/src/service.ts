@@ -6,7 +6,14 @@ import {
   whatsappWindowOpen,
   type CollectResult,
 } from "./collector.js";
-import { mergeDigestPlans, parseDigestPlan, type DigestPlan } from "./digest.js";
+import { prepareDeadlineIntake } from "./deadline-intake.js";
+import {
+  mergeDigestPlans,
+  numberDeadlineLines,
+  parseDigestPlan,
+  type DigestDeadlineInput,
+  type DigestPlan,
+} from "./digest.js";
 import {
   dispatchDigest,
   type DigestDispatchRequest,
@@ -334,6 +341,15 @@ async function collectPass(params: VeraCollectPassParams): Promise<VeraCollectOu
   }
 
   const timeZone = profile?.timezone ?? DEFAULT_TZ;
+  const deadlineIntake = await prepareDeadlineIntake({
+    api: params.api,
+    memory: params.memory,
+    now: params.now,
+    forceMorning: params.forceMorning,
+    aliases,
+    timeZone,
+    accessToken: google.accessToken,
+  });
   const result = collectDigest({
     now: params.now,
     forceMorning: params.forceMorning,
@@ -344,6 +360,7 @@ async function collectPass(params: VeraCollectPassParams): Promise<VeraCollectOu
     aliases,
     todos,
     previousOpenTodoIds,
+    ...(deadlineIntake ? { deadlines: deadlineIntake.digest } : {}),
   });
 
   const openTodoIds = todos
@@ -365,7 +382,10 @@ async function collectPass(params: VeraCollectPassParams): Promise<VeraCollectOu
   }
 
   const held = parseDigestPlan(wake.heldPlanJson);
-  const plan = held ? mergeDigestPlans(held, result.plan, params.now) : result.plan;
+  const plan = withCurrentDeadlines(
+    held ? mergeDigestPlans(held, result.plan, params.now) : result.plan,
+    deadlineIntake?.digest.lines,
+  );
   const decision = decideDigestDelivery({
     // A held plan is already owed to the lawyer, so it skips the morning-or-urgent gate.
     result: { ...result, plan, urgent: result.urgent || (held !== null && plan.deliver) },
@@ -462,10 +482,13 @@ async function collectPass(params: VeraCollectPassParams): Promise<VeraCollectOu
 
   const day = dayKey(params.now, timeZone);
   const itemIds = decision.plan.items.map((item) => item.matterId).join(",");
+  const deadlineIds = decision.plan.deliver
+    ? decision.plan.deadlines?.map((line) => line.id).join(",")
+    : undefined;
   const dispatch = await dispatchSafely(dispatchDigestTurn, {
     plan: decision.plan,
     sessionKey: `hook:vera:digest:${day}`,
-    idempotencyKey: `vera-digest:${day}:${itemIds}`,
+    idempotencyKey: `vera-digest:${day}:${itemIds}${deadlineIds ? `:${deadlineIds}` : ""}`,
   });
   if (!dispatch.ok) {
     // An exhausted plan reaching here was re-armed by a morning slot or lawyer message.
@@ -492,6 +515,7 @@ async function collectPass(params: VeraCollectPassParams): Promise<VeraCollectOu
       windowOpen,
     };
   }
+  await deadlineIntake?.commit(decision.plan);
   await commitSnapshots();
   await params.memory.writeWake({
     lastCollectAtMs: nowMs,
@@ -507,6 +531,22 @@ async function collectPass(params: VeraCollectPassParams): Promise<VeraCollectOu
     decision: "dispatch",
     windowOpen,
   };
+}
+
+/**
+ * Deadline lines are recomputed every pass from matter memory and numbered here, so a
+ * held plan never replays stale numbers or reminder steps; the lines in a stored held
+ * plan are dropped, and nothing is listed when intake is off or failed this pass.
+ */
+function withCurrentDeadlines(
+  plan: DigestPlan,
+  lines: readonly DigestDeadlineInput[] | undefined,
+): DigestPlan {
+  if (!plan.deliver) {
+    return plan;
+  }
+  const { deadlines: _replaced, ...rest } = plan;
+  return lines?.length ? { ...rest, deadlines: numberDeadlineLines(lines) } : rest;
 }
 
 async function dispatchSafely(

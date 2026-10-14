@@ -38,6 +38,8 @@ Disable the Gateway model heartbeat for this install (`agents.defaults.heartbeat
           // googleNotifyServiceAccount: "${VERA_GOOGLE_NOTIFY_SERVICE_ACCOUNT}",
           // static fallback only: googleNotifyToken: "${VERA_GOOGLE_NOTIFY_TOKEN}",
           // statusToken: "${VERA_STATUS_TOKEN}",
+          // optional, default off: hearing and deadline intake
+          // deadlineIntake: { enabled: true, reminders: ["7d", "2d", "morning-of"] },
         },
       },
     },
@@ -52,6 +54,8 @@ Disable the Gateway model heartbeat for this install (`agents.defaults.heartbeat
       "vera_read_inbox",
       "vera_read_calendar",
       "vera_send_email",
+      "vera_deadline_list",
+      "vera_deadline_reply",
       "vera_memory_search",
       "vera_memory_list",
       "vera_memory_get",
@@ -183,3 +187,32 @@ When Vera accepts an inbound Kapso WhatsApp message, she marks that WhatsApp mes
 ## Memory
 
 Read-only tools: `vera_memory_search`, `vera_memory_list`, `vera_memory_get`, `vera_memory_history`, `vera_todo_list`, `vera_todo_get`. Every page except lawyer-global preferences requires a `matterId`. Search is case-insensitive substring match on aliases, title, and id. The daily reconcile writes timeline notes and one-pagers; the answering turn never writes memory.
+
+## Deadline and hearing intake
+
+Off by default. Set `plugins.entries.vera.config.deadlineIntake.enabled: true` to turn it on; with the flag off the collector, digest, and tools behave exactly as before.
+
+On each collect pass Vera scans new Gmail and the next `horizonDays` of Calendar for hearings and deadlines on matters it already knows:
+
+- Mail: subject, plain-text body, PEC messages (including the `postacert.eml` envelope), and the text of PDF attachments where it can be read without OCR. Italian and English phrasing, `dd/mm/yyyy`, `12 novembre 2026`, `November 12th, 2026`, ISO dates, times in 24-hour or AM/PM form, terms counted from receipt ("entro 30 giorni dalla notifica"), and postponements ("rinviata al ...") are understood. Dates that record the past ("depositata il ...") or name another document ("sentenza del ...") are ignored, as are impossible dates.
+- Calendar: events whose title says udienza, scadenza, hearing, deadline, and similar.
+
+Each item is stored in `memory.sqlite` with the matter, type (`deadline` or `hearing`), due date and time in Europe/Rome (all-day deadlines count until 23:59, hearings without a time default to 09:00), sources, and a confidence score. The same obligation from an email, a PDF, and a calendar event is one item, and a dismissed item is not revived by a later copy. A postponement notice or a moved calendar event moves the item and carries over the lawyer's choice. An item the lawyer never answers is offered in at most three digests (always while it is due within 48 hours) and stays visible through `vera_deadline_list`. Items below `minConfidence` (default 0.6) and dates in the past are dropped. Mail about matters without an alias is ignored.
+
+The morning digest lists upcoming items with a number: "reply 1 to run research". A reply calls `vera_deadline_reply`:
+
+- a number runs Lexroom research for that matter, confirms tracking, and the brief is texted back in the same turn;
+- `track` confirms tracking without research; `brief` resends the stored brief without calling Lexroom; `dismiss` and `done` close the item.
+
+Reminders come only after the lawyer confirms an item. They ride in the morning digest at 07:40 Europe/Rome on the day of each step in `deadlineIntake.reminders` (default `7d`, `2d`, `morning-of`; `Nd` counts calendar days before the due date). Steps whose time had already passed when the lawyer confirmed are skipped. If the WhatsApp window is closed, the reminder waits with the held digest, and when several steps pile up only the latest is sent. Deadline lines and their reply numbers are rebuilt from matter memory on every pass, including when a held or retried digest is finally sent, and the numbers are recorded only once that digest is delivered.
+
+Known limits: a cancelled or deleted calendar event does not end an item (reply `dismiss`), mail is scanned once per message, and PDFs without a text layer (scans) are read from the email body only.
+
+Until the lawyer replies, intake is read-only. It sends no email and does not touch the calendar; email replies keep the existing `vera_send_email` confirmation. The flow is described in `skills/vera-deadline-intake`.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `deadlineIntake.enabled` | `false` | Turn intake, digest lines, reply tools, and reminders on. |
+| `deadlineIntake.reminders` | `["7d", "2d", "morning-of"]` | Reminder cadence for confirmed items. |
+| `deadlineIntake.horizonDays` | `60` | How far ahead the calendar is scanned. |
+| `deadlineIntake.minConfidence` | `0.6` | Drop extractions scored below this. |

@@ -26,8 +26,11 @@ Digest cost bar is 40 (`extensions/vera/src/digest.ts`):
 - Within 48h: 80
 - `calendar_move` with `movedCloser`, even if farther: 70
 - `overnight_email` with `needsDecision`: 60
+- Confirmed deadline or hearing with a reminder due or a new date (`tracked` signal, only with `deadlineIntake.enabled`): 60
 - `decision_waiting` with `needsDecision`: 50
 - Otherwise 0
+
+Deadline and hearing intake (`deadlineIntake.enabled`, default false) adds deadline lines with reply numbers to the digest plan, `vera_deadline_reply` for the lawyer's answer, and reminders for confirmed items only. See `extensions/vera/README.md`.
 
 One line per matter. A delivered digest offers exactly two next steps. Silence is `{deliver:false, reason:"nothing_cleared_the_bar"}`.
 

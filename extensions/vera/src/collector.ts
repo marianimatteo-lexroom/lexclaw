@@ -1,8 +1,12 @@
-import type { DigestPlan, DigestSignal } from "./digest.js";
+import { classifyDeadlineText, parseDeadlines } from "./deadline-parse.js";
+import { localIsoDate, localTimeLabel, parseIsoDate, zonedTimeToUtcMs } from "./deadline-time.js";
+import type { DigestDeadlineInput, DigestPlan, DigestSignal } from "./digest.js";
 import { planDigest } from "./digest.js";
 import type { CalendarEvent, InboxMessage } from "./google-api.js";
 import type {
   CalendarSnapshotRow,
+  DeadlineCandidate,
+  DeadlineSource,
   GmailSnapshotRow,
   MemoryTodo,
 } from "./memory-contract.js";
@@ -22,6 +26,13 @@ export type CollectInput = {
   todos: readonly MemoryTodo[];
   /** Todo ids already open on the previous collect; used to detect new open loops. */
   previousOpenTodoIds?: readonly string[];
+  /** Deadline intake output; absent unless `deadlineIntake.enabled` is set. */
+  deadlines?: DeadlineDigestInput;
+};
+
+export type DeadlineDigestInput = {
+  signals: readonly DigestSignal[];
+  lines: readonly DigestDeadlineInput[];
 };
 
 export type CollectResult = {
@@ -167,7 +178,11 @@ export function collectDigest(input: CollectInput): CollectResult {
     });
   }
 
-  const plan = planDigest(signals, input.now);
+  const plan = planDigest(
+    input.deadlines ? [...signals, ...input.deadlines.signals] : signals,
+    input.now,
+    input.deadlines?.lines,
+  );
   if (plan.deliver) {
     const top = plan.items[0];
     if (
@@ -206,4 +221,186 @@ export function isMorningDigestSlot(now: Date, timeZone: string): boolean {
   const hour = parts.find((part) => part.type === "hour")?.value;
   const minute = parts.find((part) => part.type === "minute")?.value;
   return hour === "07" && minute === "40";
+}
+
+export type DeadlineScanMessage = InboxMessage & {
+  bodyText: string;
+  /** Text read from PDF attachments, including PDFs inside a PEC envelope. */
+  attachmentTexts: ReadonlyArray<{ filename: string; text: string }>;
+};
+
+const COURT_SENDER =
+  /giustiziacert|giustizia\.it|cancelleria|tribunale|corte d['’]appello|\bcourt\b|tribunal/iu;
+const SUBJECT_NOISE = /^(?:(?:re|fwd?|r|i)\s*:\s*|posta certificata\s*:\s*)+/iu;
+const BODY_MATCH_CHARS = 4000;
+
+const MAX_TITLE_CHARS = 200;
+
+function clip(text: string, max = MAX_TITLE_CHARS): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function cleanSubject(subject: string): string {
+  return subject.replace(SUBJECT_NOISE, "").trim();
+}
+
+function emailSource(
+  message: DeadlineScanMessage,
+  kind: "email" | "pdf",
+  filename: string,
+  excerpt: string,
+): DeadlineSource {
+  return {
+    kind,
+    ref: kind === "pdf" ? `${message.id}#${filename.slice(0, 80)}` : message.id,
+    label: clip(
+      kind === "pdf"
+        ? `${cleanSubject(message.subject) || message.from} (${filename.slice(0, 80)})`
+        : `${message.from}: ${cleanSubject(message.subject)}`,
+    ),
+    excerpt: clip(excerpt),
+  };
+}
+
+function matterForMessage(
+  message: DeadlineScanMessage,
+  aliases: readonly MatterAlias[],
+): string | null {
+  return (
+    matchMatterId(`${message.from} ${message.subject}`, aliases) ??
+    matchMatterId(message.bodyText.slice(0, BODY_MATCH_CHARS), aliases) ??
+    message.attachmentTexts
+      .map((entry) => matchMatterId(entry.text.slice(0, BODY_MATCH_CHARS), aliases))
+      .find((matterId) => matterId !== null) ??
+    null
+  );
+}
+
+function eventStart(
+  start: string,
+  type: "deadline" | "hearing",
+  timeZone: string,
+): { dueAtMs: number; dueDate: string; dueTime: string | null } | null {
+  const dateOnly = parseIsoDate(start);
+  if (dateOnly) {
+    const [hour, minute] = type === "hearing" ? [9, 0] : [23, 59];
+    return {
+      dueAtMs: zonedTimeToUtcMs(
+        timeZone,
+        dateOnly.year,
+        dateOnly.month,
+        dateOnly.day,
+        hour,
+        minute,
+      ),
+      dueDate: start,
+      dueTime: null,
+    };
+  }
+  const ms = Date.parse(start);
+  if (!Number.isFinite(ms)) {
+    return null;
+  }
+  return {
+    dueAtMs: ms,
+    dueDate: localIsoDate(ms, timeZone),
+    dueTime: localTimeLabel(ms, timeZone),
+  };
+}
+
+/**
+ * Hearings and deadlines found in new mail (body, PDF text, PEC envelope) and in
+ * calendar events, for matters the lawyer already has. Mail about unknown matters is
+ * dropped, as in collectDigest. Pure: the caller owns fetching and storage.
+ */
+export function collectDeadlineCandidates(input: {
+  now: Date;
+  timeZone: string;
+  messages: readonly DeadlineScanMessage[];
+  events: readonly CalendarEvent[];
+  aliases: readonly MatterAlias[];
+}): DeadlineCandidate[] {
+  const candidates: DeadlineCandidate[] = [];
+
+  for (const message of input.messages) {
+    const matterId = matterForMessage(message, input.aliases);
+    if (!matterId) {
+      continue;
+    }
+    const parsedDate = Date.parse(message.date);
+    const referenceMs = Number.isFinite(parsedDate) ? parsedDate : input.now.getTime();
+    const court = COURT_SENDER.test(
+      `${message.from} ${message.subject} ${message.bodyText.slice(0, 600)}`,
+    );
+    const parts: Array<{ kind: "email" | "pdf"; filename: string; text: string }> = [
+      {
+        kind: "email",
+        filename: "",
+        text: `${cleanSubject(message.subject)}\n${message.bodyText || message.snippet}`,
+      },
+      ...message.attachmentTexts.map((entry) => ({
+        kind: "pdf" as const,
+        filename: entry.filename,
+        text: entry.text,
+      })),
+    ];
+    for (const part of parts) {
+      for (const found of parseDeadlines(part.text, { referenceMs, timeZone: input.timeZone })) {
+        const confidence = Math.max(
+          0,
+          Math.min(0.99, found.confidence + (court ? 0.05 : 0) - (part.kind === "pdf" ? 0.05 : 0)),
+        );
+        candidates.push({
+          matterId,
+          type: found.type,
+          title: clip(cleanSubject(message.subject) || found.excerpt),
+          dueAtMs: found.dueAtMs,
+          dueDate: found.dueDate,
+          dueTime: found.dueTime,
+          timeZone: input.timeZone,
+          confidence: Math.round(confidence * 100) / 100,
+          source: emailSource(message, part.kind, part.filename, found.excerpt),
+          ...(found.movedFromDate ? { movesFrom: { dueDate: found.movedFromDate } } : {}),
+          ...(found.rescheduled ? { rescheduled: true } : {}),
+        });
+      }
+    }
+  }
+
+  for (const event of input.events) {
+    if (event.status === "cancelled") {
+      continue;
+    }
+    const matterId = matchMatterId(`${event.summary} ${event.description ?? ""}`, input.aliases);
+    const fromSummary = classifyDeadlineText(event.summary);
+    const type =
+      fromSummary ??
+      (matterId && event.description
+        ? classifyDeadlineText(event.description.slice(0, 300))
+        : null);
+    if (!matterId || !type) {
+      continue;
+    }
+    const when = eventStart(event.start, type, input.timeZone);
+    if (!when) {
+      continue;
+    }
+    candidates.push({
+      matterId,
+      type,
+      title: clip(event.summary.trim() || "Calendar event"),
+      ...when,
+      timeZone: input.timeZone,
+      confidence: fromSummary ? 0.9 : 0.8,
+      source: {
+        kind: "calendar",
+        ref: event.id,
+        label: clip(event.summary),
+        excerpt: clip(event.summary),
+      },
+      movesFrom: { sourceRef: event.id },
+    });
+  }
+
+  return candidates.toSorted((a, b) => a.dueAtMs - b.dueAtMs);
 }

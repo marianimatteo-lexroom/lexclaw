@@ -4,6 +4,10 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { openSqliteWorkerStore, type SqliteWorkerStore } from "openclaw/plugin-sdk/sqlite-runtime";
 import type {
   CalendarSnapshotRow,
+  DeadlineCandidate,
+  DeadlineItem,
+  DeadlinePatch,
+  DeadlineUpsertResult,
   GmailSnapshotRow,
   LawyerProfile,
   MemoryFolder,
@@ -33,6 +37,17 @@ export type MemoryStore = {
   readWake(): Promise<WakeState>;
   writeWake(patch: Partial<WakeState>): Promise<void>;
   listMatterAliases(): Promise<Array<{ matterId: string; alias: string; title: string }>>;
+  upsertDeadlines(candidates: DeadlineCandidate[], atMs: number): Promise<DeadlineUpsertResult>;
+  listDeadlines(matterId?: string): Promise<DeadlineItem[]>;
+  getDeadline(id: string): Promise<DeadlineItem | null>;
+  updateDeadline(id: string, patch: DeadlinePatch, atMs: number): Promise<DeadlineItem | null>;
+  commitDeadlineDigest(
+    offers: Array<{ id: string; no: number }>,
+    reminders: Array<{ id: string; steps: string[] }>,
+    atMs: number,
+  ): Promise<void>;
+  filterUnscannedMessages(ids: string[]): Promise<string[]>;
+  markMessagesScanned(ids: string[], atMs: number): Promise<void>;
 };
 
 const stores = new Map<string, Promise<MemoryStore>>();
@@ -41,7 +56,7 @@ export function veraMemoryWorkerUrl(runtimeSource: string): URL {
   return new URL(`./src/memory.worker${path.extname(runtimeSource)}`, pathToFileURL(runtimeSource));
 }
 
-function wrap(worker: SqliteWorkerStore<VeraMemoryOperations>): MemoryStore {
+export function wrapMemoryWorker(worker: SqliteWorkerStore<VeraMemoryOperations>): MemoryStore {
   return {
     upsertProfile(profile) {
       return worker.execute({ type: "upsertProfile", input: profile });
@@ -94,6 +109,27 @@ function wrap(worker: SqliteWorkerStore<VeraMemoryOperations>): MemoryStore {
     listMatterAliases() {
       return worker.execute({ type: "listMatterAliases", input: undefined });
     },
+    upsertDeadlines(candidates, atMs) {
+      return worker.execute({ type: "upsertDeadlines", input: { candidates, atMs } });
+    },
+    listDeadlines(matterId) {
+      return worker.execute({ type: "listDeadlines", input: { matterId } });
+    },
+    getDeadline(id) {
+      return worker.execute({ type: "getDeadline", input: { id } });
+    },
+    updateDeadline(id, patch, atMs) {
+      return worker.execute({ type: "updateDeadline", input: { id, patch, atMs } });
+    },
+    commitDeadlineDigest(offers, reminders, atMs) {
+      return worker.execute({ type: "commitDeadlineDigest", input: { offers, reminders, atMs } });
+    },
+    filterUnscannedMessages(ids) {
+      return worker.execute({ type: "filterUnscannedMessages", input: { ids } });
+    },
+    markMessagesScanned(ids, atMs) {
+      return worker.execute({ type: "markMessagesScanned", input: { ids, atMs } });
+    },
   };
 }
 
@@ -110,7 +146,7 @@ export function openVeraMemory(params: {
     moduleUrl: veraMemoryWorkerUrl(params.runtimeSource),
     databasePath,
     input: undefined,
-  }).then(wrap);
+  }).then(wrapMemoryWorker);
   stores.set(databasePath, opening);
   opening.catch(() => {
     stores.delete(databasePath);

@@ -25,6 +25,7 @@ When the plan is `deliver: true`, send exactly one WhatsApp message, written as 
 - Say what changed and why it should not wait, in sentences. No asterisks, no emoji, no em dashes, no headers, no field lists. If you include a draft, quote it with lines that start with `> `.
 - End with the two `plan.nextSteps`, in order. The first is research. The second is a draft that still needs a yes.
 - Do not add a third offer. Do not mention a matter that is absent from `plan.items`.
+- When the plan has a `deadlines` array, also follow the vera-deadline-intake skill for those lines; they sit between the ranked items and the two next steps and are the only addition to this rule.
 
 Use `vera_memory_search` / `vera_memory_get` only for the matters named in `plan.items`. Never pull another client's facts.
 
