@@ -209,6 +209,23 @@ else
   log "skip plugins.entries.vera.config.deadlineIntake.reminders: VERA_DEADLINE_REMINDERS is unset"
 fi
 
+# WhatsApp status reactions (👀 → ⏳ → ✅/❌) are sent by the Vera plugin straight through
+# Kapso and read from the gateway environment, so this only validates and exports them.
+# OpenClaw's messages.ackReaction/statusReactions are not used: they are a no-op on Kapso.
+STATUS_REACTIONS="$(printf '%s' "${VERA_STATUS_REACTIONS:-true}" | tr '[:upper:]' '[:lower:]')"
+case "${STATUS_REACTIONS}" in
+  true | false) ;;
+  "") STATUS_REACTIONS=true ;;
+  *) die "VERA_STATUS_REACTIONS must be true or false, got '${VERA_STATUS_REACTIONS}'" ;;
+esac
+export VERA_STATUS_REACTIONS="${STATUS_REACTIONS}"
+for reaction_var in VERA_REACTION_ACK VERA_REACTION_THINKING VERA_REACTION_DONE VERA_REACTION_ERROR; do
+  reaction_value="${!reaction_var:-}"
+  if [ -n "${reaction_value}" ] && [ "${#reaction_value}" -gt 32 ]; then
+    die "${reaction_var} must be a single emoji, got '${reaction_value}'"
+  fi
+done
+
 if [ -n "${VERA_GOOGLE_CLIENT_ID:-}" ]; then
   export GOOGLE_REDIRECT_URI="${VERA_GOOGLE_REDIRECT_URI:-${PUBLIC_ORIGIN}/vera/google/callback}"
   export LEXROOM_CONNECT_URI="${VERA_LEXROOM_CONNECT_URI:-${PUBLIC_ORIGIN}/vera/lexroom/connect}"

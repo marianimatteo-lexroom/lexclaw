@@ -42,8 +42,9 @@ import {
   executeVeraTodoList,
 } from "./src/memory-tools.js";
 import { openVeraMemoryFromApi } from "./src/memory.js";
-import { handleVeraStatus } from "./src/status.js";
 import { recordLawyerInbound, registerVeraService } from "./src/service.js";
+import { registerStatusReactionHooks } from "./src/status-reactions.js";
+import { handleVeraStatus } from "./src/status.js";
 import { handleVeraGoogleNotify } from "./src/watch.js";
 import {
   markKapsoMessageRead,
@@ -189,7 +190,8 @@ const tools = defineToolPlugin({
           {
             name: Type.String({
               minLength: 1,
-              description: "Approved WhatsApp utility template name, for example vera_digest_ready.",
+              description:
+                "Approved WhatsApp utility template name, for example vera_digest_ready.",
             }),
             language: Type.String({
               minLength: 1,
@@ -525,13 +527,24 @@ const entry = definePluginEntry({
     tools.register(api);
     registerVeraService({ api });
 
+    const statusReactions = registerStatusReactionHooks(api);
+
     api.on("message_received", async (event, ctx) => {
       const channelId = readInboundChannelId(event, ctx);
+      const messageId = readInboundMessageId(event, ctx);
+      const accountId = typeof ctx.accountId === "string" ? ctx.accountId : undefined;
+      statusReactions.received({
+        sessionKey: ctx.sessionKey ?? event.sessionKey,
+        channelId,
+        accountId,
+        messageId,
+        senders: [ctx.senderId, event.from],
+      });
       const readReceipt = markKapsoMessageRead({
         config: api.config,
         channelId,
-        accountId: typeof ctx.accountId === "string" ? ctx.accountId : undefined,
-        messageId: readInboundMessageId(event, ctx),
+        accountId,
+        messageId,
       }).then((result) => {
         if (!result.ok) {
           api.logger.warn(`vera whatsapp read receipt failed: ${result.error}`);

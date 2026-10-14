@@ -11,8 +11,15 @@ const READ_RECEIPT_TIMEOUT_MS = 10_000;
 /** Cloud API message ids. Kapso also synthesizes `{from}:{timestamp}` when the webhook has no id. */
 const WHATSAPP_MESSAGE_ID = /^wamid\.[A-Za-z0-9+/_=-]{8,}$/;
 
+export function isWhatsAppMessageId(value: string): boolean {
+  return WHATSAPP_MESSAGE_ID.test(value);
+}
+
 export type KapsoReadReceiptResult =
-  | { ok: true; skipped: "not-whatsapp" | "receipts-disabled" | "not-a-whatsapp-id" | "missing-credentials" }
+  | {
+      ok: true;
+      skipped: "not-whatsapp" | "receipts-disabled" | "not-a-whatsapp-id" | "missing-credentials";
+    }
   | { ok: true }
   | { ok: false; error: string };
 
@@ -33,7 +40,7 @@ export async function markKapsoMessageRead(params: {
     return { ok: true, skipped: "not-whatsapp" };
   }
   const messageId = params.messageId?.trim() ?? "";
-  if (!WHATSAPP_MESSAGE_ID.test(messageId)) {
+  if (!isWhatsAppMessageId(messageId)) {
     return { ok: true, skipped: "not-a-whatsapp-id" };
   }
 
@@ -63,7 +70,10 @@ export async function markKapsoMessageRead(params: {
   }
   return {
     ok: false,
-    error: posted.kind === "timeout" ? "kapso read receipt timed out" : "kapso read receipt request failed",
+    error:
+      posted.kind === "timeout"
+        ? "kapso read receipt timed out"
+        : "kapso read receipt request failed",
   };
 }
 
