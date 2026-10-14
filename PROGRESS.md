@@ -26,8 +26,11 @@ Digest cost bar is 40 (`extensions/vera/src/digest.ts`):
 - Within 48h: 80
 - `calendar_move` with `movedCloser`, even if farther: 70
 - `overnight_email` with `needsDecision`: 60
+- Confirmed deadline or hearing with a reminder due or a new date (`tracked` signal, only with `deadlineIntake.enabled`): 60
 - `decision_waiting` with `needsDecision`: 50
 - Otherwise 0
+
+Deadline and hearing intake (`deadlineIntake.enabled`, default false) adds deadline lines with reply numbers to the digest plan, `vera_deadline_reply` for the lawyer's answer, and reminders for confirmed items only. See `extensions/vera/README.md`.
 
 One line per matter. A delivered digest offers exactly two next steps. Silence is `{deliver:false, reason:"nothing_cleared_the_bar"}`.
 
@@ -201,7 +204,7 @@ fi
 node openclaw.mjs config set plugins.entries.vera.enabled true --strict-json || true
 node openclaw.mjs config set plugins.entries.vera.hooks.allowConversationAccess true --strict-json || true
 node openclaw.mjs config set plugins.entries.kapso-whatsapp.enabled true --strict-json || true
-node openclaw.mjs config set 'tools.alsoAllow' '["vera_plan_digest","vera_research","vera_draft","vera_lexroom_connect","vera_google_connect","vera_read_inbox","vera_read_calendar","vera_send_email","vera_memory_search","vera_memory_list","vera_memory_get","vera_memory_history","vera_todo_list","vera_todo_get"]' --strict-json || true
+node openclaw.mjs config set 'tools.alsoAllow' '["vera_plan_digest","vera_research","vera_draft","vera_lexroom_connect","vera_google_connect","vera_read_inbox","vera_read_calendar","vera_send_email","vera_deadline_list","vera_deadline_reply","vera_memory_search","vera_memory_list","vera_memory_get","vera_memory_history","vera_todo_list","vera_todo_get"]' --strict-json || true
 node openclaw.mjs config set 'channels["kapso-whatsapp"].enabled' true --strict-json || true
 node openclaw.mjs config set 'channels["kapso-whatsapp"].phoneNumberId' '"<KAPSO_PHONE_NUMBER_ID>"' --strict-json || true
 node openclaw.mjs config set 'channels["kapso-whatsapp"].defaultTo' '"+390000000000"' --strict-json || true
