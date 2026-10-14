@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { markKapsoMessageRead, readInboundChannelId, readInboundMessageId } from "./whatsapp-read.js";
+import {
+  markKapsoMessageRead,
+  readInboundChannelId,
+  readInboundMessageId,
+} from "./whatsapp-read.js";
 
 const MESSAGE_ID = "wamid.HBgMMzkwMDAwMDAwMDAwFQIAEhgUM0IyMjUwOEJBREUwODEyNEQ2MDkA";
 
@@ -30,9 +34,7 @@ describe("markKapsoMessageRead", () => {
     expect(result).toEqual({ ok: true });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0] ?? [];
-    expect(url).toBe(
-      "https://api.kapso.ai/meta/whatsapp/v23.0/100000000000000/messages",
-    );
+    expect(url).toBe("https://api.kapso.ai/meta/whatsapp/v23.0/100000000000000/messages");
     expect(init).toMatchObject({
       method: "POST",
       headers: {
@@ -92,7 +94,9 @@ describe("markKapsoMessageRead", () => {
     expect(
       await markKapsoMessageRead({
         config: {
-          channels: { "kapso-whatsapp": { ...config.channels["kapso-whatsapp"], sendReadReceipts: false } },
+          channels: {
+            "kapso-whatsapp": { ...config.channels["kapso-whatsapp"], sendReadReceipts: false },
+          },
         },
         channelId: "kapso-whatsapp",
         messageId: MESSAGE_ID,
@@ -125,10 +129,113 @@ describe("markKapsoMessageRead", () => {
     expect(JSON.stringify(result)).not.toContain("kapso_test_key");
   });
 
-  it("reads the channel and message id from the hook context", () => {
+  it.each([400, 403, 404, 429, 500, 502, 503])(
+    "returns a failure for Kapso HTTP %i without leaking the API key",
+    async (status) => {
+      const fetchImpl = vi.fn(async () => jsonResponse(status));
+      const result = await markKapsoMessageRead({
+        config,
+        channelId: "kapso-whatsapp",
+        messageId: MESSAGE_ID,
+        env: {},
+        fetchImpl,
+      });
+      expect(result).toEqual({ ok: false, error: `kapso read receipt returned HTTP ${status}` });
+      expect(JSON.stringify(result)).not.toContain("kapso_test_key");
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("returns a generic failure when the request throws", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("connect ECONNREFUSED kapso_test_key");
+    });
+    const result = await markKapsoMessageRead({
+      config,
+      channelId: "kapso-whatsapp",
+      messageId: MESSAGE_ID,
+      env: {},
+      fetchImpl,
+    });
+    expect(result).toEqual({ ok: false, error: "kapso read receipt request failed" });
+  });
+
+  it("aborts and reports a timeout after 10 seconds", async () => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | undefined;
+      const fetchImpl = vi.fn(
+        (_url: RequestInfo | URL, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            signal = init?.signal ?? undefined;
+            signal?.addEventListener("abort", () => reject(new Error("aborted")));
+          }),
+      );
+      const pending = markKapsoMessageRead({
+        config,
+        channelId: "kapso-whatsapp",
+        messageId: MESSAGE_ID,
+        env: {},
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(signal?.aborted).toBe(true);
+      expect(await pending).toEqual({ ok: false, error: "kapso read receipt timed out" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("aborts the request and reports a timeout when the caller aborts", async () => {
+    const caller = new AbortController();
+    const fetchImpl = vi.fn(
+      (_url: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+    );
+    const pending = markKapsoMessageRead({
+      config,
+      channelId: "kapso-whatsapp",
+      messageId: MESSAGE_ID,
+      env: {},
+      fetchImpl: fetchImpl as typeof fetch,
+      signal: caller.signal,
+    });
+    caller.abort();
+    expect(await pending).toEqual({ ok: false, error: "kapso read receipt timed out" });
+  });
+
+  it("rejects a non-https base URL and a malformed phone number id without calling out", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(200));
+    const account = config.channels["kapso-whatsapp"];
     expect(
-      readInboundChannelId({ channel: "legacy" }, { channelId: "kapso-whatsapp" }),
-    ).toBe("kapso-whatsapp");
+      await markKapsoMessageRead({
+        config: { channels: { "kapso-whatsapp": { ...account, baseUrl: "http://api.kapso.ai" } } },
+        channelId: "kapso-whatsapp",
+        messageId: MESSAGE_ID,
+        env: {},
+        fetchImpl,
+      }),
+    ).toEqual({ ok: false, error: "kapso base URL is invalid" });
+    expect(
+      await markKapsoMessageRead({
+        config: { channels: { "kapso-whatsapp": { ...account, phoneNumberId: "not-a-number" } } },
+        channelId: "kapso-whatsapp",
+        messageId: MESSAGE_ID,
+        env: {},
+        fetchImpl,
+      }),
+    ).toEqual({ ok: false, error: "kapso phoneNumberId is invalid" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("reads the channel and message id from the hook context", () => {
+    expect(readInboundChannelId({ channel: "legacy" }, { channelId: "kapso-whatsapp" })).toBe(
+      "kapso-whatsapp",
+    );
     expect(readInboundMessageId({ messageId: "from-event" }, { messageId: MESSAGE_ID })).toBe(
       MESSAGE_ID,
     );
