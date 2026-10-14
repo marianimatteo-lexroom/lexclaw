@@ -6,7 +6,13 @@ import type { DigestPlan } from "./digest.js";
 import type { InboxMessage } from "./google-api.js";
 import type { CalendarSnapshotRow, GmailSnapshotRow, WakeState } from "./memory-contract.js";
 import type { MemoryStore } from "./memory.js";
-import { HELD_PLAN_MAX_ATTEMPTS, heldPlanBackoffMs, runVeraCollectPass } from "./service.js";
+import {
+  HELD_PLAN_MAX_ATTEMPTS,
+  heldPlanBackoffMs,
+  recordLawyerInbound,
+  registerVeraService,
+  runVeraCollectPass,
+} from "./service.js";
 
 const google = vi.hoisted(() => ({
   loadAccessToken: vi.fn(),
@@ -19,6 +25,10 @@ vi.mock("./google-api.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./google-api.js")>()),
   ...google,
 }));
+
+const memoryModule = vi.hoisted(() => ({ openVeraMemoryFromApi: vi.fn() }));
+
+vi.mock("./memory.js", () => memoryModule);
 
 vi.mock("./google-account.js", () => ({
   openVeraGoogleAccountFromApi: async () => ({
@@ -62,6 +72,7 @@ const deliverable: CollectResult = {
   urgent: true,
 };
 
+const LAWYER_NUMBER = "+390000000000";
 const HOUR_MS = 60 * 60 * 1000;
 const MORNING = new Date("2026-10-06T05:40:00.000Z");
 const POLL_1 = new Date(MORNING.getTime() + 10 * 60 * 1000);
@@ -82,7 +93,7 @@ const BIANCHI_MAIL: InboxMessage = {
   snippet: "Can you confirm?",
 };
 
-function createMemory(wake: Partial<WakeState> = {}) {
+function createMemory(wake: Partial<WakeState> = {}, timezone?: string) {
   let gmail: GmailSnapshotRow[] = [];
   let calendar: CalendarSnapshotRow[] = [];
   let state: WakeState = {
@@ -112,7 +123,7 @@ function createMemory(wake: Partial<WakeState> = {}) {
       { matterId: "bianchi", alias: "Bianchi", title: "Bianchi" },
     ],
     listTodos: async () => [],
-    readProfile: async () => null,
+    readProfile: async () => (timezone ? { timezone } : null),
     readWake: async () => ({ ...state }),
     writeWake: async (patch: Partial<WakeState>) => {
       state = { ...state, ...patch };
@@ -372,5 +383,260 @@ describe("heldPlanBackoffMs", () => {
       120 * 60_000,
       120 * 60_000,
     ]);
+  });
+});
+
+describe("collect pass concurrency", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    google.loadAccessToken.mockResolvedValue({ ok: true, accessToken: "token" });
+    google.watchGmailInbox.mockResolvedValue({ ok: false });
+    google.listUpcomingEvents.mockResolvedValue({ ok: true, events: [] });
+  });
+
+  function gatedInbox() {
+    const gates: Array<() => void> = [];
+    let active = 0;
+    let maxActive = 0;
+    google.listInboxMessages.mockImplementation(async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise<void>((resolve) => {
+        gates.push(resolve);
+      });
+      active -= 1;
+      return { ok: true, messages: [] };
+    });
+    return { gates, maxActive: () => maxActive };
+  }
+
+  it("never overlaps passes and collapses a burst of polls into one trailing pass", async () => {
+    const { gates, maxActive } = gatedInbox();
+    const store = createMemory();
+    const dispatch = vi.fn(async () => ({ ok: true }));
+
+    const first = pass(store.memory, { now: MORNING, dispatch });
+    await vi.waitFor(() => expect(gates).toHaveLength(1));
+    const second = pass(store.memory, { now: MORNING, dispatch });
+    const third = pass(store.memory, { now: MORNING, dispatch });
+    expect(third).toBe(second);
+
+    gates[0]?.();
+    await first;
+    await vi.waitFor(() => expect(gates).toHaveLength(2));
+    gates[1]?.();
+    await Promise.all([second, third]);
+
+    expect(google.listInboxMessages).toHaveBeenCalledTimes(2);
+    expect(maxActive()).toBe(1);
+  });
+
+  it("queues a forced pass behind a running poll instead of dropping or merging it", async () => {
+    const { gates, maxActive } = gatedInbox();
+    const store = createMemory();
+    const dispatch = vi.fn(async () => ({ ok: true }));
+
+    const poll = pass(store.memory, { now: MORNING, dispatch });
+    await vi.waitFor(() => expect(gates).toHaveLength(1));
+    const morning = pass(store.memory, { now: MORNING, forceMorning: true, dispatch });
+    const laterPoll = pass(store.memory, { now: MORNING, dispatch });
+    expect(morning).not.toBe(laterPoll);
+
+    for (let index = 0; index < 3; index += 1) {
+      await vi.waitFor(() => expect(gates).toHaveLength(index + 1));
+      gates[index]?.();
+    }
+    await Promise.all([poll, morning, laterPoll]);
+
+    expect(google.listInboxMessages).toHaveBeenCalledTimes(3);
+    expect(maxActive()).toBe(1);
+  });
+
+  it("releases a held plan on a lawyer reply that lands while a pass is dispatching", async () => {
+    setGoogle({ events: [HEARING] });
+    const store = createMemory();
+    memoryModule.openVeraMemoryFromApi.mockResolvedValue(store.memory);
+    const hookDispatch = vi.fn(async () => ({ ok: true, runId: "run" }));
+    const replyApi = createTestPluginApi({
+      id: "vera",
+      pluginConfig: api.pluginConfig,
+      config: { channels: { "kapso-whatsapp": { defaultTo: LAWYER_NUMBER } } },
+      runtime: {
+        hooks: { dispatchHookAgentTurn: hookDispatch },
+      } as unknown as OpenClawPluginApi["runtime"],
+    });
+
+    let failDispatch!: () => void;
+    const poll = runVeraCollectPass({
+      api: replyApi,
+      memory: store.memory,
+      now: MORNING,
+      forceMorning: false,
+      trigger: "poll",
+      dispatchDigestTurn: () =>
+        new Promise((resolve) => {
+          failDispatch = () => resolve({ ok: false, reason: "timeout" });
+        }),
+    });
+    await vi.waitFor(() => expect(failDispatch).toBeTypeOf("function"));
+
+    const replyAtMs = MORNING.getTime() + 60_000;
+    const reply = recordLawyerInbound({
+      api: replyApi,
+      atMs: replyAtMs,
+      channelId: "kapso-whatsapp",
+      senders: [LAWYER_NUMBER],
+    });
+    failDispatch();
+    await Promise.all([poll, reply]);
+
+    expect(hookDispatch).toHaveBeenCalledOnce();
+    expect(hookDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Vera held digest",
+        message: expect.stringContaining("The lawyer just texted"),
+      }),
+    );
+    expect(store.wake()).toMatchObject({
+      lastLawyerInboundAtMs: replyAtMs,
+      heldPlanJson: null,
+      heldPlanAttempts: 0,
+    });
+  });
+});
+
+describe("vera service scheduling", () => {
+  type Job = { id: string; atMs?: number; delayMs?: number; everyMs?: number; run: () => unknown };
+
+  async function startService(options: {
+    now: Date;
+    wake?: Partial<WakeState>;
+    timezone?: string;
+  }) {
+    const clock = { value: options.now };
+    const store = createMemory(options.wake, options.timezone);
+    memoryModule.openVeraMemoryFromApi.mockResolvedValue(store.memory);
+    const jobs: Job[] = [];
+    const scheduler = { schedule: vi.fn((job: Job) => void jobs.push(job)) };
+    let service: Parameters<OpenClawPluginApi["registerService"]>[0] | undefined;
+    const serviceApi = createTestPluginApi({
+      id: "vera",
+      pluginConfig: api.pluginConfig,
+      registerService: (registered) => {
+        service = registered;
+      },
+    });
+    const dispatch = vi.fn(async () => ({ ok: true }));
+    registerVeraService({ api: serviceApi, now: () => clock.value, dispatchDigestTurn: dispatch });
+    await service?.start({ scheduler } as never);
+    return {
+      jobs,
+      clock,
+      store,
+      dispatch,
+      find: (id: string) => jobs.filter((job) => job.id === id),
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    google.loadAccessToken.mockResolvedValue({ ok: true, accessToken: "token" });
+    google.watchGmailInbox.mockResolvedValue({ ok: false });
+    setGoogle({});
+  });
+
+  it("schedules the 07:40 Rome slot as a one-shot instead of a 24h interval", async () => {
+    const { find } = await startService({ now: new Date("2026-10-06T03:00:00.000Z") });
+    const morning = find("vera-morning");
+    expect(morning).toHaveLength(1);
+    expect(new Date(morning[0]?.atMs ?? 0).toISOString()).toBe("2026-10-06T05:40:00.000Z");
+    expect(morning[0]?.everyMs).toBeUndefined();
+    expect(find("vera-poll")[0]?.everyMs).toBe(15 * 60 * 1000);
+  });
+
+  it("recomputes the next slot after each run, including across the DST change", async () => {
+    const { find, clock } = await startService({ now: new Date("2026-03-27T12:00:00.000Z") });
+    const slots = [new Date(find("vera-morning")[0]?.atMs ?? 0).toISOString()];
+    for (let day = 0; day < 3; day += 1) {
+      const job = find("vera-morning").at(-1);
+      clock.value = new Date((job?.atMs ?? 0) + 1500);
+      await job?.run();
+      slots.push(new Date(find("vera-morning").at(-1)?.atMs ?? 0).toISOString());
+    }
+    expect(slots).toEqual([
+      "2026-03-28T06:40:00.000Z",
+      "2026-03-29T05:40:00.000Z",
+      "2026-03-30T05:40:00.000Z",
+      "2026-03-31T05:40:00.000Z",
+    ]);
+  });
+
+  it("does not fire the same slot twice when the timer wakes slightly early", async () => {
+    const { find, clock } = await startService({ now: new Date("2026-10-06T03:00:00.000Z") });
+    const job = find("vera-morning")[0];
+    clock.value = new Date((job?.atMs ?? 0) - 500);
+    await job?.run();
+    expect(new Date(find("vera-morning").at(-1)?.atMs ?? 0).toISOString()).toBe(
+      "2026-10-07T05:40:00.000Z",
+    );
+  });
+
+  it("schedules the next slot even when the morning tick fails", async () => {
+    const { find, clock } = await startService({ now: new Date("2026-10-06T03:00:00.000Z") });
+    google.listInboxMessages.mockRejectedValue(new Error("google down"));
+    const job = find("vera-morning")[0];
+    clock.value = new Date(job?.atMs ?? 0);
+    await job?.run();
+    expect(find("vera-morning")).toHaveLength(2);
+  });
+
+  it("runs a missed-slot catch-up shortly after boot when nothing was collected since the slot", async () => {
+    const now = new Date("2026-10-06T09:00:00.000Z");
+    const { find, store, dispatch } = await startService({
+      now,
+      wake: { lastCollectAtMs: Date.parse("2026-10-05T14:00:00.000Z") },
+    });
+    const catchUp = find("vera-catch-up");
+    expect(catchUp).toHaveLength(1);
+    expect(catchUp[0]?.atMs).toBe(now.getTime() + 30_000);
+
+    setGoogle({ events: [HEARING] });
+    await catchUp[0]?.run();
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(store.wake().lastCollectAtMs).toBe(now.getTime());
+    expect(new Date(find("vera-morning")[0]?.atMs ?? 0).toISOString()).toBe(
+      "2026-10-07T05:40:00.000Z",
+    );
+  });
+
+  it("skips catch-up when the latest slot was collected, on first boot, and without a connect nag", async () => {
+    const now = new Date("2026-10-06T09:00:00.000Z");
+    const recent = await startService({
+      now,
+      wake: { lastCollectAtMs: Date.parse("2026-10-06T05:41:00.000Z") },
+    });
+    expect(recent.find("vera-catch-up")).toHaveLength(0);
+
+    const fresh = await startService({ now, wake: { lastCollectAtMs: null } });
+    expect(fresh.find("vera-catch-up")).toHaveLength(0);
+
+    const stale = await startService({
+      now,
+      wake: { lastCollectAtMs: Date.parse("2026-10-05T14:00:00.000Z") },
+    });
+    google.listInboxMessages.mockResolvedValue({ ok: false, status: 401 });
+    google.loadAccessToken.mockResolvedValue({ ok: false, reason: "not_connected" });
+    await stale.find("vera-catch-up")[0]?.run();
+    expect(stale.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("uses the lawyer profile timezone for the slot", async () => {
+    const { find } = await startService({
+      now: new Date("2026-03-07T12:00:00.000Z"),
+      timezone: "America/New_York",
+    });
+    expect(new Date(find("vera-morning")[0]?.atMs ?? 0).toISOString()).toBe(
+      "2026-03-07T12:40:00.000Z",
+    );
   });
 });

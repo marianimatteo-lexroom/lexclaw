@@ -204,32 +204,12 @@ export async function handleVeraGoogleNotify(
 
   try {
     const memory = await openVeraMemoryFromApi(api);
-    const hooks = api.runtime.hooks;
     await runVeraCollectPass({
       api,
       memory,
       now: new Date(nowMs),
       forceMorning: false,
       trigger: "notify",
-      dispatchDigestTurn: async (params) => {
-        if (!hooks?.dispatchHookAgentTurn) {
-          return { ok: false, reason: "hooks_unavailable" };
-        }
-        const result = await hooks.dispatchHookAgentTurn({
-          name: "Vera digest",
-          agentId: "main",
-          sessionKey: params.sessionKey,
-          message: [
-            "Run the vera-morning-digest skill phrasing only.",
-            JSON.stringify(params.plan),
-          ].join("\n"),
-          externalContentSource: "email",
-          deliver: true,
-          timeoutSeconds: 45,
-          idempotencyKey: params.idempotencyKey,
-        });
-        return result.ok ? { ok: true } : { ok: false, reason: result.reason };
-      },
     });
     if (deps.state.historyIds.size >= MAX_TRACKED_MAILBOXES) {
       deps.state.historyIds.clear();
