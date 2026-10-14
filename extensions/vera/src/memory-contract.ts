@@ -113,6 +113,8 @@ export type WakeState = {
   heldPlanAttempts: number;
   /** Earliest time the next dispatch retry may run; null when no retry is scheduled. */
   heldPlanNextAttemptAtMs: number | null;
+  /** When the digest-ready template was claimed for the current held plan; at most one send per plan. */
+  heldPlanTemplateAttemptedAtMs: number | null;
   watchExpirationMs: number | null;
   /** JSON string array of open lawyer todo ids from the last collect. */
   openTodoIdsJson: string | null;

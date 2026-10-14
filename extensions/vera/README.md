@@ -76,6 +76,40 @@ The connect link asks for read-only Gmail, permission to send mail, and read-onl
 
 Optional Pub/Sub: set `googlePubSubTopic`, set `googleNotifyToken` (16+ chars), and point the push subscription at `/vera/google/notify` with `Authorization: Bearer <token>`. Without both, the 15-minute poll owns wakes; notify without the token returns 401.
 
+## Reopening the WhatsApp 24-hour window
+
+WhatsApp only lets Vera send free-form text within 24 hours of the lawyer's last message. When a digest is held because that window is closed, Vera sends one pre-approved utility template through Kapso so the lawyer can reply and release it. The reply is an ordinary inbound message: the existing flow re-collects and delivers the held plan.
+
+Create and get approved, in the WhatsApp Business Manager that owns the Kapso number:
+
+- Category: **Utility**
+- Name: any lowercase letters, digits, and underscores, for example `vera_digest_ready`
+- Language: the one you will configure below, for example `en` or `it`
+- Body, with no variables, buttons, header, or footer: `Your Vera digest is ready. Reply to see it.`
+
+Then set it in the plugin config:
+
+```json5
+{
+  plugins: {
+    entries: {
+      vera: {
+        config: {
+          digestReadyTemplate: { name: "vera_digest_ready", language: "en" },
+        },
+      },
+    },
+  },
+}
+```
+
+The template goes to `channels["kapso-whatsapp"].defaultTo` using the same Kapso account (`apiKey`, `phoneNumberId`, `baseUrl`, or the `KAPSO_*` environment variables) as the rest of the channel. Rules:
+
+- If `digestReadyTemplate` is unset or missing `name` or `language`, nothing is sent and the gateway logs one warning per start. The plan is still held until the lawyer texts.
+- At most one template per held plan. Vera records the send before calling Kapso and never retries it, including after a 4xx (for example, template not approved in that language), a 5xx, or a timeout. The plan stays held; check the gateway log line `vera digest-ready template not sent: ...` for the HTTP status.
+- A new template can go out only after the held plan is delivered and a later plan is held again.
+- The send has a 10-second timeout and never fails or delays the collect pass beyond it.
+
 ## WhatsApp read receipts
 
 When Vera accepts an inbound Kapso WhatsApp message, she marks that WhatsApp message read. The lawyer sees the blue checks while Vera is working, instead of gray delivered checks until a later reply. Set `channels["kapso-whatsapp"].sendReadReceipts` to `false` to leave messages delivered.

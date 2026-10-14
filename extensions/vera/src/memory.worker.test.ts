@@ -131,15 +131,21 @@ describe("vera memory store", () => {
       expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
         heldPlanAttempts: 0,
         heldPlanNextAttemptAtMs: null,
+        heldPlanTemplateAttemptedAtMs: null,
       });
       backend.execute({
         type: "writeWake",
-        input: { heldPlanAttempts: 2, heldPlanNextAttemptAtMs: 5000 },
+        input: {
+          heldPlanAttempts: 2,
+          heldPlanNextAttemptAtMs: 5000,
+          heldPlanTemplateAttemptedAtMs: 4000,
+        },
       });
       backend.execute({ type: "writeWake", input: { lastCollectAtMs: 9 } });
       expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
         heldPlanAttempts: 2,
         heldPlanNextAttemptAtMs: 5000,
+        heldPlanTemplateAttemptedAtMs: 4000,
         lastCollectAtMs: 9,
       });
     } finally {
@@ -167,6 +173,7 @@ describe("vera memory store", () => {
         heldPlanJson: '{"deliver":true}',
         heldPlanAttempts: 0,
         heldPlanNextAttemptAtMs: null,
+        heldPlanTemplateAttemptedAtMs: null,
       });
     } finally {
       void backend.close();
