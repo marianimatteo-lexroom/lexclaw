@@ -1,0 +1,43 @@
+name: Vera CI
+
+# Vera is the only code this fork owns. Run its tests on every change that can
+# affect it: its own files, the plugin SDK it imports, and dependency pins.
+on:
+  pull_request:
+    paths:
+      - "extensions/vera/**"
+      - "packages/plugin-sdk/**"
+      - "src/plugin-sdk/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/vera-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vera-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vera-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+          submodules: false
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          cache-mode: restore
+          install-bun: "false"
+
+      - name: Test Vera
+        run: pnpm test extensions/vera
