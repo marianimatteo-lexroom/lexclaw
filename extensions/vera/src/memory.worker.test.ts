@@ -147,7 +147,28 @@ describe("vera memory store", () => {
     }
   });
 
-  it("adds the retry columns to a wake table created before they existed", () => {
+  it("keeps digest and held-plan timestamps and clears the hold age with the plan", () => {
+    const backend = openBackend();
+    try {
+      backend.execute({
+        type: "writeWake",
+        input: { lastDigestAtMs: 10, heldPlanJson: "{}", heldPlanAtMs: 20 },
+      });
+      expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
+        lastDigestAtMs: 10,
+        heldPlanAtMs: 20,
+      });
+      backend.execute({ type: "writeWake", input: { heldPlanJson: null, heldPlanAtMs: null } });
+      expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
+        lastDigestAtMs: 10,
+        heldPlanAtMs: null,
+      });
+    } finally {
+      void backend.close();
+    }
+  });
+
+  it("adds the retry and status columns to a wake table from before they existed", () => {
     const databasePath = path.join(tempDirs.make("vera-memory-"), "memory.sqlite");
     const legacy = new DatabaseSync(databasePath);
     legacy.exec(`CREATE TABLE vera_wake_state (
@@ -159,14 +180,17 @@ describe("vera memory store", () => {
       watch_expiration_ms INTEGER,
       open_todo_ids_json TEXT
     ) STRICT;
-    INSERT INTO vera_wake_state (id, held_plan_json) VALUES ('lawyer', '{"deliver":true}');`);
+    INSERT INTO vera_wake_state (id, last_collect_at_ms, held_plan_json) VALUES ('lawyer', 5, '{}');`);
     legacy.close();
     const backend = createSqliteWorkerBackend(undefined, { databasePath });
     try {
       expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
-        heldPlanJson: '{"deliver":true}',
+        lastCollectAtMs: 5,
+        heldPlanJson: "{}",
         heldPlanAttempts: 0,
         heldPlanNextAttemptAtMs: null,
+        lastDigestAtMs: null,
+        heldPlanAtMs: null,
       });
     } finally {
       void backend.close();

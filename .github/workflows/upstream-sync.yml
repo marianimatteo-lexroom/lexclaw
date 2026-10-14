@@ -1,0 +1,298 @@
+name: Upstream sync
+
+# Keeps this fork from drifting away from openclaw/openclaw.
+#
+# Fetches upstream, merges it into `upstream-sync/<date>`, runs the Vera tests
+# on the merged tree, and then
+#   - opens a PR against the default branch when the merge is clean and tests pass,
+#   - opens (or updates) an issue listing the conflicting files when it is not,
+#   - opens (or updates) an issue pointing at the pushed branch when only the
+#     install or the Vera tests fail.
+#
+# Only GITHUB_TOKEN is used. Repository setting required once:
+# Settings > Actions > General > "Allow GitHub Actions to create and approve
+# pull requests".
+#
+# GITHUB_TOKEN can never carry the `workflows` permission, so a push that
+# changes .github/workflows is rejected. The merged tree therefore keeps this
+# fork's own workflows and drops upstream's; see extensions/vera/UPSTREAM.md.
+# PRs and pushes made with GITHUB_TOKEN do not trigger other workflows, which
+# is why this job runs the Vera tests itself.
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: Branch or tag of openclaw/openclaw to merge
+        required: false
+        default: main
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: https://github.com/openclaw/openclaw.git
+  UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  sync:
+    if: github.repository != 'openclaw/openclaw'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          fetch-tags: false
+          persist-credentials: true
+          submodules: false
+
+      - name: Fetch upstream and decide whether to sync
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! [[ "$UPSTREAM_REF" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::Invalid upstream_ref: $UPSTREAM_REF"
+            exit 1
+          fi
+
+          git remote add upstream "$UPSTREAM_REPO"
+          git fetch --no-tags upstream "$UPSTREAM_REF"
+          upstream_sha="$(git rev-parse FETCH_HEAD)"
+          behind="$(git rev-list --count "HEAD..$upstream_sha")"
+          ahead="$(git rev-list --count "$upstream_sha..HEAD")"
+
+          open_sync_prs="$(gh pr list --state open --limit 200 --json headRefName \
+            --jq '[.[] | select(.headRefName | startswith("upstream-sync/"))] | length')"
+
+          branch="upstream-sync/$(date -u +%F)"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            branch="${branch}-${GITHUB_RUN_NUMBER}"
+          fi
+
+          skip=false
+          reason=""
+          if [ "$behind" -eq 0 ]; then
+            skip=true
+            reason="Already up to date with openclaw/openclaw@${UPSTREAM_REF}."
+          elif [ "$open_sync_prs" -gt 0 ] && [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            skip=true
+            reason="An upstream-sync PR is already open; merge or close it first."
+          fi
+
+          {
+            echo "skip=$skip"
+            echo "upstream_sha=$upstream_sha"
+            echo "short_sha=${upstream_sha:0:12}"
+            echo "behind=$behind"
+            echo "ahead=$ahead"
+            echo "branch=$branch"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Upstream sync"
+            echo "- Upstream: \`openclaw/openclaw@${UPSTREAM_REF}\` (\`${upstream_sha:0:12}\`)"
+            echo "- Fork is $behind commits behind and $ahead ahead."
+            if [ "$skip" = true ]; then echo "- Skipped: $reason"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Merge upstream into sync branch
+        id: merge
+        if: steps.plan.outputs.skip != 'true'
+        shell: bash
+        env:
+          BRANCH: ${{ steps.plan.outputs.branch }}
+          UPSTREAM_SHA: ${{ steps.plan.outputs.upstream_sha }}
+          SHORT_SHA: ${{ steps.plan.outputs.short_sha }}
+        run: |
+          set -uo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+
+          if git merge --no-ff --no-edit \
+            -m "chore: merge openclaw/openclaw@${UPSTREAM_REF} (${SHORT_SHA})" "$UPSTREAM_SHA"; then
+            echo "result=clean" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
+          git merge --abort || true
+          if [ ! -s "$RUNNER_TEMP/conflicts.txt" ]; then
+            echo "::error::git merge failed without listing conflicts"
+            exit 1
+          fi
+          echo "result=conflict" >> "$GITHUB_OUTPUT"
+          echo "::warning::$(wc -l < "$RUNNER_TEMP/conflicts.txt") conflicting files"
+
+      - name: Keep this fork's workflows in the merged tree
+        if: steps.merge.outputs.result == 'clean'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm -rq --ignore-unmatch -- .github/workflows
+          git checkout "origin/${DEFAULT_BRANCH}" -- .github/workflows
+          if ! git diff --cached --quiet; then
+            git commit --amend --no-edit
+          fi
+
+      - name: Setup Node environment
+        if: steps.merge.outputs.result == 'clean'
+        uses: ./.github/actions/setup-node-env
+        with:
+          cache-mode: "off"
+          install-bun: "false"
+          install-deps: "false"
+
+      - name: Install dependencies
+        id: install
+        if: steps.merge.outputs.result == 'clean'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm install --frozen-lockfile 2>&1 | tee "$RUNNER_TEMP/install.log"
+
+      - name: Test Vera
+        id: test
+        if: steps.merge.outputs.result == 'clean' && steps.install.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm test extensions/vera 2>&1 | tee "$RUNNER_TEMP/test.log"
+
+      - name: Push sync branch
+        id: push
+        if: steps.merge.outputs.result == 'clean'
+        continue-on-error: true
+        shell: bash
+        env:
+          BRANCH: ${{ steps.plan.outputs.branch }}
+        run: git push origin "refs/heads/${BRANCH}:refs/heads/${BRANCH}"
+
+      - name: Report result
+        if: steps.plan.outputs.skip != 'true'
+        shell: bash
+        env:
+          BRANCH: ${{ steps.plan.outputs.branch }}
+          SHORT_SHA: ${{ steps.plan.outputs.short_sha }}
+          BEHIND: ${{ steps.plan.outputs.behind }}
+          AHEAD: ${{ steps.plan.outputs.ahead }}
+          MERGE_RESULT: ${{ steps.merge.outputs.result }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          TEST_OUTCOME: ${{ steps.test.outcome }}
+          PUSH_OUTCOME: ${{ steps.push.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BRANCH_URL: ${{ github.server_url }}/${{ github.repository }}/tree/${{ steps.plan.outputs.branch }}
+        run: |
+          set -euo pipefail
+
+          # Create the issue, or comment on the open one with the same title prefix.
+          open_issue() {
+            local prefix="$1" title="$2" body_file="$3" existing
+            existing="$(gh issue list --state open --limit 100 --json number,title \
+              --jq "[.[] | select(.title | startswith(\"$prefix\"))][0].number // empty")"
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --body-file "$body_file"
+              echo "Updated issue #$existing" >> "$GITHUB_STEP_SUMMARY"
+            else
+              gh issue create --title "$title" --body-file "$body_file"
+              echo "Opened issue: $title" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+
+          body="$RUNNER_TEMP/body.md"
+
+          if [ "$MERGE_RESULT" = "conflict" ]; then
+            total="$(wc -l < "$RUNNER_TEMP/conflicts.txt")"
+            {
+              echo "Merging \`openclaw/openclaw@${UPSTREAM_REF}\` (\`${SHORT_SHA}\`) into \`${DEFAULT_BRANCH}\` conflicts in ${total} file(s). The fork is ${BEHIND} commits behind and ${AHEAD} ahead."
+              echo
+              echo "Conflicting files (first 200):"
+              echo
+              echo '```'
+              head -n 200 "$RUNNER_TEMP/conflicts.txt"
+              echo '```'
+              echo
+              echo "Resolve locally, then push the branch and open a PR:"
+              echo
+              echo '```bash'
+              echo "git fetch origin ${DEFAULT_BRANCH} && git switch -c upstream-sync/manual origin/${DEFAULT_BRANCH}"
+              echo "git remote add upstream ${UPSTREAM_REPO} 2>/dev/null || true"
+              echo "git fetch --no-tags upstream ${UPSTREAM_REF}"
+              echo "git merge ${SHORT_SHA}"
+              echo "git checkout origin/${DEFAULT_BRANCH} -- .github/workflows"
+              echo "pnpm install && pnpm test extensions/vera"
+              echo '```'
+              echo
+              echo "See \`extensions/vera/UPSTREAM.md\` for the conflict policy. Run: ${RUN_URL}"
+            } > "$body"
+            open_issue "Upstream sync blocked" "Upstream sync blocked: merge conflicts with openclaw/openclaw@${SHORT_SHA}" "$body"
+            exit 0
+          fi
+
+          if [ "$PUSH_OUTCOME" != "success" ]; then
+            {
+              echo "The merge of \`openclaw/openclaw@${UPSTREAM_REF}\` (\`${SHORT_SHA}\`) was clean, but pushing \`${BRANCH}\` failed. GITHUB_TOKEN cannot push changes under \`.github/workflows\` and may be blocked by branch rules."
+              echo
+              echo "Run: ${RUN_URL}"
+            } > "$body"
+            open_issue "Upstream sync failed" "Upstream sync failed: could not push ${BRANCH}" "$body"
+            exit 0
+          fi
+
+          if [ "$INSTALL_OUTCOME" != "success" ] || [ "$TEST_OUTCOME" != "success" ]; then
+            if [ "$INSTALL_OUTCOME" != "success" ]; then
+              what="\`pnpm install --frozen-lockfile\` failed (usually an extensions/vera dependency pin, such as typebox, that no longer matches the merged lockfile)"
+              log="$RUNNER_TEMP/install.log"
+            else
+              what="\`pnpm test extensions/vera\` failed"
+              log="$RUNNER_TEMP/test.log"
+            fi
+            {
+              echo "The merge of \`openclaw/openclaw@${UPSTREAM_REF}\` (\`${SHORT_SHA}\`) was clean, but ${what} on [\`${BRANCH}\`](${BRANCH_URL})."
+              echo
+              echo "No PR was opened. Fix the branch (Vera or the SDK pin), then open the PR by hand."
+              echo
+              echo "Last lines of the log:"
+              echo
+              echo '```'
+              tail -n 60 "$log" | sed 's/\x1b\[[0-9;]*m//g'
+              echo '```'
+              echo
+              echo "Run: ${RUN_URL}"
+            } > "$body"
+            open_issue "Upstream sync failed" "Upstream sync failed: Vera does not pass on ${BRANCH}" "$body"
+            exit 0
+          fi
+
+          {
+            echo "Merges \`openclaw/openclaw@${UPSTREAM_REF}\` (\`${SHORT_SHA}\`) into \`${DEFAULT_BRANCH}\`. The fork was ${BEHIND} commits behind and ${AHEAD} ahead."
+            echo
+            echo "- Merge was clean (no conflicts)."
+            echo "- \`pnpm install --frozen-lockfile\` and \`pnpm test extensions/vera\` passed on the merged tree."
+            echo "- \`.github/workflows\` is kept as on \`${DEFAULT_BRANCH}\` because GITHUB_TOKEN cannot push workflow changes."
+            echo "- Workflows do not run on PRs opened with GITHUB_TOKEN, so the checks above come from the sync job: ${RUN_URL}"
+            echo
+            echo "Before merging, check the image version in the deploy repo and \`extensions/vera/UPSTREAM.md\`. Use a merge commit, not squash, so the next sync sees the shared history."
+          } > "$body"
+          gh pr create --base "$DEFAULT_BRANCH" --head "$BRANCH" \
+            --title "chore: sync openclaw/openclaw@${UPSTREAM_REF} (${SHORT_SHA})" \
+            --body-file "$body"
+          echo "Opened PR from $BRANCH" >> "$GITHUB_STEP_SUMMARY"

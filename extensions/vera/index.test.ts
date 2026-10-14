@@ -49,6 +49,9 @@ it("registers digest tools, memory tools, wake service, and Google routes", () =
   expect(registerHttpRoute).toHaveBeenCalledWith(
     expect.objectContaining({ path: "/vera/lexroom/connect" }),
   );
+  expect(registerHttpRoute).toHaveBeenCalledWith(
+    expect.objectContaining({ path: "/vera/status", auth: "plugin", match: "exact" }),
+  );
   expect(on).toHaveBeenCalledWith("message_received", expect.any(Function));
   expect(on).toHaveBeenCalledWith(
     "before_prompt_build",
