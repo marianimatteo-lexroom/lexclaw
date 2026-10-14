@@ -357,7 +357,7 @@ const tools = defineToolPlugin({
       name: "vera_deadline_reply",
       label: "Act on a digest deadline",
       description:
-        "Apply the lawyer's reply to a numbered deadline or hearing from the digest. research confirms tracking (reminders start) and runs Lexroom research for that matter, returning the brief to text back. track confirms tracking only. dismiss and done close the item. Call it only after the lawyer replies; never to guess. Sends no email and does not touch the calendar.",
+        "Apply the lawyer's reply to a numbered deadline or hearing from the digest. research confirms tracking (reminders start) and runs Lexroom research for that matter, returning the brief to text back. track confirms tracking only. brief returns the stored brief again without calling Lexroom. dismiss and done close the item. Call it only after the lawyer replies; never to guess. Sends no email and does not touch the calendar.",
       parameters: Type.Object(
         {
           ref: Type.String({

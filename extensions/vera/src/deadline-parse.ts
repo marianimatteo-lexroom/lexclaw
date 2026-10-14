@@ -150,7 +150,7 @@ const REFERENCE_BEFORE =
   /(?:sentenza|ordinanza|decreto|provvedimento|atto|contratto|lettera|e-?mail|pec|nota|missiva|verbale|judg(?:e)?ment|order|decision|ruling|letter|contract|minutes)\s+(?:n\.?\s*[\w/.-]+\s+)?(?:del|dell'|datat[oa]\s+|in data|dated|of|from)\s*(?:il\s+)?$/iu;
 
 const RESCHEDULE =
-  /\b(?:rinvia\w*|rinvio|differit\w*|spostat\w*|aggiornat\w*|postpone\w*|reschedul\w*|adjourn\w*|moved)\b/iu;
+  /\b(?:rinviat[oaie]|rinviare|rinvio|differit[oaie]|spostat[oaie]|postponed|postponement|rescheduled|adjourned|moved\s+(?:to|from))\b/iu;
 
 const RANGE_JOIN = /^\s*(?:al|fino al|fino a|to|until|through|and|e|–|-)\s*$/iu;
 const RANGE_BEFORE = /(?:dal|dall'|from|between|tra)\s*$/iu;

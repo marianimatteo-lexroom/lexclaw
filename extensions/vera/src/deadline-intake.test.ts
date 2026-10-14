@@ -382,14 +382,65 @@ describe("prepareDeadlineIntake", () => {
     }
   });
 
-  it("leaves the digest untouched when intake fails", async () => {
+  it("keeps the digest running and logs when a scan step fails", async () => {
     const { memory, close } = seed();
     try {
       const google = fakeGoogle();
       google.listEvents.mockRejectedValue(new Error("calendar exploded"));
       const { intake } = await runPass({ memory, now: OCT_14, forceMorning: true, google });
-      expect(intake).toBeNull();
+      expect(intake?.digest).toEqual({ signals: [], lines: [] });
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("calendar exploded"));
+      expect(await memory.filterUnscannedMessages(["msg-pec"])).toEqual(["msg-pec"]);
+    } finally {
+      close();
+    }
+  });
+
+  it("clips a very long subject instead of losing the batch", async () => {
+    const { memory, close } = seed();
+    try {
+      await seedMatter(memory);
+      const google = fakeGoogle({ ids: ["msg-long"], events: [] });
+      google.readMessage.mockResolvedValue({
+        ok: true,
+        content: {
+          id: "msg-long",
+          from: "counsel@example.com",
+          subject: `Rossi udienza ${"x".repeat(900)}`,
+          date: "Wed, 14 Oct 2026 08:00:00 +0200",
+          snippet: "",
+          bodyText: "L'udienza è fissata per il 12 novembre 2026 alle ore 09:30.",
+          attachments: [],
+        },
+      });
+      await runPass({ memory, now: OCT_14, forceMorning: false, google });
+      const [item] = await memory.listDeadlines();
+      expect(item?.title.length).toBeLessThanOrEqual(200);
+      expect(await memory.filterUnscannedMessages(["msg-long"])).toEqual([]);
+    } finally {
+      close();
+    }
+  });
+
+  it("retries mail whose items could not be stored, and gives up on mail that is gone", async () => {
+    const { memory, close } = seed();
+    try {
+      await seedMatter(memory);
+      const google = fakeGoogle({ ids: ["msg-pec", "msg-gone"], events: [] });
+      const original = google.readMessage.getMockImplementation();
+      google.readMessage.mockImplementation(async (params) =>
+        params.id === "msg-gone"
+          ? { ok: false, status: 404 }
+          : (original?.(params) ?? { ok: false, status: 500 }),
+      );
+      const upsert = vi.spyOn(memory, "upsertDeadlines").mockRejectedValueOnce(new Error("busy"));
+      await runPass({ memory, now: OCT_14, forceMorning: false, google });
+      expect(await memory.filterUnscannedMessages(["msg-pec"])).toEqual(["msg-pec"]);
+      upsert.mockRestore();
+      await runPass({ memory, now: OCT_14, forceMorning: false, google });
+      expect(await memory.filterUnscannedMessages(["msg-gone"])).toEqual([]);
+      expect(await memory.listDeadlines()).toHaveLength(1);
+      expect(await memory.filterUnscannedMessages(["msg-pec"])).toEqual([]);
     } finally {
       close();
     }
@@ -449,6 +500,49 @@ describe("replying to a digest line", () => {
         briefAtMs: OCT_14.getTime(),
       });
       expect(stored?.brief).toContain("art. 183");
+    } finally {
+      close();
+    }
+  });
+
+  it("resends the stored brief without calling Lexroom again", async () => {
+    const { memory, close } = await offered();
+    try {
+      const lexroom = researchFetch();
+      const deps = { memory, fetchImpl: lexroom.fetchImpl };
+      const none = await executeVeraDeadlineReply(
+        { ref: "1", action: "brief" },
+        LEXROOM_CONFIG,
+        toolApi,
+        undefined,
+        OCT_14,
+        deps,
+      );
+      expect(none).toMatchObject({ ok: false });
+      await executeVeraDeadlineReply(
+        { ref: "1", action: "research" },
+        LEXROOM_CONFIG,
+        toolApi,
+        undefined,
+        OCT_14,
+        deps,
+      );
+      const again = await executeVeraDeadlineReply(
+        { ref: "1", action: "brief" },
+        LEXROOM_CONFIG,
+        toolApi,
+        undefined,
+        OCT_14,
+        deps,
+      );
+      expect(again).toMatchObject({
+        ok: true,
+        brief: {
+          stored: true,
+          answer: expect.stringContaining("Sources: Cass. civ. 1111/2024"),
+        },
+      });
+      expect(lexroom.bodies).toHaveLength(1);
     } finally {
       close();
     }
@@ -724,6 +818,17 @@ describe("reminders", () => {
       expect(result?.plan.deliver && result.plan.deadlines).toEqual([
         expect.objectContaining({ due: "2026-11-16 10:00", moved: true, status: "tracked" }),
       ]);
+    } finally {
+      close();
+    }
+  });
+
+  it("still reminds about a confirmed item when the scan fails", async () => {
+    const { memory, close, google } = await tracked();
+    try {
+      google.listIds.mockRejectedValue(new Error("gmail exploded"));
+      const { result } = await runPass({ memory, now: NOV_05, forceMorning: true, google });
+      expect(reminderOf(result)).toEqual({ step: "7d", covers: ["7d"] });
     } finally {
       close();
     }

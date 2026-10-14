@@ -162,6 +162,65 @@ describe("vera deadline memory", () => {
     }
   });
 
+  it("brings a retired date back when the calendar event moves back to it", async () => {
+    const { memory, close } = open();
+    try {
+      const calendar = candidate({
+        source: { kind: "calendar", ref: "evt-1", label: "Udienza Rossi", excerpt: "Udienza Rossi" },
+        movesFrom: { sourceRef: "evt-1" },
+      });
+      const created = (await memory.upsertDeadlines([calendar], 1000)).created[0];
+      await memory.updateDeadline(created?.id ?? "", { status: "tracked" }, 1100);
+      await memory.upsertDeadlines([{ ...calendar, ...onDate("2026-11-19") }], 2000);
+      const back = await memory.upsertDeadlines([calendar], 3000);
+      expect(back.moved).toHaveLength(1);
+      expect((await memory.listDeadlines()).map((item) => `${item.dueDate}:${item.status}`)).toEqual([
+        "2026-11-12:tracked",
+        "2026-11-19:superseded",
+      ]);
+    } finally {
+      close();
+    }
+  });
+
+  it("keeps a calendar time of day from overriding a time learned from mail", async () => {
+    const { memory, close } = open();
+    try {
+      const calendar = candidate({
+        dueTime: null,
+        dueAtMs: Date.parse("2026-11-12T08:00:00.000Z"),
+        source: { kind: "calendar", ref: "evt-1", label: "Udienza Rossi", excerpt: "Udienza Rossi" },
+      });
+      await memory.upsertDeadlines([calendar], 1000);
+      await memory.upsertDeadlines([candidate()], 2000);
+      await memory.upsertDeadlines([calendar], 3000);
+      expect((await memory.listDeadlines())[0]).toMatchObject({ dueTime: "09:30" });
+    } finally {
+      close();
+    }
+  });
+
+  it("never lets a late update revive a superseded row or drop settled reminders", async () => {
+    const { memory, close } = open();
+    try {
+      const calendar = candidate({
+        source: { kind: "calendar", ref: "evt-1", label: "Udienza Rossi", excerpt: "Udienza Rossi" },
+        movesFrom: { sourceRef: "evt-1" },
+      });
+      const old = (await memory.upsertDeadlines([calendar], 1000)).created[0];
+      const next = (await memory.upsertDeadlines([{ ...calendar, ...onDate("2026-11-19") }], 2000))
+        .moved[0];
+      const stale = await memory.updateDeadline(old?.id ?? "", { status: "tracked" }, 3000);
+      expect(stale?.status).toBe("superseded");
+
+      await memory.updateDeadline(next?.id ?? "", { status: "tracked", remindersSent: ["7d"] }, 3100);
+      await memory.updateDeadline(next?.id ?? "", { remindersSent: [] }, 3200);
+      expect((await memory.getDeadline(next?.id ?? ""))?.remindersSent).toEqual(["7d"]);
+    } finally {
+      close();
+    }
+  });
+
   it("moves by the old date named in a postponement notice, and by a lone open item", async () => {
     const { memory, close } = open();
     try {

@@ -2,6 +2,7 @@ import { inflateSync } from "node:zlib";
 
 const MAX_PDF_BYTES = 5 * 1024 * 1024;
 const MAX_STREAM_INFLATED = 4 * 1024 * 1024;
+const MAX_TOTAL_INFLATED = 16 * 1024 * 1024;
 const MAX_STREAMS = 400;
 const MAX_TEXT_CHARS = 20_000;
 
@@ -262,6 +263,7 @@ export function extractPdfText(bytes: Uint8Array): string {
   }
   const pages: string[] = [];
   let streams = 0;
+  let inflated = 0;
   let from = 0;
   while (streams < MAX_STREAMS) {
     const keyword = raw.indexOf("stream", from);
@@ -291,9 +293,15 @@ export function extractPdfText(bytes: Uint8Array): string {
     let data = Buffer.from(raw.slice(start, end), "latin1");
     if (/\/FlateDecode/u.test(header)) {
       try {
-        data = inflateSync(data, { maxOutputLength: MAX_STREAM_INFLATED });
+        data = inflateSync(data, {
+          maxOutputLength: Math.min(MAX_STREAM_INFLATED, MAX_TOTAL_INFLATED - inflated),
+        });
       } catch {
         continue;
+      }
+      inflated += data.length;
+      if (inflated >= MAX_TOTAL_INFLATED) {
+        break;
       }
     } else if (/\/Filter/u.test(header)) {
       continue;

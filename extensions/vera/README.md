@@ -100,9 +100,11 @@ Each item is stored in `memory.sqlite` with the matter, type (`deadline` or `hea
 The morning digest lists upcoming items with a number: "reply 1 to run research". A reply calls `vera_deadline_reply`:
 
 - a number runs Lexroom research for that matter, confirms tracking, and the brief is texted back in the same turn;
-- `track` confirms tracking without research; `dismiss` and `done` close the item.
+- `track` confirms tracking without research; `brief` resends the stored brief without calling Lexroom; `dismiss` and `done` close the item.
 
 Reminders come only after the lawyer confirms an item. They ride in the morning digest at 07:40 Europe/Rome on the day of each step in `deadlineIntake.reminders` (default `7d`, `2d`, `morning-of`; `Nd` counts calendar days before the due date). Steps whose time had already passed when the lawyer confirmed are skipped. If the WhatsApp window is closed, the reminder waits with the held digest, and when several steps pile up only the latest is sent.
+
+Known limits: a cancelled or deleted calendar event does not end an item (reply `dismiss`), mail is scanned once per message, and PDFs without a text layer (scans) are read from the email body only.
 
 Until the lawyer replies, intake is read-only. It sends no email and does not touch the calendar; email replies keep the existing `vera_send_email` confirmation. The flow is described in `skills/vera-deadline-intake`.
 

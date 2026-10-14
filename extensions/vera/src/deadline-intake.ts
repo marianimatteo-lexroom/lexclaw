@@ -180,7 +180,7 @@ async function readScanMessages(params: {
   accessToken: string;
   now: Date;
   log: (message: string) => void;
-}): Promise<DeadlineScanMessage[]> {
+}): Promise<{ messages: DeadlineScanMessage[]; completeIds: string[] }> {
   const listed = await params.deps.listMessageIds({
     accessToken: params.accessToken,
     query: GMAIL_QUERY,
@@ -188,14 +188,14 @@ async function readScanMessages(params: {
   });
   if (!listed.ok) {
     params.log(`gmail search failed (${listed.status})`);
-    return [];
+    return { messages: [], completeIds: [] };
   }
   const unscanned = (await params.memory.filterUnscannedMessages(listed.ids)).slice(
     0,
     SCAN_MAX_READS,
   );
   const messages: DeadlineScanMessage[] = [];
-  const complete: string[] = [];
+  const completeIds: string[] = [];
   let stop: StopReason | null = null;
 
   for (const id of unscanned) {
@@ -204,6 +204,10 @@ async function readScanMessages(params: {
     }
     const read = await params.deps.readMessageContent({ accessToken: params.accessToken, id });
     if (!read.ok) {
+      if (read.status === 400 || read.status === 404 || read.status === 410) {
+        // Gone or unreadable for good: retrying would only starve newer mail.
+        completeIds.push(id);
+      }
       stop =
         read.status === 401 || read.status === 403
           ? "auth"
@@ -258,16 +262,13 @@ async function readScanMessages(params: {
     }
     messages.push({ ...message, bodyText: text, attachmentTexts });
     if (!partial) {
-      complete.push(id);
+      completeIds.push(id);
     }
   }
   if (stop) {
     params.log(`gmail read stopped early (${stop})`);
   }
-  if (complete.length > 0) {
-    await params.memory.markMessagesScanned(complete, params.now.getTime());
-  }
-  return messages;
+  return { messages, completeIds };
 }
 
 function matterLabelOf(matterId: string, aliases: readonly MatterAlias[]): string {
@@ -298,8 +299,10 @@ export async function prepareDeadlineIntake(params: {
   const nowMs = params.now.getTime();
   const log = (message: string) => params.api.logger.warn(`vera deadline intake: ${message}`);
 
+  // Intake of new items must not stop reminders for items the lawyer already confirmed.
+  let freshIds = new Set<string>();
   try {
-    const messages = await readScanMessages({
+    const scan = await readScanMessages({
       deps,
       memory: params.memory,
       accessToken: params.accessToken,
@@ -311,6 +314,7 @@ export async function prepareDeadlineIntake(params: {
       now: params.now,
       hours: config.horizonDays * 24,
       maxResults: 50,
+      includeDescription: true,
     });
     if (!calendar.ok) {
       log(`calendar read failed (${calendar.status})`);
@@ -319,7 +323,7 @@ export async function prepareDeadlineIntake(params: {
     const candidates = collectDeadlineCandidates({
       now: params.now,
       timeZone: params.timeZone,
-      messages,
+      messages: scan.messages,
       events: calendar.ok ? calendar.events : [],
       aliases: params.aliases,
     }).filter(
@@ -332,6 +336,10 @@ export async function prepareDeadlineIntake(params: {
       candidates.length > 0
         ? await params.memory.upsertDeadlines(candidates, nowMs)
         : { created: [], moved: [], updated: [] };
+    // Only after the items are stored: a failed upsert must not hide the mail from the next pass.
+    if (scan.completeIds.length > 0) {
+      await params.memory.markMessagesScanned(scan.completeIds, nowMs);
+    }
     for (const item of upserted.moved) {
       if (item.status === "tracked") {
         await params.memory.updateDeadline(
@@ -341,8 +349,12 @@ export async function prepareDeadlineIntake(params: {
         );
       }
     }
-    const freshIds = new Set([...upserted.created, ...upserted.moved].map((item) => item.id));
+    freshIds = new Set([...upserted.created, ...upserted.moved].map((item) => item.id));
+  } catch (error) {
+    log(`scan skipped this pass: ${error instanceof Error ? error.message : "unknown"}`);
+  }
 
+  try {
     const today = localIsoDate(nowMs, params.timeZone);
     const upcoming = (await params.memory.listDeadlines()).filter(
       (item) => (item.status === "candidate" || item.status === "tracked") && item.dueAtMs >= nowMs,

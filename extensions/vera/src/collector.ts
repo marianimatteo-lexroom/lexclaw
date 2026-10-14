@@ -234,6 +234,12 @@ const COURT_SENDER =
 const SUBJECT_NOISE = /^(?:(?:re|fwd?|r|i)\s*:\s*|posta certificata\s*:\s*)+/iu;
 const BODY_MATCH_CHARS = 4000;
 
+const MAX_TITLE_CHARS = 200;
+
+function clip(text: string, max = MAX_TITLE_CHARS): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 function cleanSubject(subject: string): string {
   return subject.replace(SUBJECT_NOISE, "").trim();
 }
@@ -246,12 +252,13 @@ function emailSource(
 ): DeadlineSource {
   return {
     kind,
-    ref: kind === "pdf" ? `${message.id}#${filename}` : message.id,
-    label:
+    ref: kind === "pdf" ? `${message.id}#${filename.slice(0, 80)}` : message.id,
+    label: clip(
       kind === "pdf"
-        ? `${cleanSubject(message.subject) || message.from} (${filename})`
-        : `${message.from}: ${cleanSubject(message.subject)}`.slice(0, 200),
-    excerpt,
+        ? `${cleanSubject(message.subject) || message.from} (${filename.slice(0, 80)})`
+        : `${message.from}: ${cleanSubject(message.subject)}`,
+    ),
+    excerpt: clip(excerpt),
   };
 }
 
@@ -346,7 +353,7 @@ export function collectDeadlineCandidates(input: {
         candidates.push({
           matterId,
           type: found.type,
-          title: cleanSubject(message.subject) || found.excerpt,
+          title: clip(cleanSubject(message.subject) || found.excerpt),
           dueAtMs: found.dueAtMs,
           dueDate: found.dueDate,
           dueTime: found.dueTime,
@@ -381,11 +388,16 @@ export function collectDeadlineCandidates(input: {
     candidates.push({
       matterId,
       type,
-      title: event.summary.trim() || "Calendar event",
+      title: clip(event.summary.trim() || "Calendar event"),
       ...when,
       timeZone: input.timeZone,
       confidence: fromSummary ? 0.9 : 0.8,
-      source: { kind: "calendar", ref: event.id, label: event.summary, excerpt: event.summary },
+      source: {
+        kind: "calendar",
+        ref: event.id,
+        label: clip(event.summary),
+        excerpt: clip(event.summary),
+      },
       movesFrom: { sourceRef: event.id },
     });
   }

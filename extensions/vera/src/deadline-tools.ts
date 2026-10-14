@@ -18,7 +18,7 @@ type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger">;
 export type DeadlineToolConfig = LexroomConfig &
   LexroomConnectConfig & { deadlineIntake?: unknown };
 
-export const DEADLINE_REPLY_ACTIONS = ["research", "track", "dismiss", "done"] as const;
+export const DEADLINE_REPLY_ACTIONS = ["research", "track", "dismiss", "done", "brief"] as const;
 export type DeadlineReplyAction = (typeof DEADLINE_REPLY_ACTIONS)[number];
 
 type ToolFailure = {
@@ -173,6 +173,19 @@ export async function executeVeraDeadlineReply(
     return { ok: true as const, item: view(closed ?? found, label, settings, nowMs) };
   }
 
+  if (params.action === "brief") {
+    if (!found.brief) {
+      return {
+        ok: false as const,
+        error: "No brief yet. Use research to run Lexroom for this item.",
+      };
+    }
+    return {
+      ok: true as const,
+      item: view(found, label, settings, nowMs),
+      brief: { answer: found.brief, stored: true as const },
+    };
+  }
   if (found.status === "done") {
     return { ok: false as const, error: "That item is already marked done." };
   }
@@ -188,10 +201,9 @@ export async function executeVeraDeadlineReply(
       found.id,
       {
         status: "tracked",
-        remindersSent:
-          found.status === "tracked"
-            ? found.remindersSent
-            : seedReminders(found, settings.reminders, nowMs),
+        ...(found.status === "tracked"
+          ? {}
+          : { remindersSent: seedReminders(found, settings.reminders, nowMs) }),
       },
       nowMs,
     )) ?? found;
@@ -223,7 +235,13 @@ export async function executeVeraDeadlineReply(
   }
   const done = await memory.updateDeadline(
     tracked.id,
-    { researchStatus: "done", brief: research.answer, briefAtMs: nowMs },
+    {
+      researchStatus: "done",
+      brief: research.sources.length
+        ? `${research.answer}\n\nSources: ${research.sources.map((source) => source.title).join("; ")}`
+        : research.answer,
+      briefAtMs: nowMs,
+    },
     nowMs,
   );
   return {

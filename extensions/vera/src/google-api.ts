@@ -188,7 +188,10 @@ function eventInstant(value: unknown): string {
   return "";
 }
 
-export function parseCalendarEvents(payload: unknown): CalendarEvent[] {
+export function parseCalendarEvents(
+  payload: unknown,
+  options: { includeDescription?: boolean } = {},
+): CalendarEvent[] {
   if (!payload || typeof payload !== "object") {
     return [];
   }
@@ -222,7 +225,9 @@ export function parseCalendarEvents(payload: unknown): CalendarEvent[] {
       start,
       end: eventInstant(record.end),
       status: typeof record.status === "string" ? record.status : "confirmed",
-      ...(typeof record.description === "string" && record.description.trim()
+      ...(options.includeDescription === true &&
+      typeof record.description === "string" &&
+      record.description.trim()
         ? { description: clip(record.description, 600) }
         : {}),
     });
@@ -471,6 +476,8 @@ export async function listUpcomingEvents(params: {
   hours: number;
   /** Defaults to 20. Google caps one page at 250. */
   maxResults?: number;
+  /** Only deadline intake reads descriptions; other callers never see them. */
+  includeDescription?: boolean;
   fetchImpl?: FetchLike;
   signal?: AbortSignal;
 }): Promise<{ ok: true; events: CalendarEvent[] } | { ok: false; status: number }> {
@@ -488,7 +495,10 @@ export async function listUpcomingEvents(params: {
   if (!listed.ok) {
     return listed;
   }
-  return { ok: true, events: parseCalendarEvents(listed.value) };
+  return {
+    ok: true,
+    events: parseCalendarEvents(listed.value, { includeDescription: params.includeDescription }),
+  };
 }
 
 /** Renew Gmail push to a Pub/Sub topic. Calendar still uses the 15-minute poll. */

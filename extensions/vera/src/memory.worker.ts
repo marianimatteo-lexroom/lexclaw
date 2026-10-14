@@ -21,6 +21,7 @@ import {
   findMoveTarget,
   mergeDeadlineCandidate,
   moveDeadlineItem,
+  reviveDeadlineItem,
 } from "./deadline-merge.js";
 import {
   DEADLINE_RESEARCH_STATUSES,
@@ -1007,7 +1008,7 @@ class VeraMemoryDatabaseStore {
         for (const candidate of candidates) {
           const key = deadlineDedupeKey(candidate.matterId, candidate.type, candidate.dueDate);
           const existing = this.deadlineByKey(key);
-          if (existing) {
+          if (existing && existing.status !== "superseded") {
             const merged = mergeDeadlineCandidate(existing, candidate, atMs);
             if (merged) {
               this.writeDeadline(merged);
@@ -1028,6 +1029,17 @@ class VeraMemoryDatabaseStore {
             rowToDeadline,
           );
           const target = findMoveTarget(open, candidate);
+          if (existing) {
+            // A stale notice for a retired date changes nothing, unless the source itself
+            // moved back to that date.
+            if (target) {
+              const { retired, next } = reviveDeadlineItem(existing, target, candidate, atMs);
+              this.writeDeadline(retired);
+              this.writeDeadline(next);
+              result.moved.push(next);
+            }
+            continue;
+          }
           if (target) {
             const { retired, next } = moveDeadlineItem(target, candidate, atMs);
             this.writeDeadline(retired);
@@ -1092,10 +1104,18 @@ class VeraMemoryDatabaseStore {
         if (!current) {
           return;
         }
+        if (current.status === "superseded") {
+          // A newer date replaced this row; a late reply must not bring it back.
+          updated = current;
+          return;
+        }
         updated = {
           ...current,
           ...(patch.status !== undefined ? { status: patch.status } : {}),
-          ...(patch.remindersSent !== undefined ? { remindersSent: patch.remindersSent } : {}),
+          // Reminder steps only accumulate, so a stale read cannot unsettle a delivered one.
+          ...(patch.remindersSent !== undefined
+            ? { remindersSent: [...new Set([...current.remindersSent, ...patch.remindersSent])] }
+            : {}),
           ...(patch.researchStatus !== undefined ? { researchStatus: patch.researchStatus } : {}),
           ...(patch.brief !== undefined ? { brief: patch.brief?.slice(0, 20_000) ?? null } : {}),
           ...(patch.briefAtMs !== undefined ? { briefAtMs: patch.briefAtMs } : {}),

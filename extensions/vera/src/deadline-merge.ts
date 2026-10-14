@@ -74,6 +74,7 @@ export function mergeDeadlineCandidate(
     item.sources.some(
       (source) => source.kind === "calendar" && source.ref === candidate.source.ref,
     ) &&
+    candidate.dueTime !== null &&
     candidate.dueAtMs !== item.dueAtMs;
   if (
     sources.length === item.sources.length &&
@@ -141,6 +142,32 @@ export function moveDeadlineItem(
       sources: mergeSources([candidate.source], previous.sources),
       status: previous.status,
       movedFromMs: previous.dueAtMs,
+    },
+  };
+}
+
+/**
+ * The obligation moved back to a date it already had. That date's retired row comes back
+ * to life, carrying the lawyer's choice from the row it replaces.
+ */
+export function reviveDeadlineItem(
+  retiredAtThatDate: DeadlineItem,
+  current: DeadlineItem,
+  candidate: DeadlineCandidate,
+  atMs: number,
+): { retired: DeadlineItem; next: DeadlineItem } {
+  return {
+    retired: { ...current, status: "superseded", offerNo: null, updatedAtMs: atMs },
+    next: {
+      ...retiredAtThatDate,
+      confidence: Math.max(candidate.confidence, retiredAtThatDate.confidence),
+      sources: mergeSources(retiredAtThatDate.sources, [candidate.source]),
+      status: current.status,
+      offerNo: null,
+      offeredCount: 0,
+      remindersSent: [],
+      movedFromMs: current.dueAtMs,
+      updatedAtMs: atMs,
     },
   };
 }

@@ -249,10 +249,13 @@ export async function runVeraCollectPass(params: {
 
   const day = dayKey(params.now, timeZone);
   const itemIds = decision.plan.items.map((item) => item.matterId).join(",");
+  const deadlineIds = decision.plan.deliver
+    ? decision.plan.deadlines?.map((line) => line.id).join(",")
+    : undefined;
   const dispatch = await params.dispatchDigestTurn({
     plan: decision.plan,
     sessionKey: `hook:vera:digest:${day}`,
-    idempotencyKey: `vera-digest:${day}:${itemIds}`,
+    idempotencyKey: `vera-digest:${day}:${itemIds}${deadlineIds ? `:${deadlineIds}` : ""}`,
   });
   if (!dispatch.ok) {
     return {

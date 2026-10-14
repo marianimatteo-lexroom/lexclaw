@@ -135,6 +135,12 @@ describe("parseDeadlines in Italian", () => {
     expect(summary(found)).toEqual(["deadline 2026-11-17 -"]);
   });
 
+  it("does not read postponement into unrelated words", () => {
+    const [hearing] = parse("L'udienza del 12 novembre 2026 non è rinviabile; calendario aggiornato.");
+    expect(hearing).toMatchObject({ dueDate: "2026-11-12" });
+    expect(hearing?.rescheduled).toBeUndefined();
+  });
+
   it("finds nothing without a hearing or deadline term", () => {
     expect(parse("Ferie dello studio dal 1 agosto al 31 agosto 2027.")).toEqual([]);
     expect(parse("Riunione di studio il 12 novembre 2026 alle ore 15:00.")).toEqual([]);

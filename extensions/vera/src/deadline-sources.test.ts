@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildPdf } from "./deadline-test-support.js";
-import { parseMessageContent } from "./google-api.js";
+import { parseCalendarEvents, parseMessageContent } from "./google-api.js";
 import { parseRawMime } from "./mime-text.js";
 import { extractPdfText } from "./pdf-text.js";
 
@@ -143,5 +143,27 @@ describe("parseMessageContent", () => {
     expect(content?.bodyText).toContain("Deadline");
     expect(content?.bodyText).toContain("30 November 2026");
     expect(parseMessageContent({ payload: {} })).toBeNull();
+  });
+});
+
+describe("parseCalendarEvents descriptions", () => {
+  const payload = {
+    items: [
+      {
+        id: "evt-1",
+        summary: "Rossi c. Bianchi",
+        description: "Prima udienza di comparizione",
+        status: "confirmed",
+        start: { dateTime: "2026-11-12T09:30:00+01:00" },
+        end: { dateTime: "2026-11-12T10:30:00+01:00" },
+      },
+    ],
+  };
+
+  it("hides descriptions unless a caller asks, so other tools see no new field", () => {
+    expect(parseCalendarEvents(payload)[0]).not.toHaveProperty("description");
+    expect(parseCalendarEvents(payload, { includeDescription: true })[0]).toMatchObject({
+      description: "Prima udienza di comparizione",
+    });
   });
 });

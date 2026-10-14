@@ -204,7 +204,10 @@ export function buildDeadlineResearchQuery(params: {
 }): string {
   const { item } = params;
   const when = item.dueTime ? `${item.dueDate} ${item.dueTime}` : item.dueDate;
-  const excerpt = (item.sources[0]?.excerpt ?? item.title).replace(/\s+/gu, " ").trim();
+  const excerpt = (item.sources[0]?.excerpt ?? item.title)
+    .replace(/["\u201c\u201d]/gu, "'")
+    .replace(/\s+/gu, " ")
+    .trim();
   return [
     `Prepare a concise briefing for a lawyer ahead of a ${item.type === "hearing" ? "hearing" : "filing deadline"} on ${when} (${item.timeZone}) in the matter "${params.matterLabel}".`,
     `The notice says: "${excerpt.slice(0, RESEARCH_EXCERPT_CHARS)}".`,

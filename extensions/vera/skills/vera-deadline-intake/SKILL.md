@@ -21,13 +21,13 @@ Write them inside the one digest message from the vera-morning-digest skill, aft
 - Say where it came from in a few words (`source`). When `confidence` is below 0.75, say you are not sure of the date and that the lawyer should check the notice. When `moved` is true, say the date moved.
 - `status: "candidate"`: end with the reply action, translated: `replyHint` ("reply 1 to run research") and `skipHint` ("reply skip 1 to dismiss"). Keep the number exactly.
 - `status: "tracked"` with no `reminder`: say it is on the watch list. Offer `replyHint` only when `briefReady` is false.
-- `status: "tracked"` with a `reminder`: this is the reminder the lawyer asked for. Say how many days are left and that the hearing or deadline is on the watch list. If `briefReady` is true, say the research brief is ready and offer to resend it; otherwise offer `replyHint`.
+- `status: "tracked"` with a `reminder`: this is the reminder the lawyer asked for. Say how many days are left and that the hearing or deadline is on the watch list. If `briefReady` is true, say the research brief is ready and offer to resend it (`action: "brief"`); otherwise offer `replyHint`.
 
 Do not add deadlines that are not in `plan.deadlines`. Do not offer a third kind of action.
 
 ## When the lawyer replies
 
-Match a bare number, "reply 1", "1", or "yes to 1" to the line with that `no` from the most recent digest. Never guess when a reply is ambiguous; call `vera_deadline_list` and ask.
+Match a bare number, "reply 1", "1", or "yes to 1" to the line with that `no` from the most recent digest. Numbers belong to the most recent delivered digest. When the reply is ambiguous, or another digest went out since the one the lawyer is answering, call `vera_deadline_list`, name the matter and date back to the lawyer, and ask before acting.
 
 | Reply                             | Call                                            |
 | --------------------------------- | ----------------------------------------------- |
@@ -36,7 +36,7 @@ Match a bare number, "reply 1", "1", or "yes to 1" to the line with that `no` fr
 | "skip 1", "dismiss 1", "ignore 1" | `vera_deadline_reply` with `action: "dismiss"`  |
 | "done 1"                          | `vera_deadline_reply` with `action: "done"`     |
 
-`research` is the lawyer's confirmation to track the item: reminders start from that moment on the schedule in the result (default 7 days before, 2 days before, and the morning of, at 07:40 Europe/Rome), and steps whose time already passed are skipped, not sent late. Lexroom research runs for that matter only and does not search the private library.
+`research` is the lawyer's confirmation to track the item: reminders start from that moment on the schedule in the result (default 7 days before, 2 days before, and the morning of, in the 07:40 digest slot), and steps whose time already passed are skipped, not sent late. Lexroom research runs for that matter only and does not search the private library.
 
 When the result has `brief`, send the brief back in one WhatsApp message in this turn: a short summary first, the key points, then the source titles from `brief.sources`. Mention the date and that reminders are set. Do not draft anything; a draft needs its own yes and the `vera_draft` confirmation from the vera-morning-digest skill.
 
