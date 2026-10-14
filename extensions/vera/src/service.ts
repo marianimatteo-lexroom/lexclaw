@@ -14,6 +14,7 @@ import {
   watchGmailInbox,
 } from "./google-api.js";
 import { googleConnectConfigFrom, readGoogleConnectConfig } from "./google-connect.js";
+import { isConfiguredLawyerSender } from "./google-notify.js";
 import { openVeraMemoryFromApi, type MemoryStore } from "./memory.js";
 import { buildDailyTimelineRecord, buildOnePagerRecord } from "./reconcile.js";
 
@@ -46,8 +47,7 @@ export function decideDigestDelivery(params: {
   if (!params.result.plan.deliver) {
     return { action: "silent" };
   }
-  const morning =
-    params.forceMorning || isMorningDigestSlot(params.now, params.timeZone);
+  const morning = params.forceMorning || isMorningDigestSlot(params.now, params.timeZone);
   if (!morning && !params.result.urgent) {
     return { action: "batch" };
   }
@@ -194,7 +194,8 @@ export async function runVeraCollectPass(params: {
   const topic = readPubSubTopic(params.api.pluginConfig);
   if (
     topic &&
-    (wake.watchExpirationMs === null || wake.watchExpirationMs < params.now.getTime() + 60 * 60 * 1000)
+    (wake.watchExpirationMs === null ||
+      wake.watchExpirationMs < params.now.getTime() + 60 * 60 * 1000)
   ) {
     const watched = await watchGmailInbox({
       accessToken: google.accessToken,
@@ -233,7 +234,13 @@ export async function runVeraCollectPass(params: {
       openTodoIdsJson: JSON.stringify(openTodoIds),
       heldPlanJson: JSON.stringify(decision.plan),
     });
-    return { collected: true, delivered: false, held: true, result, reason: "whatsapp_window_closed" };
+    return {
+      collected: true,
+      delivered: false,
+      held: true,
+      result,
+      reason: "whatsapp_window_closed",
+    };
   }
 
   const day = dayKey(params.now, timeZone);
@@ -351,12 +358,16 @@ export function registerVeraService(deps: VeraServiceDeps): void {
   // Fallback timers for hosts that omit the V2 scheduler field (e.g. OpenClaw 2026.9.8).
   const fallbackTimers = new Set<ReturnType<typeof setTimeout>>();
   const scheduleRepeating = (params: {
-    scheduler: { schedule: (job: {
-      id: string;
-      delayMs: number;
-      everyMs?: number;
-      run: () => void | Promise<void>;
-    }) => void } | undefined;
+    scheduler:
+      | {
+          schedule: (job: {
+            id: string;
+            delayMs: number;
+            everyMs?: number;
+            run: () => void | Promise<void>;
+          }) => void;
+        }
+      | undefined;
     id: string;
     delayMs: number;
     everyMs: number;
@@ -371,9 +382,7 @@ export function registerVeraService(deps: VeraServiceDeps): void {
       });
       return;
     }
-    api.logger.warn(
-      `vera: Gateway service scheduler missing; using setInterval for ${params.id}`,
-    );
+    api.logger.warn(`vera: Gateway service scheduler missing; using setInterval for ${params.id}`);
     const first = setTimeout(() => {
       fallbackTimers.delete(first);
       void params.run();
@@ -462,8 +471,18 @@ export async function recordLawyerInbound(params: {
   atMs: number;
   /** Only Kapso WhatsApp from the lawyer should open the Cloud API window. */
   channelId?: string;
+  /** Sender ids from the inbound event; one must be the configured lawyer number. */
+  senders: unknown[];
 }): Promise<void> {
   if (params.channelId && params.channelId !== "kapso-whatsapp") {
+    return;
+  }
+  // The channel allowlist is not enough: this opens the paid WhatsApp window and
+  // releases a held digest, so only the configured lawyer may do that.
+  if (!isConfiguredLawyerSender(params.api.config, ...params.senders)) {
+    params.api.logger.warn(
+      "vera ignored an inbound message that is not from the configured lawyer",
+    );
     return;
   }
   const memory = await openVeraMemoryFromApi(params.api);
