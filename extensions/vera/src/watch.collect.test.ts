@@ -88,6 +88,7 @@ function useMemory(overrides: Record<string, unknown> = {}) {
       heldPlanAtMs: null,
       heldPlanAttempts: 0,
       heldPlanNextAttemptAtMs: null,
+      heldPlanTemplateAttemptedAtMs: null,
       watchExpirationMs: null,
       openTodoIdsJson: null,
     })),
@@ -242,6 +243,7 @@ describe("handleVeraGoogleNotify push handling", () => {
       heldPlanAtMs: null,
       heldPlanAttempts: 0,
       heldPlanNextAttemptAtMs: null,
+      heldPlanTemplateAttemptedAtMs: null,
     });
     expect(dispatchHookAgentTurn).not.toHaveBeenCalled();
   });
@@ -272,6 +274,7 @@ describe("handleVeraGoogleNotify push handling", () => {
         heldPlanAtMs: null,
         heldPlanAttempts: 0,
         heldPlanNextAttemptAtMs: null,
+        heldPlanTemplateAttemptedAtMs: null,
         watchExpirationMs: null,
         openTodoIdsJson: null,
       })),
@@ -352,6 +355,7 @@ describe("handleVeraGoogleNotify push handling", () => {
           heldPlanAtMs: null,
           heldPlanAttempts: 0,
           heldPlanNextAttemptAtMs: null,
+          heldPlanTemplateAttemptedAtMs: null,
           watchExpirationMs: null,
           openTodoIdsJson: null,
         })),
@@ -418,6 +422,7 @@ describe("handleVeraGoogleNotify push handling", () => {
         heldPlanAtMs: null,
         heldPlanAttempts: 0,
         heldPlanNextAttemptAtMs: null,
+        heldPlanTemplateAttemptedAtMs: null,
         watchExpirationMs: null,
         openTodoIdsJson: null,
       })),

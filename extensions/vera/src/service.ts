@@ -24,6 +24,12 @@ import { isConfiguredLawyerSender } from "./google-notify.js";
 import { openVeraMemoryFromApi, type MemoryStore } from "./memory.js";
 import { buildDailyTimelineRecord, buildOnePagerRecord } from "./reconcile.js";
 import { nextSlotMs, previousSlotMs } from "./schedule.js";
+import {
+  readDigestReadyTemplate,
+  sendDigestReadyNotice,
+  warnDigestReadyTemplateUnset,
+  type KapsoTemplate,
+} from "./whatsapp-template.js";
 
 function readPubSubTopic(config: unknown): string | null {
   if (!config || typeof config !== "object") {
@@ -157,6 +163,8 @@ export type VeraCollectPassParams = {
   /** Missed-slot catch-up after boot: never re-sends the Google connect ask on every restart. */
   catchUp?: boolean;
   dispatchDigestTurn?: NonNullable<VeraServiceDeps["dispatchDigestTurn"]>;
+  /** Sends the digest-ready template; defaults to Kapso. Injected by tests. */
+  sendDigestReadyNotice?: (template: KapsoTemplate) => Promise<unknown>;
 };
 
 export type VeraCollectLogEvent = {
@@ -378,6 +386,7 @@ async function collectPass(params: VeraCollectPassParams): Promise<VeraCollectOu
     heldPlanAtMs: null,
     heldPlanAttempts: 0,
     heldPlanNextAttemptAtMs: null,
+    heldPlanTemplateAttemptedAtMs: null,
   } as const;
 
   if (decision.action === "batch") {
@@ -411,6 +420,13 @@ async function collectPass(params: VeraCollectPassParams): Promise<VeraCollectOu
   }
 
   if (decision.action === "hold") {
+    // One template per held plan. The claim is written with the hold, before the send, so a
+    // crash or a timeout that Kapso actually accepted can never produce a second nudge.
+    const template = readDigestReadyTemplate(params.api.pluginConfig);
+    const needsTemplate = wake.heldPlanTemplateAttemptedAtMs === null;
+    if (needsTemplate && !template) {
+      warnDigestReadyTemplateUnset(params.api);
+    }
     await commitSnapshots();
     await params.memory.writeWake({
       lastCollectAtMs: nowMs,
@@ -419,7 +435,20 @@ async function collectPass(params: VeraCollectPassParams): Promise<VeraCollectOu
       heldPlanAtMs,
       heldPlanAttempts: 0,
       heldPlanNextAttemptAtMs: null,
+      ...(needsTemplate && template ? { heldPlanTemplateAttemptedAtMs: nowMs } : {}),
     });
+    if (needsTemplate && template) {
+      const send =
+        params.sendDigestReadyNotice ??
+        ((value: KapsoTemplate) => sendDigestReadyNotice({ api: params.api, template: value }));
+      try {
+        await send(template);
+      } catch (error) {
+        params.api.logger.warn(
+          `vera digest-ready template failed: ${error instanceof Error ? error.message : "unknown"}`,
+        );
+      }
+    }
     return {
       collected: true,
       delivered: false,

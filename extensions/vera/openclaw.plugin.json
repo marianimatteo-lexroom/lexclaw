@@ -56,6 +56,15 @@
       },
       "lexroomStateSecret": {
         "type": "string"
+      },
+      "digestReadyTemplate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "language"],
+        "properties": {
+          "name": { "type": "string" },
+          "language": { "type": "string" }
+        }
       }
     }
   },

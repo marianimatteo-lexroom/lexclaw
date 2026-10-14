@@ -174,6 +174,7 @@ CREATE TABLE IF NOT EXISTS vera_wake_state (
   held_plan_json TEXT,
   held_plan_attempts INTEGER NOT NULL DEFAULT 0,
   held_plan_next_attempt_at_ms INTEGER,
+  held_plan_template_attempted_at_ms INTEGER,
   held_plan_at_ms INTEGER,
   watch_expiration_ms INTEGER,
   open_todo_ids_json TEXT
@@ -249,6 +250,7 @@ type VeraMemoryDatabase = {
     held_plan_json: string | null;
     held_plan_attempts: number;
     held_plan_next_attempt_at_ms: number | null;
+    held_plan_template_attempted_at_ms: number | null;
     held_plan_at_ms: number | null;
     watch_expiration_ms: number | null;
     open_todo_ids_json: string | null;
@@ -285,7 +287,9 @@ function parseAliases(json: string): string[] {
     if (!Array.isArray(parsed)) {
       return [];
     }
-    return parsed.filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "");
+    return parsed.filter(
+      (entry): entry is string => typeof entry === "string" && entry.trim() !== "",
+    );
   } catch {
     return [];
   }
@@ -315,6 +319,7 @@ function emptyWake(): WakeState {
     heldPlanJson: null,
     heldPlanAttempts: 0,
     heldPlanNextAttemptAtMs: null,
+    heldPlanTemplateAttemptedAtMs: null,
     heldPlanAtMs: null,
     watchExpirationMs: null,
     openTodoIdsJson: null,
@@ -378,10 +383,7 @@ class VeraMemoryDatabaseStore {
   readProfile(): LawyerProfile | null {
     const row = executeSqliteQueryTakeFirstSync(
       this.db,
-      this.query
-        .selectFrom("vera_profile")
-        .selectAll()
-        .where("id", "=", PROFILE_ID),
+      this.query.selectFrom("vera_profile").selectAll().where("id", "=", PROFILE_ID),
     );
     if (!row) {
       return null;
@@ -733,6 +735,7 @@ class VeraMemoryDatabaseStore {
       heldPlanJson: row.held_plan_json,
       heldPlanAttempts: row.held_plan_attempts,
       heldPlanNextAttemptAtMs: row.held_plan_next_attempt_at_ms,
+      heldPlanTemplateAttemptedAtMs: row.held_plan_template_attempted_at_ms,
       heldPlanAtMs: row.held_plan_at_ms ?? null,
       watchExpirationMs: row.watch_expiration_ms,
       openTodoIdsJson: row.open_todo_ids_json ?? null,
@@ -767,6 +770,10 @@ class VeraMemoryDatabaseStore {
             patch.heldPlanNextAttemptAtMs !== undefined
               ? patch.heldPlanNextAttemptAtMs
               : current.heldPlanNextAttemptAtMs,
+          heldPlanTemplateAttemptedAtMs:
+            patch.heldPlanTemplateAttemptedAtMs !== undefined
+              ? patch.heldPlanTemplateAttemptedAtMs
+              : current.heldPlanTemplateAttemptedAtMs,
           heldPlanAtMs:
             patch.heldPlanAtMs !== undefined ? patch.heldPlanAtMs : current.heldPlanAtMs,
           watchExpirationMs:
@@ -774,9 +781,7 @@ class VeraMemoryDatabaseStore {
               ? patch.watchExpirationMs
               : current.watchExpirationMs,
           openTodoIdsJson:
-            patch.openTodoIdsJson !== undefined
-              ? patch.openTodoIdsJson
-              : current.openTodoIdsJson,
+            patch.openTodoIdsJson !== undefined ? patch.openTodoIdsJson : current.openTodoIdsJson,
         };
         executeSqliteQuerySync(
           this.db,
@@ -793,6 +798,7 @@ class VeraMemoryDatabaseStore {
             held_plan_json: next.heldPlanJson,
             held_plan_attempts: next.heldPlanAttempts,
             held_plan_next_attempt_at_ms: next.heldPlanNextAttemptAtMs,
+            held_plan_template_attempted_at_ms: next.heldPlanTemplateAttemptedAtMs,
             held_plan_at_ms: next.heldPlanAtMs,
             watch_expiration_ms: next.watchExpirationMs,
             open_todo_ids_json: next.openTodoIdsJson,
@@ -867,10 +873,15 @@ function openVeraMemoryDatabase(dbPath: string): VeraMemoryDatabaseStore {
       }
     }
     if (!wakeColumns.some((column) => column.name === "held_plan_attempts")) {
-      db.exec("ALTER TABLE vera_wake_state ADD COLUMN held_plan_attempts INTEGER NOT NULL DEFAULT 0");
+      db.exec(
+        "ALTER TABLE vera_wake_state ADD COLUMN held_plan_attempts INTEGER NOT NULL DEFAULT 0",
+      );
     }
     if (!wakeColumns.some((column) => column.name === "held_plan_next_attempt_at_ms")) {
       db.exec("ALTER TABLE vera_wake_state ADD COLUMN held_plan_next_attempt_at_ms INTEGER");
+    }
+    if (!wakeColumns.some((column) => column.name === "held_plan_template_attempted_at_ms")) {
+      db.exec("ALTER TABLE vera_wake_state ADD COLUMN held_plan_template_attempted_at_ms INTEGER");
     }
     for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`]) {
       chmodIfExists(file);
@@ -899,7 +910,11 @@ export function createSqliteWorkerBackend(
         case "readProfile":
           return database.readProfile();
         case "upsertRecord":
-          return database.upsertRecord(command.input.record, command.input.reason, command.input.atMs);
+          return database.upsertRecord(
+            command.input.record,
+            command.input.reason,
+            command.input.atMs,
+          );
         case "searchRecords":
           return database.searchRecords(command.input.query, command.input.matterId);
         case "listRecords":

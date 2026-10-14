@@ -105,6 +105,7 @@ function createMemory(wake: Partial<WakeState> = {}, timezone?: string) {
     heldPlanAtMs: null,
     heldPlanAttempts: 0,
     heldPlanNextAttemptAtMs: null,
+    heldPlanTemplateAttemptedAtMs: null,
     watchExpirationMs: null,
     openTodoIdsJson: null,
     ...wake,
@@ -158,15 +159,18 @@ function pass(
     now: Date;
     forceMorning?: boolean;
     dispatch: Parameters<typeof runVeraCollectPass>[0]["dispatchDigestTurn"];
+    api?: OpenClawPluginApi;
+    sendDigestReadyNotice?: Parameters<typeof runVeraCollectPass>[0]["sendDigestReadyNotice"];
   },
 ) {
   return runVeraCollectPass({
-    api,
+    api: options.api ?? api,
     memory,
     now: options.now,
     forceMorning: options.forceMorning ?? false,
     trigger: "poll",
     dispatchDigestTurn: options.dispatch,
+    sendDigestReadyNotice: options.sendDigestReadyNotice,
   });
 }
 
@@ -637,6 +641,203 @@ describe("vera service scheduling", () => {
     });
     expect(new Date(find("vera-morning")[0]?.atMs ?? 0).toISOString()).toBe(
       "2026-03-07T12:40:00.000Z",
+    );
+  });
+});
+
+describe("digest-ready template for a held plan", () => {
+  const warn = vi.fn();
+  const templateApi = createTestPluginApi({
+    id: "vera",
+    pluginConfig: {
+      ...(api.pluginConfig as object),
+      digestReadyTemplate: { name: "vera_digest_ready", language: "en" },
+    },
+    config: {
+      channels: {
+        "kapso-whatsapp": {
+          apiKey: "kapso_test_key",
+          phoneNumberId: "100000000000000",
+          defaultTo: "+390000000000",
+        },
+      },
+    } as OpenClawPluginApi["config"],
+    logger: { info() {}, warn, error() {}, debug() {} },
+  });
+  const closedWindow = { lastLawyerInboundAtMs: MORNING.getTime() - 30 * HOUR_MS };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllGlobals();
+    google.loadAccessToken.mockResolvedValue({ ok: true, accessToken: "token" });
+    google.watchGmailInbox.mockResolvedValue({ ok: false });
+    setGoogle({ events: [HEARING] });
+  });
+
+  it("sends the template once when the plan is first held and not again on later polls", async () => {
+    const store = createMemory(closedWindow);
+    const notice = vi.fn(async () => ({ ok: true }));
+    const dispatch = vi.fn(async () => ({ ok: true }));
+    const run = (now: Date, forceMorning = false) =>
+      pass(store.memory, {
+        now,
+        forceMorning,
+        dispatch,
+        api: templateApi,
+        sendDigestReadyNotice: notice,
+      });
+
+    await run(MORNING, true);
+    expect(notice).toHaveBeenCalledOnce();
+    expect(notice).toHaveBeenCalledWith({ name: "vera_digest_ready", language: "en" });
+    expect(store.wake().heldPlanTemplateAttemptedAtMs).toBe(MORNING.getTime());
+
+    await run(POLL_1);
+    await run(new Date(POLL_1.getTime() + 15 * 60_000));
+    await run(new Date(MORNING.getTime() + 2 * HOUR_MS), true);
+    expect(notice).toHaveBeenCalledOnce();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("releases the plan on a lawyer reply and nudges again only for the next held plan", async () => {
+    const store = createMemory(closedWindow);
+    const notice = vi.fn(async () => ({ ok: true }));
+    const dispatch = vi.fn(async () => ({ ok: true }));
+    await pass(store.memory, {
+      now: MORNING,
+      forceMorning: true,
+      dispatch,
+      api: templateApi,
+      sendDigestReadyNotice: notice,
+    });
+
+    const replyAt = new Date(MORNING.getTime() + HOUR_MS);
+    await store.memory.writeWake({ lastLawyerInboundAtMs: replyAt.getTime() });
+    const released = await pass(store.memory, {
+      now: replyAt,
+      forceMorning: true,
+      dispatch,
+      api: templateApi,
+      sendDigestReadyNotice: notice,
+    });
+    expect(released.delivered).toBe(true);
+    expect(store.wake()).toMatchObject({
+      heldPlanJson: null,
+      heldPlanTemplateAttemptedAtMs: null,
+    });
+
+    const nextMorning = new Date(MORNING.getTime() + 24 * HOUR_MS);
+    setGoogle({
+      events: [
+        {
+          ...HEARING,
+          id: "e-next",
+          start: "2026-10-07T14:00:00.000Z",
+          end: "2026-10-07T15:00:00.000Z",
+        },
+      ],
+    });
+    await store.memory.writeWake({ lastLawyerInboundAtMs: replyAt.getTime() - 30 * HOUR_MS });
+    await pass(store.memory, {
+      now: nextMorning,
+      forceMorning: true,
+      dispatch,
+      api: templateApi,
+      sendDigestReadyNotice: notice,
+    });
+    expect(notice).toHaveBeenCalledTimes(2);
+  });
+
+  it("does nothing but warn once when digestReadyTemplate is unset", async () => {
+    const store = createMemory(closedWindow);
+    const notice = vi.fn(async () => ({ ok: true }));
+    const unsetApi = createTestPluginApi({
+      id: "vera",
+      pluginConfig: api.pluginConfig,
+      logger: { info() {}, warn, error() {}, debug() {} },
+    });
+    const dispatch = vi.fn(async () => ({ ok: true }));
+    for (const now of [MORNING, POLL_1]) {
+      await pass(store.memory, {
+        now,
+        forceMorning: now === MORNING,
+        dispatch,
+        api: unsetApi,
+        sendDigestReadyNotice: notice,
+      });
+    }
+    expect(notice).not.toHaveBeenCalled();
+    expect(store.wake().heldPlanTemplateAttemptedAtMs).toBeNull();
+    expect(store.wake().heldPlanJson).not.toBeNull();
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls[0]?.[0]).toContain("digestReadyTemplate");
+  });
+
+  it("keeps the hold and does not retry when the template send throws", async () => {
+    const store = createMemory(closedWindow);
+    const notice = vi.fn(async () => {
+      throw new Error("kapso down");
+    });
+    const dispatch = vi.fn(async () => ({ ok: true }));
+    const first = await pass(store.memory, {
+      now: MORNING,
+      forceMorning: true,
+      dispatch,
+      api: templateApi,
+      sendDigestReadyNotice: notice,
+    });
+    expect(first).toMatchObject({ held: true, reason: "whatsapp_window_closed" });
+    await pass(store.memory, {
+      now: POLL_1,
+      dispatch,
+      api: templateApi,
+      sendDigestReadyNotice: notice,
+    });
+    expect(notice).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("kapso down"));
+  });
+
+  it.each([
+    ["a 4xx rejection", async () => new Response("{}", { status: 400 })],
+    [
+      "a network failure",
+      async () => {
+        throw new Error("socket hang up");
+      },
+    ],
+  ])("calls Kapso at most once per held plan after %s", async (_label, respond) => {
+    const fetchMock = vi.fn(respond);
+    vi.stubGlobal("fetch", fetchMock);
+    const store = createMemory(closedWindow);
+    const dispatch = vi.fn(async () => ({ ok: true }));
+
+    await pass(store.memory, { now: MORNING, forceMorning: true, dispatch, api: templateApi });
+    await pass(store.memory, { now: POLL_1, dispatch, api: templateApi });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      type: "template",
+      to: "390000000000",
+      template: { name: "vera_digest_ready", language: { code: "en" } },
+    });
+    expect(store.wake().heldPlanJson).not.toBeNull();
+  });
+
+  it("sends through Kapso on 2xx", async () => {
+    const fetchMock = vi.fn(
+      async () => new Response('{"messages":[{"id":"wamid.x"}]}', { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const store = createMemory(closedWindow);
+    await pass(store.memory, {
+      now: MORNING,
+      forceMorning: true,
+      dispatch: async () => ({ ok: true }),
+      api: templateApi,
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "https://api.kapso.ai/meta/whatsapp/v23.0/100000000000000/messages",
     );
   });
 });

@@ -146,6 +146,25 @@ const tools = defineToolPlugin({
             "HMAC secret for Lexroom connect links. Falls back to googleStateSecret. Do not commit it.",
         }),
       ),
+      digestReadyTemplate: Type.Optional(
+        Type.Object(
+          {
+            name: Type.String({
+              minLength: 1,
+              description: "Approved WhatsApp utility template name, for example vera_digest_ready.",
+            }),
+            language: Type.String({
+              minLength: 1,
+              description: "Language code the template was approved in, for example en or it.",
+            }),
+          },
+          {
+            additionalProperties: false,
+            description:
+              "Utility template sent once when a digest is held because the WhatsApp 24-hour window is closed. Unset: no nudge is sent.",
+          },
+        ),
+      ),
     },
     { additionalProperties: false },
   ),

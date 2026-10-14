@@ -115,6 +115,8 @@ export type WakeState = {
   heldPlanAttempts: number;
   /** Earliest time the next dispatch retry may run; null when no retry is scheduled. */
   heldPlanNextAttemptAtMs: number | null;
+  /** When the digest-ready template was claimed for the current held plan; at most one send per plan. */
+  heldPlanTemplateAttemptedAtMs: number | null;
   /** When the current held plan was first held; cleared with heldPlanJson. */
   heldPlanAtMs: number | null;
   watchExpirationMs: number | null;

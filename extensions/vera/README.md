@@ -142,6 +142,40 @@ Every collect pass (15-minute poll, 07:40 pass, Pub/Sub notify, and the re-colle
 
 Suggested alert: page when no `result:"collected"` line appears for 45 minutes. The poll runs every 15 minutes, so three misses in a row means the collector is stopped, Google is disconnected, or the Gateway is down. In Railway, filter `"event":"vera.collect" "result":"collected"` and alert on zero matches over 45 minutes. A probe against `/vera/status` that fails on `lastCollectAgeSec > 2700` (or `null` after the first day) catches the same condition and also covers a silent log pipeline. Add lower-urgency alerts on `heldPlan.ageSec > 86400`, on `result:"error"` lines, and on `dispatchReason` values `dispatch_rejected` or `hooks_unavailable` (the collector is alive but no digest went out). The structured line is the logger message itself; if the host prefixes log lines, match on the substrings above instead of parsing the whole line as JSON.
 
+## Reopening the WhatsApp 24-hour window
+
+WhatsApp only lets Vera send free-form text within 24 hours of the lawyer's last message. When a digest is held because that window is closed, Vera sends one pre-approved utility template through Kapso so the lawyer can reply and release it. The reply is an ordinary inbound message: the existing flow re-collects and delivers the held plan.
+
+Create and get approved, in the WhatsApp Business Manager that owns the Kapso number:
+
+- Category: **Utility**
+- Name: any lowercase letters, digits, and underscores, for example `vera_digest_ready`
+- Language: the one you will configure below, for example `en` or `it`
+- Body, with no variables, buttons, header, or footer: `Your Vera digest is ready. Reply to see it.`
+
+Then set it in the plugin config:
+
+```json5
+{
+  plugins: {
+    entries: {
+      vera: {
+        config: {
+          digestReadyTemplate: { name: "vera_digest_ready", language: "en" },
+        },
+      },
+    },
+  },
+}
+```
+
+The template goes to `channels["kapso-whatsapp"].defaultTo` using the same Kapso account (`apiKey`, `phoneNumberId`, `baseUrl`, or the `KAPSO_*` environment variables) as the rest of the channel. Rules:
+
+- If `digestReadyTemplate` is unset or missing `name` or `language`, nothing is sent and the gateway logs one warning per start. The plan is still held until the lawyer texts.
+- At most one template per held plan. Vera records the send before calling Kapso and never retries it, including after a 4xx (for example, template not approved in that language), a 5xx, or a timeout. The plan stays held; check the gateway log line `vera digest-ready template not sent: ...` for the HTTP status.
+- A new template can go out only after the held plan is delivered and a later plan is held again.
+- The send has a 10-second timeout and never fails or delays the collect pass beyond it.
+
 ## WhatsApp read receipts
 
 When Vera accepts an inbound Kapso WhatsApp message, she marks that WhatsApp message read. The lawyer sees the blue checks while Vera is working, instead of gray delivered checks until a later reply. Set `channels["kapso-whatsapp"].sendReadReceipts` to `false` to leave messages delivered.
