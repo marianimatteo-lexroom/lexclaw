@@ -85,6 +85,9 @@ function useMemory(overrides: Record<string, unknown> = {}) {
       lastReconcileAtMs: null,
       lastCollectAtMs: null,
       heldPlanJson: null,
+      heldPlanAtMs: null,
+      heldPlanAttempts: 0,
+      heldPlanNextAttemptAtMs: null,
       watchExpirationMs: null,
       openTodoIdsJson: null,
     })),
@@ -237,6 +240,8 @@ describe("handleVeraGoogleNotify push handling", () => {
       openTodoIdsJson: "[]",
       heldPlanJson: null,
       heldPlanAtMs: null,
+      heldPlanAttempts: 0,
+      heldPlanNextAttemptAtMs: null,
     });
     expect(dispatchHookAgentTurn).not.toHaveBeenCalled();
   });
@@ -264,6 +269,9 @@ describe("handleVeraGoogleNotify push handling", () => {
         lastReconcileAtMs: null,
         lastCollectAtMs: null,
         heldPlanJson: null,
+        heldPlanAtMs: null,
+        heldPlanAttempts: 0,
+        heldPlanNextAttemptAtMs: null,
         watchExpirationMs: null,
         openTodoIdsJson: null,
       })),
@@ -341,6 +349,9 @@ describe("handleVeraGoogleNotify push handling", () => {
           lastReconcileAtMs: null,
           lastCollectAtMs: null,
           heldPlanJson: null,
+          heldPlanAtMs: null,
+          heldPlanAttempts: 0,
+          heldPlanNextAttemptAtMs: null,
           watchExpirationMs: null,
           openTodoIdsJson: null,
         })),
@@ -353,17 +364,26 @@ describe("handleVeraGoogleNotify push handling", () => {
       end: { dateTime: "2026-10-14T13:00:00.000Z" },
     };
 
-    it("still answers 204, records the collect, and records no digest when hooks are unavailable", async () => {
+    it("still answers 204, holds the plan for retry, and records no digest when hooks are unavailable", async () => {
       const memory = openWindowMemory();
       useGoogleAccount(true);
       useGoogleApis({ events: [alphaEvent] });
       const { res } = await push(makeApi({ hooks: undefined }));
       expect(res.statusCode).toBe(204);
       expect(memory.writeWake).toHaveBeenCalledTimes(1);
-      expect(memory.writeWake).toHaveBeenCalledWith({ lastCollectAtMs: NOW.getTime() });
+      expect(memory.writeWake).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lastCollectAtMs: NOW.getTime(),
+          heldPlanJson: expect.any(String),
+          heldPlanAttempts: 1,
+        }),
+      );
+      expect(memory.writeWake.mock.calls[0]?.[0]).not.toHaveProperty("lastDigestAtMs");
+      expect(memory.replaceGmailSnapshot).not.toHaveBeenCalled();
+      expect(memory.replaceCalendarSnapshot).not.toHaveBeenCalled();
     });
 
-    it("still answers 204, records the collect, and records no digest when the dispatcher rejects the turn", async () => {
+    it("still answers 204, holds the plan for retry, and records no digest when the dispatcher rejects the turn", async () => {
       const memory = openWindowMemory();
       useGoogleAccount(true);
       useGoogleApis({ events: [alphaEvent] });
@@ -372,14 +392,20 @@ describe("handleVeraGoogleNotify push handling", () => {
       expect(res.statusCode).toBe(204);
       expect(dispatchHookAgentTurn).toHaveBeenCalledTimes(1);
       expect(memory.writeWake).toHaveBeenCalledTimes(1);
-      expect(memory.writeWake).toHaveBeenCalledWith({ lastCollectAtMs: NOW.getTime() });
+      expect(memory.writeWake).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lastCollectAtMs: NOW.getTime(),
+          heldPlanJson: expect.any(String),
+          heldPlanAttempts: 1,
+        }),
+      );
+      expect(memory.writeWake.mock.calls[0]?.[0]).not.toHaveProperty("lastDigestAtMs");
+      expect(memory.replaceGmailSnapshot).not.toHaveBeenCalled();
+      expect(memory.replaceCalendarSnapshot).not.toHaveBeenCalled();
     });
   });
 
-  // Real bug, tracked here without changing behavior: runVeraCollectPass replaces the Gmail and
-  // Calendar snapshots before it dispatches. When dispatch fails the plan is neither held nor
-  // re-derivable, because the next pass diffs against the new snapshot and sees nothing new.
-  it.skip("keeps an undelivered plan as held when the dispatcher rejects it", async () => {
+  it("keeps an undelivered plan as held when the dispatcher rejects it", async () => {
     const memory = useMemory({
       listMatterAliases: vi.fn(async () => [
         { matterId: "matter-a", alias: "Alpha", title: "Alpha matter" },
@@ -389,6 +415,9 @@ describe("handleVeraGoogleNotify push handling", () => {
         lastReconcileAtMs: null,
         lastCollectAtMs: null,
         heldPlanJson: null,
+        heldPlanAtMs: null,
+        heldPlanAttempts: 0,
+        heldPlanNextAttemptAtMs: null,
         watchExpirationMs: null,
         openTodoIdsJson: null,
       })),

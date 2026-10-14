@@ -1,5 +1,5 @@
-import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it } from "vitest";
 import { createSqliteWorkerBackend } from "./memory.worker.js";
@@ -125,6 +125,28 @@ describe("vera memory store", () => {
     }
   });
 
+  it("persists the held plan retry state", () => {
+    const backend = openBackend();
+    try {
+      expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
+        heldPlanAttempts: 0,
+        heldPlanNextAttemptAtMs: null,
+      });
+      backend.execute({
+        type: "writeWake",
+        input: { heldPlanAttempts: 2, heldPlanNextAttemptAtMs: 5000 },
+      });
+      backend.execute({ type: "writeWake", input: { lastCollectAtMs: 9 } });
+      expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
+        heldPlanAttempts: 2,
+        heldPlanNextAttemptAtMs: 5000,
+        lastCollectAtMs: 9,
+      });
+    } finally {
+      void backend.close();
+    }
+  });
+
   it("keeps digest and held-plan timestamps and clears the hold age with the plan", () => {
     const backend = openBackend();
     try {
@@ -146,7 +168,7 @@ describe("vera memory store", () => {
     }
   });
 
-  it("adds the status columns to a wake table from before they existed", () => {
+  it("adds the retry and status columns to a wake table from before they existed", () => {
     const databasePath = path.join(tempDirs.make("vera-memory-"), "memory.sqlite");
     const legacy = new DatabaseSync(databasePath);
     legacy.exec(`CREATE TABLE vera_wake_state (
@@ -165,6 +187,8 @@ describe("vera memory store", () => {
       expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
         lastCollectAtMs: 5,
         heldPlanJson: "{}",
+        heldPlanAttempts: 0,
+        heldPlanNextAttemptAtMs: null,
         lastDigestAtMs: null,
         heldPlanAtMs: null,
       });

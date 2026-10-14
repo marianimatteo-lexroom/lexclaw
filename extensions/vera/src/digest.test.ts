@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { planDigest, waitingCost, type DigestSignal } from "./digest.js";
+import {
+  mergeDigestPlans,
+  parseDigestPlan,
+  planDigest,
+  waitingCost,
+  type DigestSignal,
+} from "./digest.js";
 
 const NOW = new Date("2026-10-06T05:40:00.000Z");
 
@@ -173,5 +179,69 @@ describe("waitingCost", () => {
         NOW,
       ),
     ).toBe(0);
+  });
+});
+
+describe("mergeDigestPlans", () => {
+  const hearing = planDigest(
+    [signal({ matterId: "verdi", kind: "deadline", dueAt: "2026-10-06T14:00:00.000Z" })],
+    NOW,
+  );
+  const email = planDigest(
+    [signal({ matterId: "bianchi", kind: "overnight_email", needsDecision: true })],
+    NOW,
+  );
+
+  it("unions matters and ranks the result", () => {
+    const merged = mergeDigestPlans(email, hearing, NOW);
+    expect(merged.deliver && merged.items.map((item) => item.matterId)).toEqual([
+      "verdi",
+      "bianchi",
+    ]);
+  });
+
+  it("returns the held plan when the fresh one has nothing", () => {
+    expect(
+      mergeDigestPlans(hearing, { deliver: false, reason: "nothing_cleared_the_bar" }, NOW),
+    ).toEqual(hearing);
+  });
+
+  it("drops held items whose deadline passed more than twelve hours ago", () => {
+    const later = new Date(NOW.getTime() + 27 * 60 * 60 * 1000);
+    expect(
+      mergeDigestPlans(hearing, { deliver: false, reason: "nothing_cleared_the_bar" }, later),
+    ).toEqual({ deliver: false, reason: "nothing_cleared_the_bar" });
+  });
+
+  it("prefers the fresh item for the same matter unless the held one costs more", () => {
+    const moved = planDigest(
+      [
+        signal({
+          matterId: "verdi",
+          kind: "calendar_move",
+          summary: "Verdi hearing moved earlier",
+          dueAt: "2026-10-06T12:00:00.000Z",
+          movedCloser: true,
+        }),
+      ],
+      NOW,
+    );
+    const merged = mergeDigestPlans(hearing, moved, NOW);
+    expect(merged.deliver && merged.items).toHaveLength(1);
+    expect(merged.deliver && merged.items[0]?.summary).toBe("Verdi hearing moved earlier");
+  });
+});
+
+describe("parseDigestPlan", () => {
+  it("round-trips a deliverable plan and rejects everything else", () => {
+    const plan = planDigest(
+      [signal({ matterId: "verdi", kind: "deadline", dueAt: "2026-10-06T14:00:00.000Z" })],
+      NOW,
+    );
+    expect(parseDigestPlan(JSON.stringify(plan))).toEqual(plan);
+    expect(parseDigestPlan(null)).toBeNull();
+    expect(parseDigestPlan("not json")).toBeNull();
+    expect(parseDigestPlan(JSON.stringify({ deliver: false }))).toBeNull();
+    expect(parseDigestPlan(JSON.stringify({ deliver: true, items: [], nextSteps: [] }))).toBeNull();
   });
 });
