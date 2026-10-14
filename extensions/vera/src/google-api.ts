@@ -25,6 +25,22 @@ export type CalendarEvent = {
   start: string;
   end: string;
   status: string;
+  description?: string;
+};
+
+export type MessageAttachment = {
+  /** "eml" is a forwarded message such as a PEC envelope's postacert.eml. */
+  kind: "pdf" | "eml";
+  attachmentId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+};
+
+/** A Gmail message read in full: headers, plain text, and the PDFs attached to it. */
+export type MessageContent = InboxMessage & {
+  bodyText: string;
+  attachments: MessageAttachment[];
 };
 
 export type GoogleToken = {
@@ -188,6 +204,7 @@ export function parseCalendarEvents(payload: unknown): CalendarEvent[] {
     const record = item as {
       id?: unknown;
       summary?: unknown;
+      description?: unknown;
       status?: unknown;
       start?: unknown;
       end?: unknown;
@@ -205,6 +222,9 @@ export function parseCalendarEvents(payload: unknown): CalendarEvent[] {
       start,
       end: eventInstant(record.end),
       status: typeof record.status === "string" ? record.status : "confirmed",
+      ...(typeof record.description === "string" && record.description.trim()
+        ? { description: clip(record.description, 600) }
+        : {}),
     });
   }
   return events;
@@ -449,6 +469,8 @@ export async function listUpcomingEvents(params: {
   accessToken: string;
   now: Date;
   hours: number;
+  /** Defaults to 20. Google caps one page at 250. */
+  maxResults?: number;
   fetchImpl?: FetchLike;
   signal?: AbortSignal;
 }): Promise<{ ok: true; events: CalendarEvent[] } | { ok: false; status: number }> {
@@ -456,7 +478,7 @@ export async function listUpcomingEvents(params: {
   const url = new URL(CALENDAR_EVENTS_URL);
   url.searchParams.set("singleEvents", "true");
   url.searchParams.set("orderBy", "startTime");
-  url.searchParams.set("maxResults", "20");
+  url.searchParams.set("maxResults", String(Math.min(250, Math.max(1, params.maxResults ?? 20))));
   url.searchParams.set("timeMin", params.now.toISOString());
   url.searchParams.set(
     "timeMax",
@@ -510,4 +532,169 @@ export async function watchGmailInbox(params: {
         ? expiration
         : null;
   return { ok: true, expirationMs };
+}
+
+const MAX_BODY_CHARS = 20_000;
+
+function decodeBase64Url(data: string): string {
+  return Buffer.from(data, "base64url").toString("utf8");
+}
+
+function htmlToText(html: string): string {
+  return html
+    .replace(/<(?:script|style)[\s\S]*?<\/(?:script|style)>/giu, " ")
+    .replace(/<br\s*\/?>|<\/(?:p|div|tr|li|h\d)>/giu, "\n")
+    .replace(/<[^>]+>/gu, " ")
+    .replace(/&nbsp;/giu, " ")
+    .replace(/&amp;/giu, "&")
+    .replace(/&lt;/giu, "<")
+    .replace(/&gt;/giu, ">")
+    .replace(/&quot;/giu, '"')
+    .replace(/&#39;|&apos;/giu, "'")
+    .replace(/[ \t]+/gu, " ")
+    .replace(/\n\s*\n+/gu, "\n");
+}
+
+type MessagePart = {
+  mimeType?: unknown;
+  filename?: unknown;
+  body?: { data?: unknown; attachmentId?: unknown; size?: unknown };
+  parts?: unknown;
+};
+
+function walkParts(
+  part: MessagePart,
+  out: { plain: string[]; html: string[]; attachments: MessageAttachment[] },
+  depth: number,
+): void {
+  if (depth > 8) {
+    return;
+  }
+  const mimeType = typeof part.mimeType === "string" ? part.mimeType.toLowerCase() : "";
+  const filename = typeof part.filename === "string" ? part.filename : "";
+  const data = typeof part.body?.data === "string" ? part.body.data : "";
+  const attachmentId = typeof part.body?.attachmentId === "string" ? part.body.attachmentId : "";
+  const isPdf = mimeType === "application/pdf" || /\.pdf$/iu.test(filename);
+  const isEml = mimeType === "message/rfc822" || /\.eml$/iu.test(filename);
+  if ((isPdf || isEml) && attachmentId) {
+    out.attachments.push({
+      kind: isPdf ? "pdf" : "eml",
+      attachmentId,
+      filename: filename || (isPdf ? "attachment.pdf" : "message.eml"),
+      mimeType: mimeType || (isPdf ? "application/pdf" : "message/rfc822"),
+      size: typeof part.body?.size === "number" ? part.body.size : 0,
+    });
+  } else if (!filename && data) {
+    if (mimeType === "text/plain") {
+      out.plain.push(decodeBase64Url(data));
+    } else if (mimeType === "text/html") {
+      out.html.push(htmlToText(decodeBase64Url(data)));
+    }
+  }
+  if (Array.isArray(part.parts)) {
+    for (const child of part.parts) {
+      if (child && typeof child === "object") {
+        walkParts(child as MessagePart, out, depth + 1);
+      }
+    }
+  }
+}
+
+/** Plain text and PDF attachment pointers from a `format=full` Gmail message. */
+export function parseMessageContent(payload: unknown): MessageContent | null {
+  const message = parseGmailMessage(payload);
+  if (!message || !payload || typeof payload !== "object") {
+    return null;
+  }
+  const root = (payload as { payload?: unknown }).payload;
+  const out = {
+    plain: [] as string[],
+    html: [] as string[],
+    attachments: [] as MessageAttachment[],
+  };
+  if (root && typeof root === "object") {
+    walkParts(root as MessagePart, out, 0);
+  }
+  const text = (out.plain.length > 0 ? out.plain : out.html).join("\n").trim();
+  return {
+    ...message,
+    bodyText: text.length > MAX_BODY_CHARS ? text.slice(0, MAX_BODY_CHARS) : text,
+    attachments: out.attachments,
+  };
+}
+
+/** Message ids for a Gmail search query. One call, no message bodies. */
+export async function listMessageIds(params: {
+  accessToken: string;
+  query: string;
+  max: number;
+  fetchImpl?: FetchLike;
+  signal?: AbortSignal;
+}): Promise<{ ok: true; ids: string[] } | { ok: false; status: number }> {
+  const url = new URL(GMAIL_LIST_URL);
+  url.searchParams.set("q", params.query);
+  url.searchParams.set("maxResults", String(params.max));
+  const listed = await authorizedGet(
+    url.toString(),
+    params.accessToken,
+    params.fetchImpl ?? fetch,
+    params.signal,
+  );
+  if (!listed.ok) {
+    return listed;
+  }
+  const messages = (listed.value as { messages?: unknown } | null)?.messages;
+  const ids = Array.isArray(messages)
+    ? messages.flatMap((item) =>
+        item && typeof item === "object" && typeof (item as { id?: unknown }).id === "string"
+          ? [(item as { id: string }).id]
+          : [],
+      )
+    : [];
+  return { ok: true, ids };
+}
+
+export async function readMessageContent(params: {
+  accessToken: string;
+  id: string;
+  fetchImpl?: FetchLike;
+  signal?: AbortSignal;
+}): Promise<{ ok: true; content: MessageContent } | { ok: false; status: number }> {
+  const url = new URL(`${GMAIL_LIST_URL}/${encodeURIComponent(params.id)}`);
+  url.searchParams.set("format", "full");
+  const detail = await authorizedGet(
+    url.toString(),
+    params.accessToken,
+    params.fetchImpl ?? fetch,
+    params.signal,
+  );
+  if (!detail.ok) {
+    return detail;
+  }
+  const content = parseMessageContent(detail.value);
+  return content ? { ok: true, content } : { ok: false, status: 0 };
+}
+
+export async function readAttachmentBytes(params: {
+  accessToken: string;
+  messageId: string;
+  attachmentId: string;
+  fetchImpl?: FetchLike;
+  signal?: AbortSignal;
+}): Promise<{ ok: true; bytes: Buffer } | { ok: false; status: number }> {
+  const url = `${GMAIL_LIST_URL}/${encodeURIComponent(params.messageId)}/attachments/${encodeURIComponent(params.attachmentId)}`;
+  const fetched = await authorizedGet(
+    url,
+    params.accessToken,
+    params.fetchImpl ?? fetch,
+    params.signal,
+  );
+  if (!fetched.ok) {
+    return fetched;
+  }
+  const data = (fetched.value as { data?: unknown } | null)?.data;
+  if (typeof data !== "string") {
+    return { ok: false, status: 0 };
+  }
+  return { ok: true, bytes: Buffer.from(data, "base64url") };
 }

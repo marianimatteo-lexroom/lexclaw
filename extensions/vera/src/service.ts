@@ -5,6 +5,7 @@ import {
   whatsappWindowOpen,
   type CollectResult,
 } from "./collector.js";
+import { prepareDeadlineIntake } from "./deadline-intake.js";
 import type { DigestPlan } from "./digest.js";
 import { openVeraGoogleAccountFromApi } from "./google-account.js";
 import {
@@ -172,6 +173,15 @@ export async function runVeraCollectPass(params: {
   }
 
   const timeZone = profile?.timezone ?? DEFAULT_TZ;
+  const deadlineIntake = await prepareDeadlineIntake({
+    api: params.api,
+    memory: params.memory,
+    now: params.now,
+    forceMorning: params.forceMorning,
+    aliases,
+    timeZone,
+    accessToken: google.accessToken,
+  });
   const result = collectDigest({
     now: params.now,
     forceMorning: params.forceMorning,
@@ -182,6 +192,7 @@ export async function runVeraCollectPass(params: {
     aliases,
     todos,
     previousOpenTodoIds,
+    ...(deadlineIntake ? { deadlines: deadlineIntake.digest } : {}),
   });
 
   const openTodoIds = todos
@@ -252,6 +263,7 @@ export async function runVeraCollectPass(params: {
       reason: dispatch.reason ?? "dispatch_rejected",
     };
   }
+  await deadlineIntake?.commit(decision.plan);
   await params.memory.writeWake({
     lastCollectAtMs: params.now.getTime(),
     openTodoIdsJson: JSON.stringify(openTodoIds),

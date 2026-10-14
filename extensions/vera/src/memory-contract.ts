@@ -114,6 +114,92 @@ export type WakeState = {
   openTodoIdsJson: string | null;
 };
 
+export const DEADLINE_TYPES = ["deadline", "hearing"] as const;
+export type DeadlineType = (typeof DEADLINE_TYPES)[number];
+
+/** candidate: found, not yet confirmed. tracked: the lawyer confirmed it, so reminders run. */
+export const DEADLINE_STATUSES = [
+  "candidate",
+  "tracked",
+  "dismissed",
+  "done",
+  "superseded",
+] as const;
+export type DeadlineStatus = (typeof DEADLINE_STATUSES)[number];
+
+export const DEADLINE_SOURCE_KINDS = ["email", "pdf", "calendar"] as const;
+export type DeadlineSourceKind = (typeof DEADLINE_SOURCE_KINDS)[number];
+
+export const DEADLINE_RESEARCH_STATUSES = ["none", "done", "failed"] as const;
+export type DeadlineResearchStatus = (typeof DEADLINE_RESEARCH_STATUSES)[number];
+
+export type DeadlineSource = {
+  kind: DeadlineSourceKind;
+  /** Gmail message id, "messageId#filename" for a PDF, or Calendar event id. */
+  ref: string;
+  label: string;
+  excerpt: string;
+};
+
+export type DeadlineItem = {
+  id: string;
+  /** matterId|type|dueDate. Equal keys are the same obligation seen from another source. */
+  dedupeKey: string;
+  matterId: string;
+  type: DeadlineType;
+  title: string;
+  dueAtMs: number;
+  /** YYYY-MM-DD in timeZone. */
+  dueDate: string;
+  /** HH:MM in timeZone, null when the source names no time. */
+  dueTime: string | null;
+  timeZone: string;
+  confidence: number;
+  sources: DeadlineSource[];
+  status: DeadlineStatus;
+  /** Number shown in the last delivered digest ("reply 1 ..."). */
+  offerNo: number | null;
+  offeredCount: number;
+  /** Reminder cadence steps already sent or skipped, such as "7d". */
+  remindersSent: string[];
+  researchStatus: DeadlineResearchStatus;
+  brief: string | null;
+  briefAtMs: number | null;
+  movedFromMs: number | null;
+  createdAtMs: number;
+  updatedAtMs: number;
+};
+
+export type DeadlineCandidate = {
+  matterId: string;
+  type: DeadlineType;
+  title: string;
+  dueAtMs: number;
+  dueDate: string;
+  dueTime: string | null;
+  timeZone: string;
+  confidence: number;
+  source: DeadlineSource;
+  /** The source says an earlier item moved: by source ref (calendar) or by old date (email). */
+  movesFrom?: { sourceRef?: string; dueDate?: string };
+  /** The source announces a postponement without naming the old date. */
+  rescheduled?: boolean;
+};
+
+export type DeadlinePatch = Partial<
+  Pick<
+    DeadlineItem,
+    "status" | "remindersSent" | "researchStatus" | "brief" | "briefAtMs" | "title"
+  >
+>;
+
+export type DeadlineUpsertResult = {
+  created: DeadlineItem[];
+  /** New date for an item that moved, carrying over the lawyer's choice. */
+  moved: DeadlineItem[];
+  updated: DeadlineItem[];
+};
+
 type Operation<Input, Output> = { input: Input; output: Output };
 
 export type VeraMemoryOperations = {
@@ -136,5 +222,28 @@ export type VeraMemoryOperations = {
   readCalendarSnapshot: Operation<undefined, CalendarSnapshotRow[]>;
   readWake: Operation<undefined, WakeState>;
   writeWake: Operation<Partial<WakeState>, undefined>;
-  listMatterAliases: Operation<undefined, Array<{ matterId: string; alias: string; title: string }>>;
+  listMatterAliases: Operation<
+    undefined,
+    Array<{ matterId: string; alias: string; title: string }>
+  >;
+  upsertDeadlines: Operation<
+    { candidates: DeadlineCandidate[]; atMs: number },
+    DeadlineUpsertResult
+  >;
+  listDeadlines: Operation<{ matterId?: string }, DeadlineItem[]>;
+  getDeadline: Operation<{ id: string }, DeadlineItem | null>;
+  updateDeadline: Operation<
+    { id: string; patch: DeadlinePatch; atMs: number },
+    DeadlineItem | null
+  >;
+  commitDeadlineDigest: Operation<
+    {
+      offers: Array<{ id: string; no: number }>;
+      reminders: Array<{ id: string; steps: string[] }>;
+      atMs: number;
+    },
+    undefined
+  >;
+  filterUnscannedMessages: Operation<{ ids: string[] }, string[]>;
+  markMessagesScanned: Operation<{ ids: string[]; atMs: number }, undefined>;
 };

@@ -6,6 +6,11 @@ import {
 } from "openclaw/plugin-sdk/tool-plugin";
 import { Type } from "typebox";
 import { buildInjectedBrief } from "./src/brief.js";
+import {
+  DEADLINE_REPLY_ACTIONS,
+  executeVeraDeadlineList,
+  executeVeraDeadlineReply,
+} from "./src/deadline-tools.js";
 import { planDigest, type DigestSignal } from "./src/digest.js";
 import { openVeraGoogleAccountFromApi } from "./src/google-account.js";
 import { exchangeAuthorizationCode } from "./src/google-api.js";
@@ -121,6 +126,39 @@ const tools = defineToolPlugin({
           description:
             "HMAC secret for Lexroom connect links. Falls back to googleStateSecret. Do not commit it.",
         }),
+      ),
+      deadlineIntake: Type.Optional(
+        Type.Object(
+          {
+            enabled: Type.Optional(
+              Type.Boolean({
+                description:
+                  "Extract hearings and deadlines from mail and calendar, list them in the digest with reply actions, and send reminders for the ones the lawyer confirms. Default false.",
+              }),
+            ),
+            reminders: Type.Optional(
+              Type.Array(Type.String({ pattern: "^(\\d{1,3}d|morning-of)$" }), {
+                description:
+                  'Reminder cadence for confirmed items, such as ["7d", "2d", "morning-of"]. Default is 7d, 2d, morning-of.',
+              }),
+            ),
+            horizonDays: Type.Optional(
+              Type.Integer({
+                minimum: 1,
+                maximum: 365,
+                description: "How far ahead the calendar is scanned. Default 60.",
+              }),
+            ),
+            minConfidence: Type.Optional(
+              Type.Number({
+                minimum: 0,
+                maximum: 1,
+                description: "Drop extractions below this confidence. Default 0.6.",
+              }),
+            ),
+          },
+          { additionalProperties: false },
+        ),
       ),
     },
     { additionalProperties: false },
@@ -302,6 +340,38 @@ const tools = defineToolPlugin({
       optional: true,
       async execute(params, config, context) {
         return await executeVeraSendEmail(config, context.api, params, context.signal);
+      },
+    }),
+    tool({
+      name: "vera_deadline_list",
+      label: "List tracked deadlines and hearings",
+      description:
+        "List upcoming hearings and deadlines Vera extracted from mail and calendar, with the numbers from the last digest, status (candidate or tracked), confidence, sources, and reminder schedule. Read-only. Requires deadlineIntake.enabled.",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      optional: true,
+      async execute(_params, config, context) {
+        return await executeVeraDeadlineList(config, context.api);
+      },
+    }),
+    tool({
+      name: "vera_deadline_reply",
+      label: "Act on a digest deadline",
+      description:
+        "Apply the lawyer's reply to a numbered deadline or hearing from the digest. research confirms tracking (reminders start) and runs Lexroom research for that matter, returning the brief to text back. track confirms tracking only. dismiss and done close the item. Call it only after the lawyer replies; never to guess. Sends no email and does not touch the calendar.",
+      parameters: Type.Object(
+        {
+          ref: Type.String({
+            minLength: 1,
+            description:
+              'The digest number the lawyer replied with, such as "1", or a deadline id.',
+          }),
+          action: Type.Union(DEADLINE_REPLY_ACTIONS.map((action) => Type.Literal(action))),
+        },
+        { additionalProperties: false },
+      ),
+      optional: true,
+      async execute(params, config, context) {
+        return await executeVeraDeadlineReply(params, config, context.api, context.signal);
       },
     }),
     tool({

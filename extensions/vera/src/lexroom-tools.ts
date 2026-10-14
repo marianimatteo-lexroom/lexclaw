@@ -8,12 +8,13 @@ import {
   type LexroomConnectConfig,
   type LexroomConnectResult,
 } from "./lexroom-connect.js";
-import type { LexroomConfig } from "./lexroom-client.js";
+import { runResearch, type CitedSource, type LexroomConfig } from "./lexroom-client.js";
 import {
   readVeraWhatsAppTarget,
   VERA_WHATSAPP_CHANNEL,
   type GoogleConnectedNotice,
 } from "./google-notify.js";
+import type { DeadlineItem } from "./memory-contract.js";
 
 type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger">;
 
@@ -192,3 +193,73 @@ export async function resolveLexroomConfig(params: {
 }
 
 export { lexroomConnectConfigFrom };
+
+const RESEARCH_EXCERPT_CHARS = 300;
+
+/** Research prompt for one hearing or deadline. Only the notice's own sentence is quoted. */
+export function buildDeadlineResearchQuery(params: {
+  item: Pick<DeadlineItem, "type" | "dueDate" | "dueTime" | "timeZone" | "title" | "sources">;
+  matterLabel: string;
+  language?: string | null;
+}): string {
+  const { item } = params;
+  const when = item.dueTime ? `${item.dueDate} ${item.dueTime}` : item.dueDate;
+  const excerpt = (item.sources[0]?.excerpt ?? item.title).replace(/\s+/gu, " ").trim();
+  return [
+    `Prepare a concise briefing for a lawyer ahead of a ${item.type === "hearing" ? "hearing" : "filing deadline"} on ${when} (${item.timeZone}) in the matter "${params.matterLabel}".`,
+    `The notice says: "${excerpt.slice(0, RESEARCH_EXCERPT_CHARS)}".`,
+    "Cover the procedural rules and formalities that apply, what must be filed or prepared and by when, how the time limits are counted, the main risks, and the recommended next steps. Cite the sources you rely on.",
+    ...(params.language?.trim() ? [`Answer in ${params.language.trim()}.`] : []),
+  ].join("\n");
+}
+
+export type DeadlineResearchResult =
+  | { ok: true; answer: string; sources: CitedSource[]; researchId?: string }
+  | { ok: false; error: string; reason?: "not_connected" };
+
+/**
+ * Lexroom research for one tracked item, scoped to its matter. Read-only: it never
+ * drafts and never sends mail. Uses the connected Lexroom account like vera_research.
+ */
+export async function runDeadlineResearch(params: {
+  item: DeadlineItem;
+  matterLabel: string;
+  language?: string | null;
+  config: LexroomConfig & LexroomConnectConfig;
+  api: StoreApi;
+  now?: Date;
+  signal?: AbortSignal;
+  fetchImpl?: typeof fetch;
+}): Promise<DeadlineResearchResult> {
+  const resolved = await resolveLexroomConfig({
+    config: params.config,
+    api: params.api,
+    now: params.now,
+  });
+  if (!resolved.ok) {
+    return resolved;
+  }
+  const outcome = await runResearch({
+    config: resolved.config,
+    matterId: params.item.matterId,
+    query: buildDeadlineResearchQuery({
+      item: params.item,
+      matterLabel: params.matterLabel,
+      language: params.language,
+    }),
+    signal: params.signal,
+    fetchImpl: params.fetchImpl,
+  });
+  if (!outcome.ok) {
+    return { ok: false, error: outcome.error };
+  }
+  if (!outcome.answer.trim()) {
+    return { ok: false, error: "Lexroom returned an empty briefing." };
+  }
+  return {
+    ok: true,
+    answer: outcome.answer,
+    sources: outcome.sources,
+    ...(outcome.researchId ? { researchId: outcome.researchId } : {}),
+  };
+}

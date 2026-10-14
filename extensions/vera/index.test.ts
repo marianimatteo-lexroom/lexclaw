@@ -13,6 +13,8 @@ const TOOL_NAMES = [
   "vera_read_inbox",
   "vera_read_calendar",
   "vera_send_email",
+  "vera_deadline_list",
+  "vera_deadline_reply",
   "vera_memory_search",
   "vera_memory_list",
   "vera_memory_get",

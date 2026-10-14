@@ -26,6 +26,11 @@ export type DigestSignal = {
   movedCloser?: boolean;
   /** An email or open question is blocked on the lawyer. */
   needsDecision?: boolean;
+  /**
+   * A deadline or hearing the lawyer confirmed needs a word: a reminder step the lawyer
+   * asked for came due, or the date moved.
+   */
+  tracked?: "reminder" | "moved";
 };
 
 export type RankedDigestItem = {
@@ -44,9 +49,43 @@ export type DigestNextStep = {
   instruction: string;
 };
 
+/** A deadline or hearing from matter memory that the digest lists with a reply action. */
+export type DigestDeadlineInput = {
+  id: string;
+  matterId: string;
+  matterLabel: string;
+  type: "deadline" | "hearing";
+  title: string;
+  /** ISO-8601 instant. */
+  dueAt: string;
+  /** Local date and time in the lawyer's zone, for example "2026-11-12 09:30". Time is omitted when unknown. */
+  due: string;
+  daysLeft: number;
+  /** candidate: found but not confirmed. tracked: the lawyer confirmed it. */
+  status: "candidate" | "tracked";
+  confidence: number;
+  source: string;
+  moved?: boolean;
+  briefReady: boolean;
+  /** Set when a reminder step is due; `covers` lists steps this message settles. */
+  reminder?: { step: string; covers: string[] };
+};
+
+export type DigestDeadlineLine = DigestDeadlineInput & {
+  /** The number the lawyer replies with. */
+  no: number;
+  replyHint: string;
+  skipHint: string;
+};
+
 export type DigestPlan =
   | { deliver: false; reason: "nothing_cleared_the_bar" }
-  | { deliver: true; items: RankedDigestItem[]; nextSteps: [DigestNextStep, DigestNextStep] };
+  | {
+      deliver: true;
+      items: RankedDigestItem[];
+      nextSteps: [DigestNextStep, DigestNextStep];
+      deadlines?: DigestDeadlineLine[];
+    };
 
 const KIND_RANK: Record<DigestSignalKind, number> = {
   deadline: 4,
@@ -99,6 +138,9 @@ export function waitingCost(signal: DigestSignal, now: Date): number {
     if (withinWindow(hours, NEAR_HOURS)) {
       return 80;
     }
+  }
+  if (signal.tracked !== undefined) {
+    return 60;
   }
   if (signal.kind === "calendar_move" && signal.movedCloser === true) {
     return 70;
@@ -177,7 +219,25 @@ function step(action: DigestNextStep["action"], item: RankedDigestItem): DigestN
   };
 }
 
-export function planDigest(signals: readonly DigestSignal[], now: Date = new Date()): DigestPlan {
+export function numberDeadlineLines(
+  deadlines: readonly DigestDeadlineInput[],
+): DigestDeadlineLine[] {
+  return deadlines.map((deadline, index) => {
+    const no = index + 1;
+    return {
+      ...deadline,
+      no,
+      replyHint: `reply ${no} to run research`,
+      skipHint: `reply skip ${no} to dismiss`,
+    };
+  });
+}
+
+export function planDigest(
+  signals: readonly DigestSignal[],
+  now: Date = new Date(),
+  deadlines: readonly DigestDeadlineInput[] = [],
+): DigestPlan {
   const best = new Map<string, RankedDigestItem>();
   for (const raw of signals) {
     const signal = normalizeSignal(raw);
@@ -210,5 +270,6 @@ export function planDigest(signals: readonly DigestSignal[], now: Date = new Dat
     deliver: true,
     items,
     nextSteps: [step("research", research), step("draft_if_confirmed", draft)],
+    ...(deadlines.length > 0 ? { deadlines: numberDeadlineLines(deadlines) } : {}),
   };
 }
