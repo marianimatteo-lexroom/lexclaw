@@ -33,6 +33,7 @@ Disable the Gateway model heartbeat for this install (`agents.defaults.heartbeat
           // optional: projects/.../topics/... for Gmail watch
           // googlePubSubTopic: "${VERA_GOOGLE_PUBSUB_TOPIC}",
           // googleNotifyToken: "${VERA_GOOGLE_NOTIFY_TOKEN}",
+          // statusToken: "${VERA_STATUS_TOKEN}",
         },
       },
     },
@@ -73,6 +74,40 @@ Create a Google Cloud OAuth web client, enable the Gmail API and the Google Cale
 The connect link asks for read-only Gmail, permission to send mail, and read-only Calendar, plus the account email. Vera does not change calendar events. One link covers all of that. It expires after 30 minutes and works once. When Gmail is not connected, the morning phrasing turn still follows the vera-google-connect skill. `vera_send_email` sends one plain-text message only after `confirmed` is true. When the link succeeds, Vera texts `channels["kapso-whatsapp"].defaultTo` that Gmail and Google Calendar are connected.
 
 Optional Pub/Sub: set `googlePubSubTopic`, set `googleNotifyToken` (16+ chars), and point the push subscription at `/vera/google/notify` with `Authorization: Bearer <token>`. Without both, the 15-minute poll owns wakes; notify without the token returns 401.
+
+## Monitoring
+
+`GET /vera/status` returns collector health as JSON. It needs `Authorization: Bearer <statusToken>`; `statusToken` is 16+ characters and the route returns 401 for every request while it is unset. The Railway deploy sets it from `VERA_STATUS_TOKEN`.
+
+```json
+{
+  "ok": true,
+  "now": "2026-10-14T09:00:00.000Z",
+  "lastCollectAt": "2026-10-14T08:55:00.000Z",
+  "lastCollectAgeSec": 300,
+  "lastDigestAt": "2026-10-14T05:40:00.000Z",
+  "heldPlan": { "held": false, "heldSince": null, "ageSec": null },
+  "window": {
+    "state": "open",
+    "lastLawyerInboundAt": "2026-10-14T05:41:00.000Z",
+    "expiresAt": "2026-10-15T05:41:00.000Z"
+  }
+}
+```
+
+`window.state` is `open`, `closed` (24 hours since the lawyer last texted, so held digests wait), or `never_opened`. `heldPlan.heldSince` is when the current held plan was first held. Nulls mean the event has not happened yet; `heldPlan.ageSec` is also null for a plan held before the status columns existed.
+
+Every collect pass (15-minute poll, 07:40 pass, Pub/Sub notify, and the re-collect after a lawyer text) logs one JSON line:
+
+```json
+{"event":"vera.collect","at":"2026-10-14T08:55:00.000Z","trigger":"poll","result":"collected","decision":"hold","dispatchReason":"whatsapp_window_closed","delivered":false,"held":true,"urgent":true,"forceMorning":false,"windowOpen":false,"deliverable":true,"durationMs":412}
+```
+
+- `trigger`: `poll`, `morning`, `notify`, or `inbound`.
+- `result`: `collected` (snapshots and `lastCollectAt` advanced), `skipped` (Google not connected or unreadable; `dispatchReason` names the cause), or `error` (logged at error level with `error`).
+- `decision`: `silent`, `batch`, `hold`, `dispatch`, `connect`, or `none`. `dispatchReason` carries `whatsapp_window_closed`, `batched_until_morning`, `dispatch_rejected`, `hooks_unavailable`, and similar causes.
+
+Suggested alert: page when no `result:"collected"` line appears for 45 minutes. The poll runs every 15 minutes, so three misses in a row means the collector is stopped, Google is disconnected, or the Gateway is down. In Railway, filter `"event":"vera.collect" "result":"collected"` and alert on zero matches over 45 minutes. A probe against `/vera/status` that fails on `lastCollectAgeSec > 2700` (or `null` after the first day) catches the same condition and also covers a silent log pipeline. Add lower-urgency alerts on `heldPlan.ageSec > 86400`, on `result:"error"` lines, and on `dispatchReason` values `dispatch_rejected` or `hooks_unavailable` (the collector is alive but no digest went out). The structured line is the logger message itself; if the host prefixes log lines, match on the substrings above instead of parsing the whole line as JSON.
 
 ## WhatsApp read receipts
 

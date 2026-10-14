@@ -170,7 +170,9 @@ CREATE TABLE IF NOT EXISTS vera_wake_state (
   last_lawyer_inbound_at_ms INTEGER,
   last_reconcile_at_ms INTEGER,
   last_collect_at_ms INTEGER,
+  last_digest_at_ms INTEGER,
   held_plan_json TEXT,
+  held_plan_at_ms INTEGER,
   watch_expiration_ms INTEGER,
   open_todo_ids_json TEXT
 ) STRICT;
@@ -241,7 +243,9 @@ type VeraMemoryDatabase = {
     last_lawyer_inbound_at_ms: number | null;
     last_reconcile_at_ms: number | null;
     last_collect_at_ms: number | null;
+    last_digest_at_ms: number | null;
     held_plan_json: string | null;
+    held_plan_at_ms: number | null;
     watch_expiration_ms: number | null;
     open_todo_ids_json: string | null;
   };
@@ -303,7 +307,9 @@ function emptyWake(): WakeState {
     lastLawyerInboundAtMs: null,
     lastReconcileAtMs: null,
     lastCollectAtMs: null,
+    lastDigestAtMs: null,
     heldPlanJson: null,
+    heldPlanAtMs: null,
     watchExpirationMs: null,
     openTodoIdsJson: null,
   };
@@ -717,7 +723,9 @@ class VeraMemoryDatabaseStore {
       lastLawyerInboundAtMs: row.last_lawyer_inbound_at_ms,
       lastReconcileAtMs: row.last_reconcile_at_ms,
       lastCollectAtMs: row.last_collect_at_ms,
+      lastDigestAtMs: row.last_digest_at_ms ?? null,
       heldPlanJson: row.held_plan_json,
+      heldPlanAtMs: row.held_plan_at_ms ?? null,
       watchExpirationMs: row.watch_expiration_ms,
       openTodoIdsJson: row.open_todo_ids_json ?? null,
     };
@@ -739,8 +747,12 @@ class VeraMemoryDatabaseStore {
               : current.lastReconcileAtMs,
           lastCollectAtMs:
             patch.lastCollectAtMs !== undefined ? patch.lastCollectAtMs : current.lastCollectAtMs,
+          lastDigestAtMs:
+            patch.lastDigestAtMs !== undefined ? patch.lastDigestAtMs : current.lastDigestAtMs,
           heldPlanJson:
             patch.heldPlanJson !== undefined ? patch.heldPlanJson : current.heldPlanJson,
+          heldPlanAtMs:
+            patch.heldPlanAtMs !== undefined ? patch.heldPlanAtMs : current.heldPlanAtMs,
           watchExpirationMs:
             patch.watchExpirationMs !== undefined
               ? patch.watchExpirationMs
@@ -761,7 +773,9 @@ class VeraMemoryDatabaseStore {
             last_lawyer_inbound_at_ms: next.lastLawyerInboundAtMs,
             last_reconcile_at_ms: next.lastReconcileAtMs,
             last_collect_at_ms: next.lastCollectAtMs,
+            last_digest_at_ms: next.lastDigestAtMs,
             held_plan_json: next.heldPlanJson,
+            held_plan_at_ms: next.heldPlanAtMs,
             watch_expiration_ms: next.watchExpirationMs,
             open_todo_ids_json: next.openTodoIdsJson,
           }),
@@ -825,8 +839,14 @@ function openVeraMemoryDatabase(dbPath: string): VeraMemoryDatabaseStore {
     const wakeColumns = db
       .prepare("SELECT name FROM pragma_table_info('vera_wake_state')")
       .all() as Array<{ name: string }>;
-    if (!wakeColumns.some((column) => column.name === "open_todo_ids_json")) {
-      db.exec("ALTER TABLE vera_wake_state ADD COLUMN open_todo_ids_json TEXT");
+    for (const [column, type] of [
+      ["open_todo_ids_json", "TEXT"],
+      ["last_digest_at_ms", "INTEGER"],
+      ["held_plan_at_ms", "INTEGER"],
+    ] as const) {
+      if (!wakeColumns.some((existing) => existing.name === column)) {
+        db.exec(`ALTER TABLE vera_wake_state ADD COLUMN ${column} ${type}`);
+      }
     }
     for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`]) {
       chmodIfExists(file);

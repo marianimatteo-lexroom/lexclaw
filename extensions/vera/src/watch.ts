@@ -1,24 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { bearerMatches, readBearerSecret } from "./bearer-auth.js";
 import { openVeraMemoryFromApi } from "./memory.js";
 import { runVeraCollectPass } from "./service.js";
-
-function readNotifyToken(config: unknown): string | null {
-  if (!config || typeof config !== "object") {
-    return null;
-  }
-  const token = (config as { googleNotifyToken?: unknown }).googleNotifyToken;
-  return typeof token === "string" && token.trim().length >= 16 ? token.trim() : null;
-}
-
-function bearerMatches(req: IncomingMessage, expected: string): boolean {
-  const header = req.headers.authorization;
-  if (typeof header !== "string") {
-    return false;
-  }
-  const match = /^Bearer\s+(.+)$/iu.exec(header.trim());
-  return match?.[1] === expected;
-}
 
 /**
  * Google Pub/Sub push target. Requires `googleNotifyToken` (Bearer) so an open
@@ -34,7 +18,7 @@ export async function handleVeraGoogleNotify(
     res.end("method not allowed");
     return true;
   }
-  const expected = readNotifyToken(api.pluginConfig);
+  const expected = readBearerSecret(api.pluginConfig, "googleNotifyToken");
   if (!expected || !bearerMatches(req, expected)) {
     res.statusCode = 401;
     res.end("unauthorized");
@@ -48,6 +32,7 @@ export async function handleVeraGoogleNotify(
       memory,
       now: new Date(),
       forceMorning: false,
+      trigger: "notify",
       dispatchDigestTurn: async (params) => {
         if (!hooks?.dispatchHookAgentTurn) {
           return { ok: false, reason: "hooks_unavailable" };

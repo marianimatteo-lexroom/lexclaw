@@ -37,6 +37,7 @@ import {
   executeVeraTodoList,
 } from "./src/memory-tools.js";
 import { openVeraMemoryFromApi } from "./src/memory.js";
+import { handleVeraStatus } from "./src/status.js";
 import { recordLawyerInbound, registerVeraService } from "./src/service.js";
 import {
   markKapsoMessageRead,
@@ -108,6 +109,12 @@ const tools = defineToolPlugin({
         Type.String({
           description:
             "Bearer token required by POST /vera/google/notify. At least 16 characters. Do not commit it.",
+        }),
+      ),
+      statusToken: Type.Optional(
+        Type.String({
+          description:
+            "Bearer token required by GET /vera/status. At least 16 characters. Without it the route returns 401. Do not commit it.",
         }),
       ),
       lexroomConnectUri: Type.Optional(
@@ -507,6 +514,19 @@ const entry = definePluginEntry({
       auth: "plugin",
       match: "exact",
       handler: (req, res) => handleVeraGoogleNotify(req, res, api),
+    });
+
+    api.registerHttpRoute({
+      path: "/vera/status",
+      auth: "plugin",
+      match: "exact",
+      handler: (req, res) =>
+        handleVeraStatus(req, res, {
+          config: api.pluginConfig,
+          now: () => new Date(),
+          readWake: async () => (await openVeraMemoryFromApi(api)).readWake(),
+          log: api.logger,
+        }),
     });
 
     api.registerHttpRoute({
