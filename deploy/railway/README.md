@@ -36,24 +36,50 @@ Both are Docker build args. Railway passes a service variable with the same name
 
 ## Service variables
 
-Values stay in Railway. Nothing here belongs in git.
+Values stay in Railway. Nothing here belongs in git. `start.sh` writes config from these on every boot. A variable that is unset is skipped (logged) and never breaks the boot; whatever is already on the volume stays untouched, except where noted.
 
-Required (boot fails without them):
+### Required (boot fails without them)
 
-- `KAPSO_PHONE_NUMBER_ID`: Kapso `phone_number_id` of the business sender.
-- `KAPSO_DEFAULT_TO`: lawyer WhatsApp number in `+E.164` form.
-- `VERA_PUBLIC_ORIGIN`: public origin such as `https://vera.example.com`. When unset, `https://$RAILWAY_PUBLIC_DOMAIN` is used.
-- `KAPSO_PLUGIN_VERSION`: set by the Dockerfile default.
+| Variable                | Notes                                                                                                                                                       |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `KAPSO_PHONE_NUMBER_ID` | Kapso `phone_number_id` of the business sender.                                                                                                             |
+| `KAPSO_DEFAULT_TO`      | Lawyer WhatsApp number in `+E.164` form. Also the only sender Vera accepts as the lawyer.                                                                   |
+| `KAPSO_PLUGIN_VERSION`  | Exact version such as `0.1.4`. The Dockerfile sets the default, so it only needs a service variable to move the pin.                                        |
+| `VERA_PUBLIC_ORIGIN`    | Public origin such as `https://vera.example.com`. Not needed when Railway provides `RAILWAY_PUBLIC_DOMAIN` (a generated domain). One of the two must exist. |
 
-Gateway runtime: `OPENCLAW_GATEWAY_TOKEN`, `OPENCLAW_GATEWAY_PORT` (default `8080`; `PORT` is the fallback), `OPENCLAW_STATE_DIR=/data/.openclaw`, `OPENCLAW_WORKSPACE_DIR=/data/workspace`, `RAILWAY_RUN_UID=0` (the volume is root-owned).
+Also needed for a working gateway, but not checked by `start.sh`: `OPENCLAW_GATEWAY_TOKEN`, `OPENCLAW_STATE_DIR=/data/.openclaw`, `OPENCLAW_WORKSPACE_DIR=/data/workspace`, `RAILWAY_RUN_UID=0` (the volume is root-owned), and a model credential (`ANTHROPIC_API_KEY` or `ANTHROPIC_SETUP_TOKEN`). `OPENCLAW_GATEWAY_PORT` defaults to `8080` (`PORT` is the fallback).
 
-Optional, written to config when set and skipped (logged) when unset:
+### Optional: Kapso and model
 
-- Kapso: `KAPSO_API_KEY`, `KAPSO_WEBHOOK_SECRET`, `KAPSO_ALLOW_FROM` (comma-separated; defaults to `KAPSO_DEFAULT_TO` with and without the `+`). `KAPSO_BASE_URL` and `KAPSO_WEBHOOK_PATH` are read by the plugin directly, not by `start.sh`.
-- Model: `VERA_MODEL` (default `anthropic/claude-opus-5`), `ANTHROPIC_API_KEY`, `ANTHROPIC_SETUP_TOKEN` (imported on boot; a failed import is fatal unless `ANTHROPIC_API_KEY` is set).
-- Vera: `LEXROOM_ACCESS_TOKEN`, `VERA_GOOGLE_CLIENT_ID`, `VERA_GOOGLE_CLIENT_SECRET`, `VERA_GOOGLE_STATE_SECRET`, `VERA_GOOGLE_REDIRECT_URI`, `VERA_LEXROOM_CONNECT_URI`, `VERA_GOOGLE_PUBSUB_TOPIC`, `VERA_GOOGLE_NOTIFY_AUDIENCE`, `VERA_GOOGLE_NOTIFY_SERVICE_ACCOUNT`, `VERA_GOOGLE_NOTIFY_TOKEN` (static fallback).
-- Token encryption: `VERA_TOKEN_KEY` (32 random bytes, `openssl rand -base64 32`). The image runs with `NODE_ENV=production`, where Vera refuses to open its Google and Lexroom account stores without it, so set it before connecting either account. `start.sh` logs a warning when it is unset.
-- Monitoring: `VERA_STATUS_TOKEN` (16+ characters) enables `GET /vera/status`. Without it that route returns 401.
+| Variable                | Effect                                                                                                                                                                |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `KAPSO_API_KEY`         | Kapso API key (secret).                                                                                                                                               |
+| `KAPSO_WEBHOOK_SECRET`  | Kapso webhook secret (secret).                                                                                                                                        |
+| `KAPSO_ALLOW_FROM`      | Comma-separated sender allowlist. Defaults to `KAPSO_DEFAULT_TO` with and without the `+`. `KAPSO_BASE_URL` and `KAPSO_WEBHOOK_PATH` are read by the plugin directly. |
+| `VERA_MODEL`            | Default `anthropic/claude-opus-5`.                                                                                                                                    |
+| `ANTHROPIC_API_KEY`     | API key. Required when `ANTHROPIC_SETUP_TOKEN` is unset or its import fails.                                                                                          |
+| `ANTHROPIC_SETUP_TOKEN` | Imported on boot. A failed import is fatal unless `ANTHROPIC_API_KEY` is set.                                                                                         |
+
+### Optional: Vera
+
+| Variable                             | Plugin config                  | Effect                                                                                                                                                                                                                                                                                     |
+| ------------------------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `LEXROOM_ACCESS_TOKEN`               | `accessToken`                  | Lexroom access token (secret).                                                                                                                                                                                                                                                             |
+| `VERA_TOKEN_KEY`                     | (read from the environment)    | 32 random bytes (`openssl rand -base64 32`) that encrypt Google and Lexroom tokens at rest. The image runs with `NODE_ENV=production`, where Vera refuses to open those account stores without it, so set it before connecting either account. `start.sh` logs a warning when it is unset. |
+| `VERA_GOOGLE_CLIENT_ID`              | `googleClientId`               | Google OAuth client. Setting it also sets the redirect and Lexroom connect URIs.                                                                                                                                                                                                           |
+| `VERA_GOOGLE_CLIENT_SECRET`          | `googleClientSecret`           | Secret.                                                                                                                                                                                                                                                                                    |
+| `VERA_GOOGLE_STATE_SECRET`           | `googleStateSecret`            | Secret that signs connect links.                                                                                                                                                                                                                                                           |
+| `VERA_GOOGLE_REDIRECT_URI`           | `googleRedirectUri`            | Default `<origin>/vera/google/callback`.                                                                                                                                                                                                                                                   |
+| `VERA_LEXROOM_CONNECT_URI`           | `lexroomConnectUri`            | Default `<origin>/vera/lexroom/connect`.                                                                                                                                                                                                                                                   |
+| `VERA_GOOGLE_PUBSUB_TOPIC`           | `googlePubSubTopic`            | Enables the Gmail watch.                                                                                                                                                                                                                                                                   |
+| `VERA_GOOGLE_NOTIFY_AUDIENCE`        | `googleNotifyAudience`         | Audience of the Pub/Sub push OIDC token. Enables JWT verification on `/vera/google/notify`.                                                                                                                                                                                                |
+| `VERA_GOOGLE_NOTIFY_SERVICE_ACCOUNT` | `googleNotifyServiceAccount`   | Also require this push service account email.                                                                                                                                                                                                                                              |
+| `VERA_GOOGLE_NOTIFY_TOKEN`           | `googleNotifyToken`            | Static Bearer fallback, 16+ characters (secret).                                                                                                                                                                                                                                           |
+| `VERA_STATUS_TOKEN`                  | `statusToken`                  | 16+ characters. Enables `GET /vera/status`; without it the route returns 401. `start.sh` logs a warning when unset.                                                                                                                                                                        |
+| `VERA_DIGEST_TEMPLATE_NAME`          | `digestReadyTemplate.name`     | Approved WhatsApp utility template sent once when a digest is held because the 24-hour window is closed. Unset: not configured, no nudge.                                                                                                                                                  |
+| `VERA_DIGEST_TEMPLATE_LANG`          | `digestReadyTemplate.language` | Language code the template was approved in. Default `it`. Ignored (with a warning) when the name is unset.                                                                                                                                                                                 |
+| `VERA_DEADLINE_INTAKE_ENABLED`       | `deadlineIntake.enabled`       | `true` or `false` (case-insensitive), default `false`. Written on every boot, so removing the variable turns intake off. Any other value fails the boot.                                                                                                                                   |
+| `VERA_DEADLINE_REMINDERS`            | `deadlineIntake.reminders`     | Comma-separated cadence such as `7d,2d,morning-of`. Unset keeps the plugin default (`7d,2d,morning-of`). An invalid value fails the boot, because the plugin would reject it.                                                                                                              |
 
 ## Verify
 

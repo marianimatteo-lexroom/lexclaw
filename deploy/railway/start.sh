@@ -165,6 +165,50 @@ config_set_env plugins.entries.vera.config.googleNotifyServiceAccount VERA_GOOGL
 config_set_env plugins.entries.vera.config.googleNotifyToken VERA_GOOGLE_NOTIFY_TOKEN secret
 config_set_env plugins.entries.vera.config.statusToken VERA_STATUS_TOKEN secret
 
+# Utility template sent once when a digest is held because the WhatsApp window is
+# closed. Both fields are required by the plugin schema, so the language defaults
+# here. Unset name: not configured, and a value already on the volume stays put.
+if [ -n "${VERA_DIGEST_TEMPLATE_NAME:-}" ]; then
+  export VERA_DIGEST_TEMPLATE_LANG="${VERA_DIGEST_TEMPLATE_LANG:-it}"
+  config_set plugins.entries.vera.config.digestReadyTemplate "$(node -p '
+    JSON.stringify({
+      name: process.env.VERA_DIGEST_TEMPLATE_NAME.trim(),
+      language: process.env.VERA_DIGEST_TEMPLATE_LANG.trim(),
+    })
+  ')"
+else
+  if [ -n "${VERA_DIGEST_TEMPLATE_LANG:-}" ]; then
+    log "WARNING: VERA_DIGEST_TEMPLATE_LANG is ignored because VERA_DIGEST_TEMPLATE_NAME is unset"
+  fi
+  log "skip plugins.entries.vera.config.digestReadyTemplate: VERA_DIGEST_TEMPLATE_NAME is unset"
+fi
+
+# Deadline intake is off unless VERA_DEADLINE_INTAKE_ENABLED is exactly true, and the
+# value is written on every boot so removing the variable turns the feature off.
+case "$(printf '%s' "${VERA_DEADLINE_INTAKE_ENABLED:-false}" | tr '[:upper:]' '[:lower:]')" in
+  true) DEADLINE_INTAKE_ENABLED=true ;;
+  false | "") DEADLINE_INTAKE_ENABLED=false ;;
+  *) die "VERA_DEADLINE_INTAKE_ENABLED must be true or false, got '${VERA_DEADLINE_INTAKE_ENABLED}'" ;;
+esac
+config_set plugins.entries.vera.config.deadlineIntake.enabled "${DEADLINE_INTAKE_ENABLED}"
+
+# Comma-separated reminder cadence such as "7d,2d,morning-of". Validated here
+# because an invalid value would make the plugin config fail schema validation.
+if [ -n "${VERA_DEADLINE_REMINDERS:-}" ]; then
+  REMINDERS_JSON="$(node -p '
+    const steps = process.env.VERA_DEADLINE_REMINDERS.split(",").map((v) => v.trim()).filter(Boolean);
+    const valid = steps.length > 0 && steps.every((v) => /^(\d{1,3}d|morning-of)$/u.test(v));
+    if (!valid) {
+      process.stderr.write("invalid cadence\n");
+      process.exit(1);
+    }
+    JSON.stringify(steps);
+  ')" || die "VERA_DEADLINE_REMINDERS must be comma-separated steps like 7d,2d,morning-of, got '${VERA_DEADLINE_REMINDERS}'"
+  config_set plugins.entries.vera.config.deadlineIntake.reminders "${REMINDERS_JSON}"
+else
+  log "skip plugins.entries.vera.config.deadlineIntake.reminders: VERA_DEADLINE_REMINDERS is unset"
+fi
+
 if [ -n "${VERA_GOOGLE_CLIENT_ID:-}" ]; then
   export GOOGLE_REDIRECT_URI="${VERA_GOOGLE_REDIRECT_URI:-${PUBLIC_ORIGIN}/vera/google/callback}"
   export LEXROOM_CONNECT_URI="${VERA_LEXROOM_CONNECT_URI:-${PUBLIC_ORIGIN}/vera/lexroom/connect}"
