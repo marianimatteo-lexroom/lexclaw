@@ -210,6 +210,7 @@ export async function handleVeraGoogleNotify(
       memory,
       now: new Date(nowMs),
       forceMorning: false,
+      trigger: "notify",
       dispatchDigestTurn: async (params) => {
         if (!hooks?.dispatchHookAgentTurn) {
           return { ok: false, reason: "hooks_unavailable" };

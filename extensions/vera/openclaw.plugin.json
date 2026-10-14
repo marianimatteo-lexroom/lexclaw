@@ -39,6 +39,9 @@
       "googleNotifyToken": {
         "type": "string"
       },
+      "statusToken": {
+        "type": "string"
+      },
       "googleNotifyAudience": {
         "type": "string"
       },

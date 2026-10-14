@@ -236,6 +236,7 @@ describe("handleVeraGoogleNotify push handling", () => {
       lastCollectAtMs: NOW.getTime(),
       openTodoIdsJson: "[]",
       heldPlanJson: null,
+      heldPlanAtMs: null,
     });
     expect(dispatchHookAgentTurn).not.toHaveBeenCalled();
   });
@@ -294,7 +295,11 @@ describe("handleVeraGoogleNotify push handling", () => {
     });
     expect(String(call.message)).toContain("Alpha matter");
     expect(memory.writeWake).toHaveBeenCalledWith(
-      expect.objectContaining({ lastCollectAtMs: NOW.getTime(), heldPlanJson: null }),
+      expect.objectContaining({
+        lastCollectAtMs: NOW.getTime(),
+        lastDigestAtMs: NOW.getTime(),
+        heldPlanJson: null,
+      }),
     );
   });
 
@@ -322,6 +327,7 @@ describe("handleVeraGoogleNotify push handling", () => {
     const held = memory.writeWake.mock.calls.find(([patch]) => patch.heldPlanJson);
     expect(held).toBeDefined();
     expect(JSON.parse(String(held?.[0].heldPlanJson))).toMatchObject({ deliver: true });
+    expect(held?.[0].heldPlanAtMs).toBe(NOW.getTime());
   });
 
   describe("when the hook dispatcher cannot deliver", () => {
@@ -347,18 +353,17 @@ describe("handleVeraGoogleNotify push handling", () => {
       end: { dateTime: "2026-10-14T13:00:00.000Z" },
     };
 
-    it("still answers 204 and does not record a collect when hooks are unavailable", async () => {
+    it("still answers 204, records the collect, and records no digest when hooks are unavailable", async () => {
       const memory = openWindowMemory();
       useGoogleAccount(true);
       useGoogleApis({ events: [alphaEvent] });
       const { res } = await push(makeApi({ hooks: undefined }));
       expect(res.statusCode).toBe(204);
-      expect(memory.writeWake).not.toHaveBeenCalledWith(
-        expect.objectContaining({ lastCollectAtMs: expect.any(Number) }),
-      );
+      expect(memory.writeWake).toHaveBeenCalledTimes(1);
+      expect(memory.writeWake).toHaveBeenCalledWith({ lastCollectAtMs: NOW.getTime() });
     });
 
-    it("still answers 204 when the dispatcher rejects the turn", async () => {
+    it("still answers 204, records the collect, and records no digest when the dispatcher rejects the turn", async () => {
       const memory = openWindowMemory();
       useGoogleAccount(true);
       useGoogleApis({ events: [alphaEvent] });
@@ -366,9 +371,8 @@ describe("handleVeraGoogleNotify push handling", () => {
       const { res } = await push(makeApi({}));
       expect(res.statusCode).toBe(204);
       expect(dispatchHookAgentTurn).toHaveBeenCalledTimes(1);
-      expect(memory.writeWake).not.toHaveBeenCalledWith(
-        expect.objectContaining({ lastCollectAtMs: expect.any(Number) }),
-      );
+      expect(memory.writeWake).toHaveBeenCalledTimes(1);
+      expect(memory.writeWake).toHaveBeenCalledWith({ lastCollectAtMs: NOW.getTime() });
     });
   });
 
