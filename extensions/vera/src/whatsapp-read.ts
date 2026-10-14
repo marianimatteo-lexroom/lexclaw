@@ -16,10 +16,7 @@ export function isWhatsAppMessageId(value: string): boolean {
 }
 
 export type KapsoReadReceiptResult =
-  | {
-      ok: true;
-      skipped: "not-whatsapp" | "receipts-disabled" | "not-a-whatsapp-id" | "missing-credentials";
-    }
+  | { ok: true; skipped: "not-whatsapp" | "receipts-disabled" | "not-a-whatsapp-id" | "missing-credentials" }
   | { ok: true }
   | { ok: false; error: string };
 
@@ -70,10 +67,7 @@ export async function markKapsoMessageRead(params: {
   }
   return {
     ok: false,
-    error:
-      posted.kind === "timeout"
-        ? "kapso read receipt timed out"
-        : "kapso read receipt request failed",
+    error: posted.kind === "timeout" ? "kapso read receipt timed out" : "kapso read receipt request failed",
   };
 }
 
