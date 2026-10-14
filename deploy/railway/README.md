@@ -81,6 +81,18 @@ Also needed for a working gateway, but not checked by `start.sh`: `OPENCLAW_GATE
 | `VERA_DEADLINE_INTAKE_ENABLED`       | `deadlineIntake.enabled`       | `true` or `false` (case-insensitive), default `false`. Written on every boot, so removing the variable turns intake off. Any other value fails the boot.                                                                                                                                   |
 | `VERA_DEADLINE_REMINDERS`            | `deadlineIntake.reminders`     | Comma-separated cadence such as `7d,2d,morning-of`. Unset keeps the plugin default (`7d,2d,morning-of`). An invalid value fails the boot, because the plugin would reject it.                                                                                                              |
 
+WhatsApp status reactions (read from the gateway environment; validated by `start.sh`):
+
+| Variable                 | Effect                                                                                                         |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `VERA_STATUS_REACTIONS`  | `true` or `false` (case-insensitive), default `true`. Any other value fails the boot.                          |
+| `VERA_REACTION_ACK`      | Emoji on receipt of the lawyer's message. Default `👀`.                                                        |
+| `VERA_REACTION_THINKING` | Emoji while Vera thinks or runs tools. Default `⏳`. Skipped when the reply completes within about one second. |
+| `VERA_REACTION_DONE`     | Emoji when the run completes. Default `✅`.                                                                    |
+| `VERA_REACTION_ERROR`    | Emoji when the run fails. Default `❌`.                                                                        |
+
+The Vera plugin sends these reactions directly through the Kapso API on the inbound message, replacing the previous emoji, because `@kapso/openclaw-whatsapp` 0.1.4 cannot send reactions. Failures are logged as warnings and never affect the reply. OpenClaw's `messages.ackReaction` and `messages.statusReactions` do nothing on Kapso and are not used. The final emoji follows the agent run, not WhatsApp delivery, so a failed outbound send does not turn it into `❌`.
+
 ## Verify
 
 ```bash

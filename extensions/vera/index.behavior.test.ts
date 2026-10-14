@@ -149,12 +149,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   fetchMock.mockReset();
   vi.stubGlobal("fetch", fetchMock);
+  vi.stubEnv("VERA_STATUS_REACTIONS", "false");
   recordLawyerInbound.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("vera_draft confirmation gate", () => {
@@ -794,5 +796,34 @@ describe("before_prompt_build hook", () => {
       await hook("before_prompt_build")({}, { toolAuthority: authority(true) }),
     ).toBeUndefined();
     expect(logger.error).toHaveBeenCalledWith("vera brief inject failed: worker crashed");
+  });
+});
+
+describe("status reaction hooks", () => {
+  it("reacts on the inbound message through message_received, llm_input and agent_end", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("VERA_STATUS_REACTIONS", "true");
+    fetchMock.mockImplementation(async () => json({ success: true }));
+    const { hook } = registerVera();
+    const sessionKey = "agent:main:kapso-whatsapp:direct:390000000000";
+    await hook("message_received")(
+      { from: "+390000000000" },
+      { channelId: "kapso-whatsapp", messageId: MESSAGE_ID, senderId: "390000000000", sessionKey },
+    );
+    await hook("llm_input")({ runId: "run-1" }, { sessionKey, trigger: "user" });
+    await hook("before_tool_call")({ toolName: "vera_todo_list", runId: "run-1" }, { sessionKey });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await hook("agent_end")(
+      { runId: "run-1", success: true, messages: [] },
+      { sessionKey, trigger: "user" },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
+    expect(bodies.filter((body) => body.type === "reaction").map((body) => body.reaction)).toEqual([
+      { message_id: MESSAGE_ID, emoji: "👀" },
+      { message_id: MESSAGE_ID, emoji: "⏳" },
+      { message_id: MESSAGE_ID, emoji: "✅" },
+    ]);
   });
 });
