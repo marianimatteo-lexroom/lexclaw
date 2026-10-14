@@ -2,8 +2,8 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CollectResult } from "./collector.js";
 import type { DigestPlan } from "./digest.js";
-import type { MemoryStore } from "./memory.js";
 import type { WakeState } from "./memory-contract.js";
+import type { MemoryStore } from "./memory.js";
 import { decideDigestDelivery, runVeraCollectPass, type VeraCollectLogEvent } from "./service.js";
 
 const google = vi.hoisted(() => ({
@@ -162,7 +162,9 @@ describe("runVeraCollectPass", () => {
         forceMorning: false,
         trigger: overrides.trigger ?? "poll",
         dispatchDigestTurn: async () =>
-          overrides.dispatchOk === false ? { ok: false, reason: "hooks_unavailable" } : { ok: true },
+          overrides.dispatchOk === false
+            ? { ok: false, reason: "hooks_unavailable" }
+            : { ok: true },
       });
     const events = (): VeraCollectLogEvent[] =>
       info.mock.calls.map(([line]) => JSON.parse(String(line)) as VeraCollectLogEvent);
