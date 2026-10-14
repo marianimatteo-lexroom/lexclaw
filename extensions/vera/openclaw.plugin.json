@@ -39,6 +39,18 @@
       "googleNotifyToken": {
         "type": "string"
       },
+      "statusToken": {
+        "type": "string"
+      },
+      "googleNotifyAudience": {
+        "type": "string"
+      },
+      "googleNotifyIssuer": {
+        "type": "string"
+      },
+      "googleNotifyServiceAccount": {
+        "type": "string"
+      },
       "lexroomConnectUri": {
         "type": "string"
       },
@@ -69,6 +81,15 @@
             "minimum": 0,
             "maximum": 1
           }
+        }
+      },
+      "digestReadyTemplate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "language"],
+        "properties": {
+          "name": { "type": "string" },
+          "language": { "type": "string" }
         }
       }
     }

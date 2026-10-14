@@ -1,81 +1,225 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import {
+  constantTimeEqual,
+  createGoogleCertSource,
+  GoogleCertsUnavailableError,
+  looksLikeJwt,
+  verifyGooglePushJwt,
+  type GoogleCertSource,
+  type GooglePushJwtConfig,
+} from "./google-push-auth.js";
 import { openVeraMemoryFromApi } from "./memory.js";
 import { runVeraCollectPass } from "./service.js";
 
-function readNotifyToken(config: unknown): string | null {
-  if (!config || typeof config !== "object") {
-    return null;
-  }
-  const token = (config as { googleNotifyToken?: unknown }).googleNotifyToken;
-  return typeof token === "string" && token.trim().length >= 16 ? token.trim() : null;
+/** One collect pass per interval; Pub/Sub redelivers the 429s and the 15-minute poll backstops. */
+export const NOTIFY_MIN_INTERVAL_MS = 15_000;
+const MAX_BODY_BYTES = 65_536;
+const MAX_TRACKED_MAILBOXES = 16;
+
+type NotifyConfig = {
+  staticToken: string | null;
+  jwt: GooglePushJwtConfig | null;
+};
+
+export type NotifyState = {
+  lastRunAtMs: number;
+  /** Highest Gmail historyId already collected, per mailbox. */
+  historyIds: Map<string, bigint>;
+};
+
+export type NotifyDeps = {
+  certs: GoogleCertSource;
+  now: () => number;
+  state: NotifyState;
+};
+
+export function createNotifyState(): NotifyState {
+  return { lastRunAtMs: Number.NEGATIVE_INFINITY, historyIds: new Map() };
 }
 
-function bearerMatches(req: IncomingMessage, expected: string): boolean {
+const defaultDeps: NotifyDeps = {
+  certs: createGoogleCertSource(),
+  now: Date.now,
+  state: createNotifyState(),
+};
+
+function readString(config: unknown, key: string, minLength = 1): string | undefined {
+  if (!config || typeof config !== "object") {
+    return undefined;
+  }
+  const value = (config as Record<string, unknown>)[key];
+  const text = typeof value === "string" ? value.trim() : "";
+  return text.length >= minLength ? text : undefined;
+}
+
+export function readNotifyConfig(config: unknown): NotifyConfig {
+  const audience = readString(config, "googleNotifyAudience");
+  return {
+    staticToken: readString(config, "googleNotifyToken", 16) ?? null,
+    jwt: audience
+      ? {
+          audience,
+          issuer: readString(config, "googleNotifyIssuer"),
+          serviceAccountEmail: readString(config, "googleNotifyServiceAccount"),
+        }
+      : null,
+  };
+}
+
+function readBearer(req: IncomingMessage): string | null {
   const header = req.headers.authorization;
   if (typeof header !== "string") {
-    return false;
+    return null;
   }
-  const match = /^Bearer\s+(.+)$/iu.exec(header.trim());
-  return match?.[1] === expected;
+  return /^Bearer\s+(.+)$/iu.exec(header.trim())?.[1] ?? null;
+}
+
+type AuthOutcome = "ok" | "denied" | "certs_unavailable";
+
+async function authenticate(
+  req: IncomingMessage,
+  config: NotifyConfig,
+  deps: NotifyDeps,
+): Promise<AuthOutcome> {
+  const bearer = readBearer(req);
+  if (!bearer) {
+    return "denied";
+  }
+  if (config.jwt && looksLikeJwt(bearer)) {
+    try {
+      const result = await verifyGooglePushJwt(bearer, config.jwt, deps);
+      if (result.ok) {
+        return "ok";
+      }
+    } catch (error) {
+      if (error instanceof GoogleCertsUnavailableError) {
+        return "certs_unavailable";
+      }
+      throw error;
+    }
+  }
+  return config.staticToken && constantTimeEqual(bearer, config.staticToken) ? "ok" : "denied";
+}
+
+async function readBody(req: IncomingMessage): Promise<string | null> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > MAX_BODY_BYTES) {
+      return null;
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+/** Pub/Sub wraps Gmail's `{ emailAddress, historyId }` in `message.data` (base64). */
+function parseHistory(body: string): { mailbox: string; historyId: bigint } | null {
+  try {
+    const envelope = JSON.parse(body) as { message?: { data?: unknown } };
+    const data = envelope.message?.data;
+    if (typeof data !== "string") {
+      return null;
+    }
+    const notification = JSON.parse(Buffer.from(data, "base64").toString("utf8")) as {
+      emailAddress?: unknown;
+      historyId?: unknown;
+    };
+    const raw = notification.historyId;
+    if (typeof raw !== "string" && typeof raw !== "number") {
+      return null;
+    }
+    const text = String(raw);
+    if (!/^\d{1,20}$/u.test(text)) {
+      return null;
+    }
+    const mailbox =
+      typeof notification.emailAddress === "string" ? notification.emailAddress.toLowerCase() : "";
+    return { mailbox, historyId: BigInt(text) };
+  } catch {
+    return null;
+  }
+}
+
+function reply(res: ServerResponse, status: number, body = ""): true {
+  res.statusCode = status;
+  res.end(body);
+  return true;
 }
 
 /**
- * Google Pub/Sub push target. Requires `googleNotifyToken` (Bearer) so an open
- * plugin route cannot trigger model turns. Without that token the route refuses.
+ * Google Pub/Sub push target. Authenticates the push subscription's OIDC token
+ * (`googleNotifyAudience`, optional `googleNotifyIssuer` and
+ * `googleNotifyServiceAccount`) and still accepts the static `googleNotifyToken`
+ * Bearer. With neither configured the route refuses, so an open plugin route
+ * cannot trigger model turns. A push without a new Gmail historyId is acknowledged
+ * without collecting.
  */
 export async function handleVeraGoogleNotify(
   req: IncomingMessage,
   res: ServerResponse,
   api: OpenClawPluginApi,
+  deps: NotifyDeps = defaultDeps,
 ): Promise<boolean> {
   if (req.method !== "POST") {
-    res.statusCode = 405;
-    res.end("method not allowed");
-    return true;
+    return reply(res, 405, "method not allowed");
   }
-  const expected = readNotifyToken(api.pluginConfig);
-  if (!expected || !bearerMatches(req, expected)) {
-    res.statusCode = 401;
-    res.end("unauthorized");
-    return true;
+  let outcome: AuthOutcome;
+  try {
+    outcome = await authenticate(req, readNotifyConfig(api.pluginConfig), deps);
+  } catch (error) {
+    api.logger.error(
+      `vera google notify auth failed: ${error instanceof Error ? error.message : "unknown"}`,
+    );
+    return reply(res, 500, "notify failed");
   }
+  if (outcome === "certs_unavailable") {
+    api.logger.warn("vera google notify could not fetch Google signing keys");
+    return reply(res, 503, "unavailable");
+  }
+  if (outcome !== "ok") {
+    return reply(res, 401, "unauthorized");
+  }
+
+  const body = await readBody(req);
+  if (body === null) {
+    return reply(res, 413, "payload too large");
+  }
+  const history = parseHistory(body);
+  const seen = history ? deps.state.historyIds.get(history.mailbox) : undefined;
+  if (!history || (seen !== undefined && history.historyId <= seen)) {
+    return reply(res, 204);
+  }
+
+  const nowMs = deps.now();
+  const waitMs = deps.state.lastRunAtMs + NOTIFY_MIN_INTERVAL_MS - nowMs;
+  if (waitMs > 0) {
+    res.setHeader("retry-after", String(Math.ceil(waitMs / 1000)));
+    return reply(res, 429, "rate limited");
+  }
+  deps.state.lastRunAtMs = nowMs;
+
   try {
     const memory = await openVeraMemoryFromApi(api);
-    const hooks = api.runtime.hooks;
     await runVeraCollectPass({
       api,
       memory,
-      now: new Date(),
+      now: new Date(nowMs),
       forceMorning: false,
-      dispatchDigestTurn: async (params) => {
-        if (!hooks?.dispatchHookAgentTurn) {
-          return { ok: false, reason: "hooks_unavailable" };
-        }
-        const result = await hooks.dispatchHookAgentTurn({
-          name: "Vera digest",
-          agentId: "main",
-          sessionKey: params.sessionKey,
-          message: [
-            "Run the vera-morning-digest skill phrasing only.",
-            JSON.stringify(params.plan),
-          ].join("\n"),
-          externalContentSource: "email",
-          deliver: true,
-          timeoutSeconds: 45,
-          idempotencyKey: params.idempotencyKey,
-        });
-        return result.ok ? { ok: true } : { ok: false, reason: result.reason };
-      },
+      trigger: "notify",
     });
-    res.statusCode = 204;
-    res.end();
+    if (deps.state.historyIds.size >= MAX_TRACKED_MAILBOXES) {
+      deps.state.historyIds.clear();
+    }
+    deps.state.historyIds.set(history.mailbox, history.historyId);
+    return reply(res, 204);
   } catch (error) {
     api.logger.error(
       `vera google notify failed: ${error instanceof Error ? error.message : "unknown"}`,
     );
-    res.statusCode = 500;
-    res.end("notify failed");
+    return reply(res, 500, "notify failed");
   }
-  return true;
 }

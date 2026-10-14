@@ -42,13 +42,14 @@ import {
   executeVeraTodoList,
 } from "./src/memory-tools.js";
 import { openVeraMemoryFromApi } from "./src/memory.js";
+import { handleVeraStatus } from "./src/status.js";
 import { recordLawyerInbound, registerVeraService } from "./src/service.js";
+import { handleVeraGoogleNotify } from "./src/watch.js";
 import {
   markKapsoMessageRead,
   readInboundChannelId,
   readInboundMessageId,
 } from "./src/whatsapp-read.js";
-import { handleVeraGoogleNotify } from "./src/watch.js";
 
 const signalSchema = Type.Object(
   {
@@ -78,8 +79,7 @@ const signalSchema = Type.Object(
 const tools = defineToolPlugin({
   id: "vera",
   name: "Vera",
-  description:
-    "Lawyer WhatsApp digest with Instinct-shaped matter memory and event-driven wakes.",
+  description: "Lawyer WhatsApp digest with Instinct-shaped matter memory and event-driven wakes.",
   configSchema: Type.Object(
     {
       accessToken: Type.Optional(
@@ -112,7 +112,31 @@ const tools = defineToolPlugin({
       googleNotifyToken: Type.Optional(
         Type.String({
           description:
-            "Bearer token required by POST /vera/google/notify. At least 16 characters. Do not commit it.",
+            "Static Bearer fallback for POST /vera/google/notify. At least 16 characters. Prefer googleNotifyAudience. Do not commit it.",
+        }),
+      ),
+      googleNotifyAudience: Type.Optional(
+        Type.String({
+          description:
+            "Audience of the Pub/Sub push subscription's OIDC token. Enables Google JWT verification on POST /vera/google/notify.",
+        }),
+      ),
+      googleNotifyIssuer: Type.Optional(
+        Type.String({
+          description:
+            "Expected OIDC token issuer. Defaults to https://accounts.google.com (or accounts.google.com).",
+        }),
+      ),
+      googleNotifyServiceAccount: Type.Optional(
+        Type.String({
+          description:
+            "Service account email the push subscription signs tokens as. When set, the token's verified email must match.",
+        }),
+      ),
+      statusToken: Type.Optional(
+        Type.String({
+          description:
+            "Bearer token required by GET /vera/status. At least 16 characters. Without it the route returns 401. Do not commit it.",
         }),
       ),
       lexroomConnectUri: Type.Optional(
@@ -158,6 +182,25 @@ const tools = defineToolPlugin({
             ),
           },
           { additionalProperties: false },
+        ),
+      ),
+      digestReadyTemplate: Type.Optional(
+        Type.Object(
+          {
+            name: Type.String({
+              minLength: 1,
+              description: "Approved WhatsApp utility template name, for example vera_digest_ready.",
+            }),
+            language: Type.String({
+              minLength: 1,
+              description: "Language code the template was approved in, for example en or it.",
+            }),
+          },
+          {
+            additionalProperties: false,
+            description:
+              "Utility template sent once when a digest is held because the WhatsApp 24-hour window is closed. Unset: no nudge is sent.",
+          },
         ),
       ),
     },
@@ -470,8 +513,7 @@ const tools = defineToolPlugin({
 const entry = definePluginEntry({
   id: "vera",
   name: "Vera",
-  description:
-    "Lawyer WhatsApp digest with Instinct-shaped matter memory and event-driven wakes.",
+  description: "Lawyer WhatsApp digest with Instinct-shaped matter memory and event-driven wakes.",
   configSchema: () => {
     const schema = tools.configSchema;
     if (!schema) {
@@ -496,7 +538,12 @@ const entry = definePluginEntry({
         }
       });
       try {
-        await recordLawyerInbound({ api, atMs: Date.now(), channelId });
+        await recordLawyerInbound({
+          api,
+          atMs: Date.now(),
+          channelId,
+          senders: [event.from, ctx.senderId],
+        });
       } catch (error) {
         api.logger.error(
           `vera inbound wake record failed: ${error instanceof Error ? error.message : "unknown"}`,
@@ -514,10 +561,7 @@ const entry = definePluginEntry({
             return;
           }
           const memory = await openVeraMemoryFromApi(api);
-          const [profile, todos] = await Promise.all([
-            memory.readProfile(),
-            memory.listTodos(),
-          ]);
+          const [profile, todos] = await Promise.all([memory.readProfile(), memory.listTodos()]);
           authority.assertActive();
           const brief = buildInjectedBrief({
             profile,
@@ -577,6 +621,19 @@ const entry = definePluginEntry({
       auth: "plugin",
       match: "exact",
       handler: (req, res) => handleVeraGoogleNotify(req, res, api),
+    });
+
+    api.registerHttpRoute({
+      path: "/vera/status",
+      auth: "plugin",
+      match: "exact",
+      handler: (req, res) =>
+        handleVeraStatus(req, res, {
+          config: api.pluginConfig,
+          now: () => new Date(),
+          readWake: async () => (await openVeraMemoryFromApi(api)).readWake(),
+          log: api.logger,
+        }),
     });
 
     api.registerHttpRoute({

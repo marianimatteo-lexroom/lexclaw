@@ -259,17 +259,78 @@ export function planDigest(
     }
   }
 
-  const items = [...best.values()].toSorted(compareItems);
-  const top = items[0];
-  if (!top) {
+  return buildPlan([...best.values()], deadlines);
+}
+
+function buildPlan(
+  items: RankedDigestItem[],
+  deadlines: readonly DigestDeadlineInput[] = [],
+): DigestPlan {
+  const sorted = items.toSorted(compareItems);
+  if (sorted.length === 0) {
     return { deliver: false, reason: "nothing_cleared_the_bar" };
   }
-  const research = researchTarget(items);
-  const draft = draftTarget(items, research);
+  const research = researchTarget(sorted);
+  const draft = draftTarget(sorted, research);
   return {
     deliver: true,
-    items,
+    items: sorted,
     nextSteps: [step("research", research), step("draft_if_confirmed", draft)],
     ...(deadlines.length > 0 ? { deadlines: numberDeadlineLines(deadlines) } : {}),
   };
+}
+
+/**
+ * Combine a plan held from an earlier pass with a fresh one. One item per matter;
+ * the fresh item wins unless the held one costs strictly more. Held items whose
+ * deadline passed more than 12 hours ago are dropped so a stale hearing never fires.
+ * The result carries no deadline lines: the caller numbers the current ones.
+ */
+export function mergeDigestPlans(held: DigestPlan, fresh: DigestPlan, now: Date): DigestPlan {
+  const best = new Map<string, RankedDigestItem>();
+  if (held.deliver) {
+    for (const item of held.items) {
+      const hours = hoursUntil(item.dueAt, now);
+      if (hours !== undefined && hours < -RECENTLY_PASSED_HOURS) {
+        continue;
+      }
+      best.set(item.matterId, item);
+    }
+  }
+  if (fresh.deliver) {
+    for (const item of fresh.items) {
+      const current = best.get(item.matterId);
+      if (!current || item.cost >= current.cost) {
+        best.set(item.matterId, item);
+      }
+    }
+  }
+  return buildPlan([...best.values()]);
+}
+
+/** Read a plan persisted as JSON; anything that is not a deliverable plan reads as null. */
+export function parseDigestPlan(json: string | null): DigestPlan | null {
+  if (!json) {
+    return null;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const plan = value as { deliver?: unknown; items?: unknown; nextSteps?: unknown };
+  if (
+    plan.deliver !== true ||
+    !Array.isArray(plan.items) ||
+    plan.items.length === 0 ||
+    !Array.isArray(plan.nextSteps) ||
+    plan.nextSteps.length !== 2
+  ) {
+    return null;
+  }
+  return value as DigestPlan;
 }
