@@ -252,6 +252,7 @@ export async function executeAdaDeadlineReply(
       answer: research.answer,
       sources: research.sources,
       ...(research.researchId ? { researchId: research.researchId } : {}),
+      ...(research.researchUrl ? { researchUrl: research.researchUrl } : {}),
     },
   };
 }

@@ -29,8 +29,8 @@ Do not add deadlines that are not in `plan.deadlines`. Do not offer a third kind
 
 Match a bare number, "reply 1", "1", or "yes to 1" to the line with that `no` from the most recent digest. Numbers belong to the most recent delivered digest. When the reply is ambiguous, or another digest went out since the one the lawyer is answering, call `ada_deadline_list`, name the matter and date back to the lawyer, and ask before acting.
 
-| Reply                             | Call                                            |
-| --------------------------------- | ----------------------------------------------- |
+| Reply                             | Call                                           |
+| --------------------------------- | ---------------------------------------------- |
 | a number, or "research 1"         | `ada_deadline_reply` with `action: "research"` |
 | "track 1", "watch 1"              | `ada_deadline_reply` with `action: "track"`    |
 | "skip 1", "dismiss 1", "ignore 1" | `ada_deadline_reply` with `action: "dismiss"`  |
@@ -38,7 +38,7 @@ Match a bare number, "reply 1", "1", or "yes to 1" to the line with that `no` fr
 
 `research` is the lawyer's confirmation to track the item: reminders start from that moment on the schedule in the result (default 7 days before, 2 days before, and the morning of, in the 07:40 digest slot), and steps whose time already passed are skipped, not sent late. Lexroom research runs for that matter only and does not search the private library.
 
-When the result has `brief`, send the brief back in one WhatsApp message in this turn: a short summary first, the key points, then the numbered sources from `brief.sources` as `[n] title - court, date`, keeping the `[n]` markers in the text. Mention the date and that reminders are set. Do not draft anything; a draft needs its own yes and the `ada_draft` confirmation from the ada-morning-digest skill.
+When the result has `brief`, send the brief back in one WhatsApp message in this turn: a short summary first, the key points, then the numbered sources from `brief.sources` as `[n] title - court, date`, keeping the `[n]` markers in the text. Mention the date and that reminders are set. When `brief.researchUrl` is present, end the message with it on its own last line, after the sources, with a short label in the lawyer's language (for example "Continue in Lexroom: <url>"). Do not draft anything; a draft needs its own yes and the `ada_draft` confirmation from the ada-morning-digest skill.
 
 When the result has `reason: "not_connected"`, the item is tracked but there is no brief yet. Follow the ada-lexroom-connect skill, and tell the lawyer to reply with the number again once connected. Other errors: say plainly that research did not run, that the item is still tracked, and offer to retry.
 

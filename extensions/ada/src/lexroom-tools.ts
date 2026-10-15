@@ -538,7 +538,7 @@ export function buildDeadlineResearchQuery(params: {
 }
 
 export type DeadlineResearchResult =
-  | { ok: true; answer: string; sources: CitedSource[]; researchId?: string }
+  | { ok: true; answer: string; sources: CitedSource[]; researchId?: string; researchUrl?: string }
   | LexroomFailure;
 
 /**
@@ -596,5 +596,6 @@ export async function runDeadlineResearch(params: {
     answer: outcome.answer,
     sources: outcome.sources,
     ...(outcome.researchId ? { researchId: outcome.researchId } : {}),
+    ...(outcome.researchUrl ? { researchUrl: outcome.researchUrl } : {}),
   };
 }

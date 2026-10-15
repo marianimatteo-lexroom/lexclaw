@@ -484,6 +484,7 @@ describe("replying to a digest line", () => {
           answer: "Brief: verificare i termini ex art. 183 c.p.c. [1]",
           sources: [{ id: 1, title: "Cass. civ. 1111/2024" }],
           researchId: "res-1",
+          researchUrl: "https://app.lexroom.ai/research/res-1",
         },
       });
       const query = (lexroom.bodies[0] as { query: string; search_on_user_data: boolean }).query;

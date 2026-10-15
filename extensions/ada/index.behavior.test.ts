@@ -402,6 +402,22 @@ describe("ada_research", () => {
     expect(seen[1]?.body).not.toHaveProperty("documents");
   });
 
+  it("gives the finished research a link to the Lexroom app through ada_research_status", async () => {
+    useLexroomAccount(lexroomAccount({ accessToken: "research-link-token" }));
+    fetchMock.mockImplementation(
+      async (input) =>
+        modulesRoute(input) ??
+        ndjson({ research: { id: "res-link", status: "DONE", answer: "ok" } }),
+    );
+    const { research } = registerAda({ ...PLUGIN_CONFIG, baseUrl: undefined });
+    expect(await research({ matterId: "matter-a", query: "Question" })).toMatchObject({
+      ok: true,
+      state: "done",
+      researchId: "res-link",
+      researchUrl: "https://app.lexroom.ai/research/res-link",
+    });
+  });
+
   it("searches the configured research modules the user may search", async () => {
     useLexroomAccount(lexroomAccount({ accessToken: "configured-modules-token" }));
     fetchMock.mockImplementation(
@@ -443,9 +459,10 @@ describe("ada_research", () => {
   it("returns not_connected without a request when no token exists", async () => {
     useLexroomAccount(null);
     const { research } = registerAda();
-    expect(
-      await research({ matterId: "matter-a", query: "Question" }),
-    ).toMatchObject({ ok: false, reason: "not_connected" });
+    expect(await research({ matterId: "matter-a", query: "Question" })).toMatchObject({
+      ok: false,
+      reason: "not_connected",
+    });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
