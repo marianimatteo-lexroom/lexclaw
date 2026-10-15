@@ -290,7 +290,7 @@ const tools = defineToolPlugin({
       name: "ada_lexroom_connect",
       label: "Connect Lexroom",
       description:
-        "Check whether this lawyer connected Lexroom for research and drafting. The saved sign-in is checked with a live Lexroom call; when there is none, it expired, or Lexroom answers 401, it is removed and one WhatsApp ask with a single Ada-hosted Lexroom sign-in link is returned. A 403 or an unreachable Lexroom never removes it. Set force true to discard the saved sign-in and always get a new link. Does not send the message.",
+        "Check whether this lawyer connected Lexroom for research and drafting. Ada renews the saved sign-in by herself from the saved email and password when it is expiring, then checks it with a live Lexroom call. Only a wrong password, an account that needs a one-time code, or a missing saved password removes it and returns one WhatsApp ask with a single Ada-hosted Lexroom sign-in link. A 403 or an unreachable Lexroom never removes it. Set force true to discard the saved sign-in and always get a new link. Does not send the message.",
       parameters: Type.Object(
         { force: Type.Optional(Type.Boolean()) },
         { additionalProperties: false },

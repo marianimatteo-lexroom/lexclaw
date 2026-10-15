@@ -21,6 +21,7 @@ const GOOGLE = {
 const LEXROOM = {
   email: "lawyer@example.com",
   accessToken: "lexroom-access-token-plain",
+  password: "lexroom-password-plain",
   refreshToken: "lexroom-refresh-token-plain",
   accessExpiresAtMs: 1_000,
   connectedAtMs: 500,
@@ -159,6 +160,7 @@ describe("encrypted Lexroom account tokens", () => {
     const row = rawRow(databasePath, "vera_lexroom_account");
     expect(String(row.access_token)).toMatch(/^enc:v1:/);
     expect(String(row.refresh_token)).toMatch(/^enc:v1:/);
+    expect(String(row.password)).toMatch(/^enc:v1:/);
     expect(JSON.stringify(row)).not.toContain("plain");
   });
 
@@ -183,6 +185,48 @@ describe("encrypted Lexroom account tokens", () => {
     const row = rawRow(databasePath, "vera_lexroom_account");
     expect(String(row.access_token)).toMatch(/^enc:v1:/);
     expect(String(row.refresh_token)).toMatch(/^enc:v1:/);
+    expect(String(row.password)).toMatch(/^enc:v1:/);
+  });
+
+  it("adds the password column to a database created before passwords were kept", () => {
+    useKey(KEY_A);
+    const databasePath = path.join(tempDirs.make("ada-lexroom-old-"), "lexroom-account.sqlite");
+    const old = new DatabaseSync(databasePath);
+    old.exec(`CREATE TABLE vera_lexroom_account (
+      id TEXT PRIMARY KEY, email TEXT NOT NULL, access_token TEXT NOT NULL,
+      refresh_token TEXT NOT NULL, access_expires_at_ms INTEGER, connected_at_ms INTEGER NOT NULL
+    ) STRICT;
+    INSERT INTO vera_lexroom_account VALUES ('lawyer', 'lawyer@example.com', 'old-access-token', '', NULL, 7);`);
+    old.close();
+    const backend = createLexroomBackend(undefined, { databasePath });
+    try {
+      expect(backend.execute({ type: "readAccount", input: undefined })).toEqual({
+        email: "lawyer@example.com",
+        accessToken: "old-access-token",
+        password: "",
+        refreshToken: "",
+        accessExpiresAtMs: null,
+        connectedAtMs: 7,
+      });
+    } finally {
+      void backend.close();
+    }
+  });
+
+  it("derives the key from the gateway token when no Ada key is set, and refuses neither in production", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("ADA_TOKEN_KEY", "");
+    vi.stubEnv("VERA_TOKEN_KEY", "");
+    vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", "gateway-secret-for-test-0123456789");
+    const databasePath = path.join(tempDirs.make("ada-lexroom-gw-"), "lexroom-account.sqlite");
+    const backend = createLexroomBackend(undefined, { databasePath });
+    try {
+      backend.execute({ type: "upsertAccount", input: LEXROOM });
+      expect(backend.execute({ type: "readAccount", input: undefined })).toEqual(LEXROOM);
+    } finally {
+      void backend.close();
+    }
+    expect(String(rawRow(databasePath, "vera_lexroom_account").password)).toMatch(/^enc:v1:/);
   });
 
   it("fails to open in production without a key", () => {

@@ -30,6 +30,13 @@ function parseKey(raw: string): Buffer {
   return decoded;
 }
 
+/** The gateway's own secret, used only when no Ada key is set. HKDF keeps the two uses apart. */
+const GATEWAY_TOKEN_ENV = "OPENCLAW_GATEWAY_TOKEN";
+
+function keyFromGatewayToken(secret: string): Buffer {
+  return Buffer.from(crypto.hkdfSync("sha256", secret, "", "ada-token-key-v1", KEY_BYTES));
+}
+
 export function isSealedToken(stored: string): boolean {
   return stored.startsWith(PREFIX);
 }
@@ -37,17 +44,19 @@ export function isSealedToken(stored: string): boolean {
 /**
  * AES-256-GCM for OAuth tokens at rest. The row's table and column are bound as
  * additional authenticated data so a sealed value cannot be moved to another column.
- * Production (`NODE_ENV=production`) refuses to run without a key; other
- * environments keep plaintext so local development needs no setup.
+ * The key is `ADA_TOKEN_KEY`, or when that is unset a key derived from the gateway's
+ * `OPENCLAW_GATEWAY_TOKEN`. Production (`NODE_ENV=production`) refuses to run with neither;
+ * other environments keep plaintext so local development needs no setup.
  */
 export function resolveTokenCipher(env: NodeJS.ProcessEnv = process.env): TokenCipher {
   const raw = readAdaEnv(env, "TOKEN_KEY")?.trim();
-  if (!raw && env.NODE_ENV === "production") {
+  const gatewaySecret = env[GATEWAY_TOKEN_ENV]?.trim();
+  if (!raw && !gatewaySecret && env.NODE_ENV === "production") {
     throw new Error(
-      `${ADA_TOKEN_KEY_ENV} is required in production to encrypt Ada Google and Lexroom tokens at rest. Set it to 32 random bytes (openssl rand -base64 32).`,
+      `${ADA_TOKEN_KEY_ENV} is required in production to encrypt Ada Google and Lexroom credentials at rest. Set it to 32 random bytes (openssl rand -base64 32).`,
     );
   }
-  const key = raw ? parseKey(raw) : null;
+  const key = raw ? parseKey(raw) : gatewaySecret ? keyFromGatewayToken(gatewaySecret) : null;
 
   return {
     encrypting: key !== null,

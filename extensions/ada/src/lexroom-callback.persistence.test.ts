@@ -88,13 +88,18 @@ function mockReq(form: Record<string, string>): IncomingMessage {
 async function signIn(
   store: LexroomAccountStore,
   login: { email?: string; accessToken: string; accessExpiresAtMs: number | null },
-  options: { notify?: () => Promise<{ ok: true }> } = {},
+  options: { notify?: () => Promise<{ ok: true }>; otp?: string } = {},
 ) {
   const issued = createConnectState(SECRET, NOW);
   await store.replacePending(issued.nonce, issued.expiresAtMs);
   const out = mockRes();
   await handleAdaLexroomConnect(
-    mockReq({ state: issued.state, email: "Matteo.Mariani+Verus@Lexroom.ai ", password: "pw" }),
+    mockReq({
+      state: issued.state,
+      email: "Matteo.Mariani+Verus@Lexroom.ai ",
+      password: options.otp ? "" : "pw",
+      ...(options.otp ? { otp: options.otp } : {}),
+    }),
     out.res,
     {
       config: CONNECT_CONFIG,
@@ -226,6 +231,7 @@ describe("the same credential from another process", () => {
       await mine.store.upsertAccount({
         email: EMAIL,
         accessToken: "token-written-by-parent-0001",
+        password: "",
         refreshToken: "",
         accessExpiresAtMs: null,
         connectedAtMs: 1,
@@ -243,7 +249,7 @@ describe("the same credential from another process", () => {
 
       inChild(
         dbPath,
-        `backend.execute({ type: "upsertAccount", input: { email: ${JSON.stringify(EMAIL)}, accessToken: "token-written-by-child-0002", refreshToken: "", accessExpiresAtMs: null, connectedAtMs: 2 } });`,
+        `backend.execute({ type: "upsertAccount", input: { email: ${JSON.stringify(EMAIL)}, accessToken: "token-written-by-child-0002", password: "", refreshToken: "", accessExpiresAtMs: null, connectedAtMs: 2 } });`,
       );
       expect(mine.backend.execute({ type: "readAccount", input: undefined })).toMatchObject({
         accessToken: "token-written-by-child-0002",
@@ -301,14 +307,32 @@ describe("the success page", () => {
     }
   });
 
-  it("is not shown for a sign-in Ada would treat as already expired", async () => {
+  it("keeps the password for a renewable sign-in, and not for an MFA one", async () => {
     const dbPath = path.join(tempDirs.make("ada-lexroom-"), "ada", "lexroom-account.sqlite");
     const real = connect(dbPath);
     try {
-      const page = await signIn(real.store, {
-        accessToken: jwt(30),
-        accessExpiresAtMs: NOW.getTime() + 30_000,
-      });
+      const soon = { accessToken: jwt(30), accessExpiresAtMs: NOW.getTime() + 30_000 };
+      const plain = await signIn(real.store, soon);
+      expect(plain.status).toBe(200);
+      expect(await real.store.readAccount()).toMatchObject({ password: "pw" });
+
+      const withCode = await signIn(real.store, soon, { otp: "123456" });
+      expect(withCode.status).toBe(500);
+      expect(await real.store.readAccount()).toMatchObject({ password: "" });
+    } finally {
+      real.backend.close();
+    }
+  });
+
+  it("is not shown for an MFA sign-in Ada would treat as already expired", async () => {
+    const dbPath = path.join(tempDirs.make("ada-lexroom-"), "ada", "lexroom-account.sqlite");
+    const real = connect(dbPath);
+    try {
+      const page = await signIn(
+        real.store,
+        { accessToken: jwt(30), accessExpiresAtMs: NOW.getTime() + 30_000 },
+        { otp: "123456" },
+      );
       expect(page.status).toBe(500);
       expect(page.html).not.toContain("Connected");
       expect(page.html).toContain("expires almost immediately");

@@ -112,6 +112,7 @@ export function withLexroomStoreLogging(
         email: account.email,
         tokenPresent: account.accessToken.length > 0,
         hasRefreshToken: account.refreshToken.length > 0,
+        hasPassword: account.password.length > 0,
         tokenExpiresInSec: expiresInSec(account),
         ...where(),
       });
