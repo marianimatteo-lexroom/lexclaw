@@ -11,6 +11,7 @@ import {
   parseRatchetCounts,
   parseRatchetPaths,
   parseRatchetScalar,
+  runPerFileCountRatchet,
 } from "../../scripts/lib/shrink-ratchet.mts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
@@ -150,5 +151,53 @@ describe("shrink-ratchet", () => {
     },
   ])("compares $name without permitting growth", ({ compare, expected }) => {
     expect(compare()).toEqual(expected);
+  });
+
+  describe("renamed files", () => {
+    function renamedRepo() {
+      const root = tempDirs.make("openclaw-shrink-ratchet-rename-");
+      const git = (...args: string[]) =>
+        execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], {
+          cwd: root,
+          encoding: "utf8",
+        }).trim();
+      git("init", "-q");
+      fs.writeFileSync(path.join(root, "baseline.txt"), "# debt\n");
+      fs.mkdirSync(path.join(root, "src"));
+      fs.writeFileSync(path.join(root, "src/old.ts"), "DEBT\nDEBT\nfiller line for similarity\n");
+      git("add", ".");
+      git("commit", "-q", "-m", "base");
+      const base = git("rev-parse", "HEAD");
+      git("mv", "src/old.ts", "src/new.ts");
+      git("commit", "-q", "-m", "rename");
+      const options = (current: number) => ({
+        baselinePath: "baseline.txt",
+        baselineHeader: "# debt\n",
+        renameSourceRoots: ["src"],
+        collectCurrent: () => new Map([["src/new.ts", current]]),
+        countAtRef: (ref: string, file: string) =>
+          execFileSync("git", ["show", `${ref}:${file}`], { cwd: root, encoding: "utf8" }).split(
+            "DEBT",
+          ).length - 1,
+        messages: {
+          increaseTitle: "increase",
+          expansionTitle: "expansion",
+          guidance: "guidance",
+          countNoun: "debts",
+          successTitle: "ok",
+        },
+      });
+      return { root, base, options };
+    }
+
+    it("keeps the debt a file had at its old path", () => {
+      const { root, base, options } = renamedRepo();
+      expect(runPerFileCountRatchet(root, ["--base", base], options(2))).toBe(0);
+    });
+
+    it("still rejects growth past that debt", () => {
+      const { root, base, options } = renamedRepo();
+      expect(runPerFileCountRatchet(root, ["--base", base], options(3))).toBe(1);
+    });
   });
 });

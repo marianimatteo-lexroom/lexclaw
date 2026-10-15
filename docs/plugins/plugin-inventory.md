@@ -384,11 +384,11 @@ Each entry lists the package, distribution route, and description.
 
 4 plugins
 
+- **[ada](/plugins/reference/ada)** (`@lexroom/ada`) - source checkout only. Lawyer WhatsApp digest with Instinct-shaped matter memory and event-driven wakes.
+
 - **[qa-channel](/plugins/reference/qa-channel)** (`@openclaw/qa-channel`) - source checkout only. OpenClaw QA synthetic channel plugin.
 
 - **[qa-lab](/plugins/reference/qa-lab)** (`@openclaw/qa-lab`) - source checkout only. OpenClaw QA lab plugin with private debugger UI and scenario runner.
-
-- **[vera](/plugins/reference/vera)** (`@lexroom/vera`) - source checkout only. Plans a lawyer's morning WhatsApp digest and calls Lexroom research and drafting.
 
 - **[visitor-access](/plugins/reference/visitor-access)** (`@openclaw/visitor-access`) - source checkout only. Manage expiring visitor grants through one Cloudflare Access email policy.
 

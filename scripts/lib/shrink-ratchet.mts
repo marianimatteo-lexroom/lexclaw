@@ -320,19 +320,28 @@ function allowanceWithExistingBaseCounts(
   proposed: ReadonlyMap<string, number>,
   allowed: ReadonlyMap<string, number>,
   countAtRef: PerFileCountRatchetOptions["countAtRef"],
+  renamedFrom: ReadonlyMap<string, string>,
 ) {
   const effective = new Map(allowed);
   for (const [filePath, count] of proposed) {
     if (count <= (effective.get(filePath) ?? 0)) {
       continue;
     }
-    try {
-      const baseCount = countAtRef(baseRef, filePath);
-      if (baseCount > (effective.get(filePath) ?? 0)) {
-        effective.set(filePath, baseCount);
+    // A renamed file keeps the debt it had at its old path; any other missing base path is
+    // a branch addition and receives no allowance.
+    for (const candidate of [filePath, renamedFrom.get(filePath)]) {
+      if (candidate === undefined) {
+        continue;
       }
-    } catch {
-      // Missing base paths are branch additions and receive no allowance.
+      try {
+        const baseCount = countAtRef(baseRef, candidate);
+        if (baseCount > (effective.get(filePath) ?? 0)) {
+          effective.set(filePath, baseCount);
+        }
+        break;
+      } catch {
+        continue;
+      }
     }
   }
   return effective;
@@ -399,13 +408,32 @@ export function runPerFileCountRatchet(
             options.renameSourceRoots,
           )
         : baseBaseline;
+    const renamedFrom = new Map(
+      baseRef
+        ? listRatchetRenames(root, baseRef, args.staged, options.renameSourceRoots).map(
+            ({ from, to }) => [to, from] as const,
+          )
+        : [],
+    );
     const currentAllowance =
       baseRef && baseBaseline
-        ? allowanceWithExistingBaseCounts(baseRef, current, baseline, options.countAtRef)
+        ? allowanceWithExistingBaseCounts(
+            baseRef,
+            current,
+            baseline,
+            options.countAtRef,
+            renamedFrom,
+          )
         : baseline;
     const expansionAllowance =
       baseRef && allowedBaseline
-        ? allowanceWithExistingBaseCounts(baseRef, baseline, allowedBaseline, options.countAtRef)
+        ? allowanceWithExistingBaseCounts(
+            baseRef,
+            baseline,
+            allowedBaseline,
+            options.countAtRef,
+            renamedFrom,
+          )
         : allowedBaseline;
     const increases = compareRatchetCounts(current, currentAllowance).increased;
     const expanded = expansionAllowance

@@ -1,6 +1,6 @@
-# Vera gateway for Railway: stock OpenClaw image plus the bundled Vera plugin.
+# Ada gateway for Railway: stock OpenClaw image plus the bundled Ada plugin.
 # Build context is the directory produced by build.sh (Dockerfile, start.sh,
-# railway.json, and vera/). Railway passes service variables with matching
+# railway.json, and ada/). Railway passes service variables with matching
 # names as build args, so either pin can be overridden without editing this file.
 ARG OPENCLAW_VERSION=2026.9.9
 FROM docker.io/openclaw/openclaw:${OPENCLAW_VERSION}
@@ -13,7 +13,7 @@ ENV KAPSO_PLUGIN_VERSION=${KAPSO_PLUGIN_VERSION}
 # The volume at /data is root-owned, and the plugin loader rejects plugin files
 # owned by another uid, so everything here stays root:root.
 USER root
-COPY vera /opt/lexroom/vera
+COPY ada /opt/lexroom/ada
 COPY start.sh /opt/lexroom/start.sh
 RUN command -v bash >/dev/null \
   && chmod 755 /opt/lexroom/start.sh \
