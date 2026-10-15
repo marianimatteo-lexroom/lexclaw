@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Stage a Railway build context for the Vera gateway from this checkout.
+# Stage a Railway build context for the Ada gateway from this checkout.
 #
 #   deploy/railway/build.sh [--out DIR] [--deploy]
 #
-# Bundles extensions/vera with esbuild (published OpenClaw images cannot load
+# Bundles extensions/ada with esbuild (published OpenClaw images cannot load
 # TypeScript plugins), then copies the Dockerfile, start.sh, and railway.json
 # next to it. The default output is a fresh temp directory outside the repo so
 # `railway up` does not apply this repo's .gitignore to the staged files.
@@ -14,7 +14,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-PLUGIN_DIR="${ROOT}/extensions/vera"
+PLUGIN_DIR="${ROOT}/extensions/ada"
 
 OUT=""
 DEPLOY=0
@@ -52,10 +52,10 @@ die() {
 command -v pnpm >/dev/null || die "pnpm is required (see package.json packageManager)"
 [ -d "${ROOT}/node_modules" ] || die "run 'pnpm install' in ${ROOT} first"
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-[ "${NODE_MAJOR}" -ge 24 ] || die "Node 24 or newer is required to bundle Vera, found $(node -v)"
+[ "${NODE_MAJOR}" -ge 24 ] || die "Node 24 or newer is required to bundle Ada, found $(node -v)"
 
 if [ -z "${OUT}" ]; then
-  OUT="$(mktemp -d "${TMPDIR:-/tmp}/vera-railway.XXXXXX")"
+  OUT="$(mktemp -d "${TMPDIR:-/tmp}/ada-railway.XXXXXX")"
 else
   rm -rf "${OUT}"
   mkdir -p "${OUT}"
@@ -66,7 +66,7 @@ case "${OUT}" in
 esac
 log "staging into ${OUT}"
 
-BUNDLE_DIR="${OUT}/vera"
+BUNDLE_DIR="${OUT}/ada"
 mkdir -p "${BUNDLE_DIR}/src"
 
 # The host provides every openclaw/plugin-sdk subpath, so none are bundled.
@@ -81,17 +81,17 @@ bundle() {
   node --check "${outfile}"
 }
 
-bundle extensions/vera/index.ts "${BUNDLE_DIR}/index.js"
+bundle extensions/ada/index.ts "${BUNDLE_DIR}/index.js"
 
 # Worker entries come from the plugin package so a new worker cannot be missed.
 WORKERS="$(node -p '
   const pkg = require(process.argv[1] + "/package.json");
   pkg.openclaw.build.workerEntries.join("\n");
 ' "${PLUGIN_DIR}")"
-[ -n "${WORKERS}" ] || die "extensions/vera/package.json lists no openclaw.build.workerEntries"
+[ -n "${WORKERS}" ] || die "extensions/ada/package.json lists no openclaw.build.workerEntries"
 while IFS= read -r worker; do
   name="$(basename "${worker}" .ts)"
-  bundle "extensions/vera/${worker#./}" "${BUNDLE_DIR}/src/${name}.js"
+  bundle "extensions/ada/${worker#./}" "${BUNDLE_DIR}/src/${name}.js"
 done <<<"${WORKERS}"
 
 cp "${PLUGIN_DIR}/openclaw.plugin.json" "${PLUGIN_DIR}/README.md" "${BUNDLE_DIR}/"
@@ -121,7 +121,7 @@ log "staged $(find "${OUT}" -type f | wc -l | tr -d ' ') files"
 if [ "${DEPLOY}" -eq 1 ]; then
   command -v railway >/dev/null || die "the Railway CLI is required for --deploy"
   SERVICE="${RAILWAY_SERVICE:-gateway}"
-  MESSAGE="Redeploy Vera gateway from $(git -C "${ROOT}" rev-parse --short HEAD)"
+  MESSAGE="Redeploy Ada gateway from $(git -C "${ROOT}" rev-parse --short HEAD)"
   log "railway up --service ${SERVICE}"
   (cd "${OUT}" && railway up --detach --service "${SERVICE}" --message "${MESSAGE}" --yes)
 else

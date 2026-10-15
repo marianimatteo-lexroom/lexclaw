@@ -2365,7 +2365,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
 
-  extensions/vera:
+  extensions/ada:
     dependencies:
       typebox:
         specifier: 1.3.34

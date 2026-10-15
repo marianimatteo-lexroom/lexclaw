@@ -1,0 +1,206 @@
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
+import { afterEach, describe, expect, it } from "vitest";
+import { createSqliteWorkerBackend } from "./memory.worker.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+
+function openBackend() {
+  return createSqliteWorkerBackend(undefined, {
+    databasePath: path.join(tempDirs.make("ada-memory-"), "memory.sqlite"),
+  });
+}
+
+describe("ada memory store", () => {
+  it("keeps matter walls, alias search, and correction history", () => {
+    const backend = openBackend();
+    try {
+      backend.execute({
+        type: "upsertRecord",
+        input: {
+          atMs: 1000,
+          reason: "create",
+          record: {
+            id: "rossi-dining",
+            matterId: "rossi",
+            folder: "knowledge/preferences",
+            type: "preference",
+            title: "Dining",
+            aliases: ["pasta", "takeout"],
+            body: "- Pasta: yes",
+            validFromMs: 1000,
+            validToMs: null,
+            supersededBy: null,
+          },
+        },
+      });
+      backend.execute({
+        type: "upsertRecord",
+        input: {
+          atMs: 1000,
+          reason: "create",
+          record: {
+            id: "bianchi-dining",
+            matterId: "bianchi",
+            folder: "knowledge/preferences",
+            type: "preference",
+            title: "Dining",
+            aliases: ["pasta"],
+            body: "- Pasta: no",
+            validFromMs: 1000,
+            validToMs: null,
+            supersededBy: null,
+          },
+        },
+      });
+
+      const rossiHits = backend.execute({
+        type: "searchRecords",
+        input: { query: "pasta", matterId: "rossi" },
+      });
+      expect(rossiHits.map((hit) => hit.id)).toEqual(["rossi-dining"]);
+      expect(
+        backend.execute({
+          type: "searchRecords",
+          input: { query: "pazta", matterId: "rossi" },
+        }),
+      ).toEqual([]);
+
+      backend.execute({
+        type: "upsertRecord",
+        input: {
+          atMs: 2000,
+          reason: "correction",
+          record: {
+            id: "rossi-dining",
+            matterId: "rossi",
+            folder: "knowledge/preferences",
+            type: "preference",
+            title: "Dining",
+            aliases: ["pasta", "takeout"],
+            body: "- Pasta: corrected on 2026-10-06",
+            validFromMs: 2000,
+            validToMs: null,
+            supersededBy: null,
+          },
+        },
+      });
+      const history = backend.execute({
+        type: "history",
+        input: { id: "rossi-dining", matterId: "rossi" },
+      });
+      expect(history[0]).toMatchObject({
+        reason: "correction",
+        previousBody: "- Pasta: yes",
+      });
+      expect(
+        backend.execute({
+          type: "getRecord",
+          input: { id: "rossi-dining", matterId: "bianchi" },
+        }),
+      ).toBeNull();
+    } finally {
+      void backend.close();
+    }
+  });
+
+  it("holds a plan when the WhatsApp window is closed", () => {
+    const backend = openBackend();
+    try {
+      backend.execute({
+        type: "writeWake",
+        input: {
+          heldPlanJson: JSON.stringify({ deliver: true, items: [], nextSteps: [] }),
+          lastLawyerInboundAtMs: 1,
+        },
+      });
+      expect(backend.execute({ type: "readWake", input: undefined }).heldPlanJson).toContain(
+        "deliver",
+      );
+      backend.execute({ type: "writeWake", input: { heldPlanJson: null } });
+      expect(backend.execute({ type: "readWake", input: undefined }).heldPlanJson).toBeNull();
+    } finally {
+      void backend.close();
+    }
+  });
+
+  it("persists the held plan retry state", () => {
+    const backend = openBackend();
+    try {
+      expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
+        heldPlanAttempts: 0,
+        heldPlanNextAttemptAtMs: null,
+        heldPlanTemplateAttemptedAtMs: null,
+      });
+      backend.execute({
+        type: "writeWake",
+        input: {
+          heldPlanAttempts: 2,
+          heldPlanNextAttemptAtMs: 5000,
+          heldPlanTemplateAttemptedAtMs: 4000,
+        },
+      });
+      backend.execute({ type: "writeWake", input: { lastCollectAtMs: 9 } });
+      expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
+        heldPlanAttempts: 2,
+        heldPlanNextAttemptAtMs: 5000,
+        heldPlanTemplateAttemptedAtMs: 4000,
+        lastCollectAtMs: 9,
+      });
+    } finally {
+      void backend.close();
+    }
+  });
+
+  it("keeps digest and held-plan timestamps and clears the hold age with the plan", () => {
+    const backend = openBackend();
+    try {
+      backend.execute({
+        type: "writeWake",
+        input: { lastDigestAtMs: 10, heldPlanJson: "{}", heldPlanAtMs: 20 },
+      });
+      expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
+        lastDigestAtMs: 10,
+        heldPlanAtMs: 20,
+      });
+      backend.execute({ type: "writeWake", input: { heldPlanJson: null, heldPlanAtMs: null } });
+      expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
+        lastDigestAtMs: 10,
+        heldPlanAtMs: null,
+      });
+    } finally {
+      void backend.close();
+    }
+  });
+
+  it("adds the retry and status columns to a wake table from before they existed", () => {
+    const databasePath = path.join(tempDirs.make("ada-memory-"), "memory.sqlite");
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`CREATE TABLE vera_wake_state (
+      id TEXT PRIMARY KEY,
+      last_lawyer_inbound_at_ms INTEGER,
+      last_reconcile_at_ms INTEGER,
+      last_collect_at_ms INTEGER,
+      held_plan_json TEXT,
+      watch_expiration_ms INTEGER,
+      open_todo_ids_json TEXT
+    ) STRICT;
+    INSERT INTO vera_wake_state (id, last_collect_at_ms, held_plan_json) VALUES ('lawyer', 5, '{}');`);
+    legacy.close();
+    const backend = createSqliteWorkerBackend(undefined, { databasePath });
+    try {
+      expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
+        lastCollectAtMs: 5,
+        heldPlanJson: "{}",
+        heldPlanAttempts: 0,
+        heldPlanNextAttemptAtMs: null,
+        heldPlanTemplateAttemptedAtMs: null,
+        lastDigestAtMs: null,
+        heldPlanAtMs: null,
+      });
+    } finally {
+      void backend.close();
+    }
+  });
+});
