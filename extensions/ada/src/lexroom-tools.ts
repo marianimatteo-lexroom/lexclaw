@@ -25,17 +25,17 @@ import {
 import { startResearchJob } from "./lexroom-jobs.js";
 import { lexroomLogger } from "./lexroom-log.js";
 import {
-  defaultTotalTimeoutMs,
-  lexroomTimeoutMs,
-  MIN_LEXROOM_TIMEOUT_MS,
-} from "./lexroom-timeout.js";
-import {
   clearAccountIfStill,
   ensureUsableAccount,
   needsReconnect,
   renewLexroomAccount,
   type RenewFailure,
 } from "./lexroom-session.js";
+import {
+  defaultTotalTimeoutMs,
+  lexroomTimeoutMs,
+  MIN_LEXROOM_TIMEOUT_MS,
+} from "./lexroom-timeout.js";
 import type { DeadlineItem } from "./memory-contract.js";
 
 type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger">;
@@ -290,8 +290,7 @@ export async function resolveLexroomConfig(params: {
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
 }): Promise<
-  | { ok: true; config: LexroomConfig; email?: string; source: "account" | "config" }
-  | { ok: false; reason?: "not_connected" | "timeout"; error: string; message?: string }
+  { ok: true; config: LexroomConfig; email?: string; source: "account" | "config" } | LexroomFailure
 > {
   const now = params.now ?? new Date();
   const store = await openStore(params.api);

@@ -9,7 +9,7 @@ import {
   type RetryPolicy,
 } from "./lexroom-transport.js";
 
-const URL_ = "https://api.lexroom.ai/v1/user/modules?token=abc&q=secret";
+const REQUEST_URL = "https://api.lexroom.ai/v1/user/modules?token=abc&q=secret";
 const SECRET = "bearer-secret-0123456789";
 
 function json(body: unknown, status = 200): Response {
@@ -31,12 +31,17 @@ function recorder() {
 
 function run(
   fetchImpl: typeof fetch,
-  options: { retry?: RetryPolicy; retryTimeout?: boolean; timeoutMs?: number; signal?: AbortSignal } = {},
+  options: {
+    retry?: RetryPolicy;
+    retryTimeout?: boolean;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  } = {},
 ) {
   const log = recorder();
   const outcome = exchange({
     fetchImpl,
-    url: URL_,
+    url: REQUEST_URL,
     init: { method: "GET", headers: new Headers({ Authorization: `Bearer ${SECRET}` }) },
     timeoutMs: options.timeoutMs ?? 1000,
     signal: options.signal,
@@ -61,7 +66,9 @@ describe("exchange", () => {
     const signals: AbortSignal[] = [];
     const fetchImpl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
       signals.push(init?.signal as AbortSignal);
-      return new Promise<Response>(() => undefined);
+      return new Promise<Response>(() => {
+        // Never settles.
+      });
     });
     const { outcome, events } = run(fetchImpl as unknown as typeof fetch);
     const settled = outcome.catch((error: unknown) => error);
@@ -80,7 +87,10 @@ describe("exchange", () => {
   it("covers the body, not just the headers", async () => {
     let cancelled = false;
     const stalled = new ReadableStream<Uint8Array>({
-      pull: () => new Promise<void>(() => undefined),
+      pull: () =>
+        new Promise<void>(() => {
+          // Never settles.
+        }),
       cancel: () => {
         cancelled = true;
       },
@@ -151,7 +161,13 @@ describe("exchange", () => {
   });
 
   it("retries a timeout only when asked to, and then only once", async () => {
-    const hang = () => vi.fn<typeof fetch>(() => new Promise<Response>(() => undefined));
+    const hang = () =>
+      vi.fn<typeof fetch>(
+        () =>
+          new Promise<Response>(() => {
+            // Never settles.
+          }),
+      );
 
     const once = hang();
     const withRetry = run(once, { retryTimeout: true });
@@ -175,10 +191,11 @@ describe("exchange", () => {
 
   it("never retries a request the caller cancelled", async () => {
     const controller = new AbortController();
-    const fetchImpl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
-      new Promise<Response>((_resolve, reject) => {
-        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
-      }),
+    const fetchImpl = vi.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+        }),
     );
     const { outcome } = run(fetchImpl as unknown as typeof fetch, {
       signal: controller.signal,
@@ -230,8 +247,11 @@ describe("fetchGuarded", () => {
     const guard = createGuard({ idleMs: 1000, totalMs: 5000 });
     const log = recorder();
     const sent = fetchGuarded({
-      fetchImpl: (() => new Promise<Response>(() => undefined)) as unknown as typeof fetch,
-      url: URL_,
+      fetchImpl: (() =>
+        new Promise<Response>(() => {
+          // Never settles.
+        })) as unknown as typeof fetch,
+      url: REQUEST_URL,
       init: { method: "POST", headers: new Headers(), body: "{}" },
       guard,
       trace: log.trace,

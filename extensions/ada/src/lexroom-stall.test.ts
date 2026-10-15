@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { runDraft, runResearch, type LexroomLogFields } from "./lexroom-client.js";
+import { loginLexroomAccount } from "./lexroom-login.js";
 
 /** The structured result every Lexroom tool returns when a request outlived its limit. */
 function timedOut(limit: string) {
@@ -293,6 +294,28 @@ function never<T>(): Promise<T> {
     // Neither settles, like a socket that stopped answering.
   });
 }
+
+describe("a login against a Lexroom that never answers", () => {
+  it.concurrent("ends as a timeout after one retry and closes both connections", () =>
+    withServer(
+      () => undefined,
+      async (server) => {
+        const startedAt = Date.now();
+        const result = await loginLexroomAccount({
+          email: "lawyer@example.com",
+          password: "secret-password",
+          baseUrl: server.baseUrl,
+          timeoutMs: 1000,
+        });
+        const tookMs = Date.now() - startedAt;
+        expect(result).toEqual(timedOut("1s"));
+        expect(tookMs).toBeGreaterThanOrEqual(2400);
+        expect(tookMs).toBeLessThan(4000);
+        expect(server.seen.map((request) => request.url)).toEqual(["/v1/login", "/v1/login"]);
+        await server.closed();
+      },
+    ));
+});
 
 describe("a transport that ignores the abort signal", () => {
   const config = { accessToken: "secret-token", baseUrl: "https://api.lexroom.ai", ...LIMITS };

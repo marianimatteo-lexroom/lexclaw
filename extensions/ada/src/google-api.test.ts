@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildRawGmailMessage,
   exchangeAuthorizationCode,
@@ -266,5 +266,90 @@ describe("gmail send", () => {
         fetchImpl,
       }),
     ).toEqual({ ok: true, id: "sent-1" });
+  });
+});
+
+describe("google request timeouts", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // AbortSignal.timeout runs on a native timer that fake timers cannot advance.
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("timed out", "TimeoutError")), ms);
+      return controller.signal;
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  /** A fetch that never answers but does honor the abort signal, like the real one. */
+  function silentFetch() {
+    const signals: AbortSignal[] = [];
+    const fetchImpl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      signals.push(init?.signal as AbortSignal);
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      });
+    });
+    return { fetchImpl: fetchImpl as unknown as typeof fetch, signals };
+  }
+
+  it("still ends a send after 20 seconds when the caller brings its own signal", async () => {
+    const { fetchImpl, signals } = silentFetch();
+    const caller = new AbortController();
+    const pending = sendGmailMessage({
+      accessToken: "token",
+      from: "a@example.com",
+      to: "b@example.com",
+      subject: "Hi",
+      text: "Body",
+      fetchImpl,
+      signal: caller.signal,
+    });
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(signals[0]?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toEqual({ ok: false, status: 0 });
+    expect(signals[0]?.aborted).toBe(true);
+    expect(caller.signal.aborted).toBe(false);
+  });
+
+  it("ends a read, a watch and a token exchange the same way", async () => {
+    for (const call of [
+      (fetchImpl: typeof fetch, signal: AbortSignal) =>
+        listInboxMessages({ accessToken: "token", max: 3, fetchImpl, signal }),
+      (fetchImpl: typeof fetch, signal: AbortSignal) =>
+        watchGmailInbox({
+          accessToken: "token",
+          topicName: "projects/p/topics/t",
+          fetchImpl,
+          signal,
+        }),
+    ]) {
+      const { fetchImpl } = silentFetch();
+      const pending = call(fetchImpl, new AbortController().signal);
+      await vi.advanceTimersByTimeAsync(20_000);
+      await expect(pending).resolves.toMatchObject({ ok: false });
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("lets the caller cancel sooner", async () => {
+    const { fetchImpl, signals } = silentFetch();
+    const caller = new AbortController();
+    const pending = sendGmailMessage({
+      accessToken: "token",
+      from: "a@example.com",
+      to: "b@example.com",
+      subject: "Hi",
+      text: "Body",
+      fetchImpl,
+      signal: caller.signal,
+    });
+    caller.abort();
+    await expect(pending).resolves.toEqual({ ok: false, status: 0 });
+    expect(signals[0]?.aborted).toBe(true);
   });
 });

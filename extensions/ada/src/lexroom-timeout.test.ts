@@ -25,9 +25,9 @@ describe("lexroomTimeoutMs", () => {
   });
 
   it("falls through a blank ADA_ value to the VERA_ one", () => {
-    expect(lexroomTimeoutMs({ ADA_LEXROOM_TIMEOUT_MS: " ", VERA_LEXROOM_TIMEOUT_MS: "30000" })).toBe(
-      30_000,
-    );
+    expect(
+      lexroomTimeoutMs({ ADA_LEXROOM_TIMEOUT_MS: " ", VERA_LEXROOM_TIMEOUT_MS: "30000" }),
+    ).toBe(30_000);
   });
 
   it("keeps the total cap at least three request limits", () => {
@@ -73,7 +73,13 @@ describe("withDeadline", () => {
   });
 
   it("settles with the fallback when the promise never does", async () => {
-    const pending = withDeadline(new Promise<string>(() => undefined), 1000, () => "late");
+    const pending = withDeadline(
+      new Promise<string>(() => {
+        // Never settles.
+      }),
+      1000,
+      () => "late",
+    );
     await vi.advanceTimersByTimeAsync(1000);
     await expect(pending).resolves.toBe("late");
     expect(vi.getTimerCount()).toBe(0);

@@ -1,3 +1,4 @@
+import { mergeAnswer } from "./lexroom-answer.js";
 import { citedSources, toWhatsAppText, type CitedSource } from "./lexroom-citations.js";
 import { createGuard, LexroomTimeoutError, type LexroomGuard } from "./lexroom-guard.js";
 import {
@@ -222,7 +223,7 @@ export async function checkLexroomAuth(input: {
     status = result.status;
     verdict = result.ok ? "accepted" : status === 401 ? "rejected" : "unknown";
   } catch {
-    verdict = "unknown";
+    // A probe that failed or timed out proves nothing about the bearer.
   }
   trace("status.auth_probe", { verdict, status, ms: Date.now() - startedAt });
   return verdict;
@@ -410,34 +411,6 @@ function snapshotFrom(parsed: unknown): ResearchSnapshot | undefined {
     throw new LexroomError(snapshot.error.trim().slice(0, 200));
   }
   return typeof snapshot.id === "string" && snapshot.id ? snapshot : undefined;
-}
-
-function stripHtml(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/giu, "\n")
-    .replace(/<\/(p|div|h[1-6]|li|tr)>/giu, "\n")
-    .replace(/<[^>]+>/gu, "")
-    .replace(/&nbsp;/giu, " ")
-    .replace(/&amp;/giu, "&")
-    .replace(/&lt;/giu, "<")
-    .replace(/&gt;/giu, ">")
-    .replace(/&#39;|&apos;/giu, "'")
-    .replace(/&quot;/giu, '"')
-    .trim();
-}
-
-/**
- * The answer text of a snapshot, falling back to its HTML and then to the previous snapshot.
- * A terminal event often repeats the id without the answer body, and must not blank the answer.
- */
-function mergeAnswer(previous: string, incoming: ResearchSnapshot["answer"]): string {
-  const record = incoming && typeof incoming === "object" ? incoming : undefined;
-  const raw = typeof incoming === "string" ? incoming : record?.text;
-  const text = (typeof raw === "string" ? raw : "").replaceAll("</END>", "").trim();
-  const html = (typeof record?.html === "string" ? record.html : "")
-    .replaceAll("</END>", "")
-    .trim();
-  return text || (html ? stripHtml(html) : "") || previous;
 }
 
 function groupCount(value: unknown): number {
@@ -709,7 +682,8 @@ async function selectModules(
     .filter((module) => module.is_active !== false)
     .map((module) => (typeof module.name === "string" ? module.name : ""));
   const picked = requestedModules(selected, config);
-  const modules = picked.length > 0
+  const modules =
+    picked.length > 0
       ? picked
       : await userModules(fetchImpl, config, { trace: call.trace, signal: call.guard.signal });
   call.trace("selectors.done", { offered: body?.modules?.length ?? 0, chosen: modules.join(",") });

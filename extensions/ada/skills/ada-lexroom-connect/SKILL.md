@@ -17,6 +17,8 @@ Ada keeps the lawyer's Lexroom email and password (encrypted) and signs in again
 
 When `ada_research` or `ada_draft` returns an error without `reason` (for example that the user is not authorized for a research module, or lacks a plan or credits, and "non serve ricollegare"), the sign-in is fine. Relay that message in the lawyer's language, with Lexroom's detail, and do not send a connect link.
 
+When `ada_research_status`, `ada_research` or `ada_draft` returns `reason: "timeout"`, Lexroom is reachable but did not answer in time and the sign-in is fine. Relay `message` in the lawyer's language and offer to try again; do not send a connect link.
+
 When the result is any other `ok: false`, the entire reply is exactly `NO_REPLY`. The tool error names the missing connect settings. Do not text that error to the lawyer.
 
 When `connected` is true, do not ask again and do not send the link.

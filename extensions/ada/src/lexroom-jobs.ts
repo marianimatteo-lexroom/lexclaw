@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type { LexroomFailure, LexroomLog, ResearchOutcome } from "./lexroom-client.js";
 import { timeoutFailure, withDeadline } from "./lexroom-timeout.js";
 
@@ -30,7 +30,10 @@ type Job = {
   startedAtMs: number;
   finishedAtMs?: number;
   controller: AbortController;
+  /** Resolves when the job has a result, however it got one. */
   settled: Promise<void>;
+  /** Records the result. Only the first call counts. */
+  settle: (result: Settled) => void;
   result?: Settled;
 };
 
@@ -69,11 +72,18 @@ function runningCount(): number {
   return count;
 }
 
-/** Aborts every running job. Called when the Ada service stops. */
+/**
+ * Aborts every running job and fails it at once, even if its work ignores the abort. Called
+ * when the Ada service stops, so no job is left running by a plugin that is no longer there.
+ */
 export function abortResearchJobs(): void {
   for (const job of jobs.values()) {
     if (job.finishedAtMs === undefined) {
       job.controller.abort(new DOMException("Ada stopped", "AbortError"));
+      job.settle({
+        ok: false,
+        error: "Ada stopped before the research finished. Start it again with ada_research.",
+      });
     }
   }
 }
@@ -100,34 +110,40 @@ export function startResearchJob(params: {
   }
   const { log, deadlineMs } = params;
   const controller = new AbortController();
-  const id = `rj_${randomUUID().slice(0, 12)}`;
+  const id = `rj_${randomBytes(6).toString("hex")}`;
   const startedAtMs = now();
+  let resolveSettled: () => void = () => undefined;
   const job: Job = {
     id,
     matterId: params.matterId,
     startedAtMs,
     controller,
-    settled: Promise.resolve(),
-  };
-  const run = params.run(controller.signal).catch(
-    (error: unknown): LexroomFailure => ({
-      ok: false,
-      error: error instanceof Error ? error.message.slice(0, 200) : "Lexroom research failed",
+    settled: new Promise<void>((resolve) => {
+      resolveSettled = resolve;
     }),
-  );
-  job.settled = withDeadline(run, deadlineMs, (): LexroomFailure => {
+    settle(result) {
+      if (job.finishedAtMs !== undefined) {
+        return;
+      }
+      job.result = result;
+      job.finishedAtMs = now();
+      log("job.finished", {
+        job: id,
+        ok: result.ok,
+        ...(result.ok ? {} : { reason: result.reason ?? "error" }),
+        ms: job.finishedAtMs - startedAtMs,
+      });
+      resolveSettled();
+    },
+  };
+  const run = params.run(controller.signal).catch((error: unknown): LexroomFailure => ({
+    ok: false,
+    error: error instanceof Error ? error.message.slice(0, 200) : "Lexroom research failed",
+  }));
+  void withDeadline(run, deadlineMs, (): LexroomFailure => {
     controller.abort(new DOMException("Research deadline", "AbortError"));
     return timeoutFailure(deadlineMs);
-  }).then((result) => {
-    job.result = result;
-    job.finishedAtMs = now();
-    log("job.finished", {
-      job: id,
-      ok: result.ok,
-      ...(result.ok ? {} : { reason: result.reason ?? "error" }),
-      ms: job.finishedAtMs - startedAtMs,
-    });
-  });
+  }).then(job.settle);
   jobs.set(id, job);
   log("job.started", { job: id, deadlineMs });
   return {
@@ -152,7 +168,11 @@ function snapshot(job: Job, nowMs: number) {
       message: `Research is still running (${elapsedSec}s). Call ada_research_status again with this jobId.`,
     };
   }
-  return { ...job.result, jobId: job.id, state: job.result.ok ? ("done" as const) : ("failed" as const) };
+  return {
+    ...job.result,
+    jobId: job.id,
+    state: job.result.ok ? ("done" as const) : ("failed" as const),
+  };
 }
 
 /**

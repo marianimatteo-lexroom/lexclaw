@@ -222,3 +222,35 @@ describe("warnDigestReadyTemplateUnset", () => {
     expect(api.logger.warn.mock.calls[0]?.[0]).toContain("digestReadyTemplate");
   });
 });
+
+describe("kapso response body timeout", () => {
+  it("gives up on a response whose body never arrives, instead of waiting forever", async () => {
+    vi.useFakeTimers();
+    let cancelled = false;
+    const fetchImpl = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason));
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+    const pending = sendKapsoTemplate({
+      config,
+      to: "390000000000",
+      template,
+      env: {},
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(pending).resolves.toEqual({ ok: true });
+    expect(cancelled || fetchImpl.mock.calls.length === 1).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});

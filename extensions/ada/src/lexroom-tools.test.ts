@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LexroomAccountRecord, LexroomAccountStore } from "./lexroom-account-contract.js";
 
 const openAdaLexroomAccountFromApi = vi.hoisted(() => vi.fn());
 
 vi.mock("./lexroom-account.js", () => ({ openAdaLexroomAccountFromApi }));
 
+import { readResearchJob } from "./lexroom-jobs.js";
 import {
   executeAdaDraft,
   executeAdaLexroomConnect,
@@ -12,6 +13,7 @@ import {
   lexroomConnectedText,
   resolveLexroomConfig,
   sendLexroomConnectedNotice,
+  startAdaResearch,
 } from "./lexroom-tools.js";
 
 const NOW = new Date("2026-10-10T12:00:00.000Z");
@@ -828,5 +830,134 @@ describe("silent sign-in with the saved email and password", () => {
       }),
     ).toMatchObject({ ok: true, connected: false });
     expect(live.store.clearAccount).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a Lexroom that goes silent", () => {
+  const research = { matterId: "m", query: "Termini" };
+  const never = () =>
+    new Promise<Response>(() => {
+      // Never settles.
+    });
+  const timedOut = (limit: string) => {
+    const message = `Lexroom did not respond within ${limit}; the request was abandoned.`;
+    return { ok: false, reason: "timeout", message, error: message };
+  };
+  const saved = (overrides: Partial<LexroomAccountRecord> = {}) =>
+    account({
+      password: "correct horse battery staple 9",
+      accessExpiresAtMs: Date.now() + 3_600_000,
+      ...overrides,
+    });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubEnv("ADA_LEXROOM_TIMEOUT_MS", "1000");
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it("ends a re-login that never answers as a timeout, without clearing or rewriting the account", async () => {
+    const live = useLiveStore(
+      saved({ accessToken: "stale-silent-login", accessExpiresAtMs: Date.now() - 10_000 }),
+    );
+    const server = lexroom({ "/v1/login": never });
+    const pending = executeAdaResearch({
+      args: research,
+      config: {},
+      api,
+      fetchImpl: server.fetchImpl,
+    });
+    await vi.advanceTimersByTimeAsync(1000 + 500 + 1000);
+    await expect(pending).resolves.toEqual(timedOut("1s"));
+    expect(server.calls.map((call) => call.path)).toEqual(["/v1/login", "/v1/login"]);
+    expect(live.store.clearAccount).not.toHaveBeenCalled();
+    expect(live.store.upsertAccount).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not leave later calls joined to the dead sign-in", async () => {
+    useLiveStore(
+      saved({ accessToken: "stale-shared-hang", accessExpiresAtMs: Date.now() - 10_000 }),
+    );
+    const server = lexroom({ "/v1/login": never });
+    const run = () =>
+      executeAdaResearch({ args: research, config: {}, api, fetchImpl: server.fetchImpl });
+    const first = run();
+    await vi.advanceTimersByTimeAsync(2600);
+    await expect(first).resolves.toMatchObject({ ok: false, reason: "timeout" });
+    const second = run();
+    await vi.advanceTimersByTimeAsync(2600);
+    await expect(second).resolves.toMatchObject({ ok: false, reason: "timeout" });
+    expect(server.calls.filter((call) => call.path === "/v1/login")).toHaveLength(4);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("reports a timeout, and keeps the account, when the re-login after a 401 never answers", async () => {
+    const live = useLiveStore(saved({ accessToken: "rejected-silent-login" }));
+    const server = lexroom({
+      "/v1/ask_me_anything": () => json({ detail: "expired" }, 401),
+      "/v1/login": never,
+    });
+    const pending = executeAdaResearch({
+      args: research,
+      config: {},
+      api,
+      fetchImpl: server.fetchImpl,
+    });
+    await vi.advanceTimersByTimeAsync(2600);
+    await expect(pending).resolves.toEqual(timedOut("1s"));
+    expect(live.store.clearAccount).not.toHaveBeenCalled();
+  });
+
+  it("says so when the draft's Lexroom call never answers", async () => {
+    useLiveStore(saved({ accessToken: "draft-silent" }));
+    const server = lexroom({ "/v2/ai/drafting/selectors": never });
+    const pending = executeAdaDraft({
+      args: { matterId: "m", prompt: "Diffida", confirmed: true },
+      config: {},
+      api,
+      fetchImpl: server.fetchImpl,
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(pending).resolves.toEqual(timedOut("1s"));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("lets ada_research acknowledge at once, then reports the timeout through the job", async () => {
+    useLiveStore(saved({ accessToken: "job-silent" }));
+    const server = lexroom({ "/v1/ask_me_anything": never });
+    const started = startAdaResearch({
+      args: research,
+      config: {},
+      api,
+      fetchImpl: server.fetchImpl,
+    });
+    expect(started).toMatchObject({ ok: true, state: "running" });
+    if (!started.ok) {
+      throw new Error("expected a job");
+    }
+    const waiting = readResearchJob({ jobId: started.jobId, waitSeconds: 30 });
+    await vi.advanceTimersByTimeAsync(2000);
+    await expect(waiting).resolves.toMatchObject({
+      ok: false,
+      state: "failed",
+      reason: "timeout",
+      jobId: started.jobId,
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects a blank matter or query before starting anything", () => {
+    expect(startAdaResearch({ args: { matterId: " ", query: "Q" }, config: {}, api })).toEqual({
+      ok: false,
+      error: "matterId is required",
+    });
+    expect(startAdaResearch({ args: { matterId: "m", query: " " }, config: {}, api })).toEqual({
+      ok: false,
+      error: "query is required",
+    });
   });
 });
