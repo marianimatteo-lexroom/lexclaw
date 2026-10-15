@@ -1,6 +1,7 @@
 import { citedSources, toWhatsAppText, type CitedSource } from "./lexroom-citations.js";
 import {
   createGuard,
+  DEFAULT_ANSWER_TIMEOUT_MS,
   DEFAULT_IDLE_TIMEOUT_MS,
   DEFAULT_TOTAL_TIMEOUT_MS,
   LexroomTimeoutError,
@@ -22,7 +23,6 @@ const MAX_DRAFT_CHARS = 100_000;
 const FAILED_STATUSES = new Set(["FAILED", "ERROR", "CANCELED", "CANCELLED"]);
 const AUTH_PROBE_PATH = "/v1/credits";
 const AUTH_PROBE_TIMEOUT_MS = 15_000;
-const PERMISSION_DENIED = "You do not have permission to perform this action.";
 
 export type LexroomConfig = {
   accessToken?: string;
@@ -31,6 +31,8 @@ export type LexroomConfig = {
   timeoutMs?: number;
   /** Longest silence tolerated before the call is abandoned. Default 45000. */
   idleTimeoutMs?: number;
+  /** Research only: time allowed until the first answer text appears. Default 60000. */
+  answerTimeoutMs?: number;
   /** Modules searched when the caller names none. Defaults to ["Civile"]. */
   researchModules?: readonly string[];
 };
@@ -80,7 +82,7 @@ export type LexroomLogFields = Record<string, string | number | boolean>;
 export type LexroomLog = (event: string, fields: LexroomLogFields) => void;
 type Trace = (event: string, fields?: LexroomLogFields) => void;
 
-type StreamStats = { lines: number; status?: string };
+type StreamStats = { lines: number; status?: string; answered?: boolean };
 
 function createTrace(log: LexroomLog | undefined): Trace {
   return (event, fields = {}) => {
@@ -118,12 +120,14 @@ function baseUrl(config: LexroomConfig): string {
   return value;
 }
 
+function positiveMs(value: number | undefined, fallback: number): number {
+  return value && value >= MIN_TIMEOUT_MS ? value : fallback;
+}
+
 function limits(config: LexroomConfig): { idleMs: number; totalMs: number } {
-  const valid = (value: number | undefined, fallback: number) =>
-    value && value >= MIN_TIMEOUT_MS ? value : fallback;
   return {
-    idleMs: valid(config.idleTimeoutMs, DEFAULT_IDLE_TIMEOUT_MS),
-    totalMs: valid(config.timeoutMs, DEFAULT_TOTAL_TIMEOUT_MS),
+    idleMs: positiveMs(config.idleTimeoutMs, DEFAULT_IDLE_TIMEOUT_MS),
+    totalMs: positiveMs(config.timeoutMs, DEFAULT_TOTAL_TIMEOUT_MS),
   };
 }
 
@@ -177,100 +181,70 @@ function safeDetail(detail: string, accessToken: string): string {
     .slice(0, 160);
 }
 
-export type LexroomAuthVerdict = "valid" | "rejected" | "unknown";
+export type LexroomAuthVerdict = "accepted" | "rejected" | "unknown";
 
 /**
  * One cheap authenticated GET the web app also makes, to learn whether Lexroom still
- * accepts the bearer. Costs no research credits.
+ * accepts the bearer. Costs no research credits. Only a 401 means the bearer is
+ * rejected: a 403 comes from an authenticated user without some permission, and any other
+ * status or a network failure proves nothing, so none of those is a reason to discard it.
  */
-async function probeAuth(
-  fetchImpl: FetchLike,
-  config: LexroomConfig,
-  guard: LexroomGuard,
-  trace: Trace,
-  step: string,
-): Promise<LexroomAuthVerdict> {
-  let verdict: LexroomAuthVerdict = "unknown";
-  let status = 0;
-  try {
-    guard.touch();
-    const response = await guard.race(
-      fetchImpl(`${baseUrl(config)}${AUTH_PROBE_PATH}`, {
-        method: "GET",
-        headers: headers(token(config), JSON_ACCEPT),
-        signal: guard.signal,
-      }),
-    );
-    status = response.status;
-    void response.body?.cancel().catch(() => undefined);
-    if (response.ok) {
-      verdict = "valid";
-    } else if (status === 401 || status === 403) {
-      verdict = "rejected";
-    }
-  } catch (error) {
-    if (guard.timedOut() || (error instanceof Error && error.name === "AbortError")) {
-      throw error;
-    }
-  }
-  trace(`${step}.auth_probe`, { verdict, status, ms: guard.elapsedMs() });
-  return verdict;
-}
-
-/** Asks Lexroom, with the same base URL and headers as research, whether the bearer works. */
 export async function checkLexroomAuth(input: {
   config: LexroomConfig;
   fetchImpl?: FetchLike;
   signal?: AbortSignal;
   log?: LexroomLog;
 }): Promise<LexroomAuthVerdict> {
+  const trace = createTrace(input.log);
   const guard = createGuard({
     idleMs: AUTH_PROBE_TIMEOUT_MS,
     totalMs: AUTH_PROBE_TIMEOUT_MS,
     signal: input.signal,
   });
+  let verdict: LexroomAuthVerdict = "unknown";
+  let status = 0;
   try {
-    return await probeAuth(
-      input.fetchImpl ?? fetch,
-      input.config,
-      guard,
-      createTrace(input.log),
-      "status",
+    const response = await guard.race(
+      (input.fetchImpl ?? fetch)(`${baseUrl(input.config)}${AUTH_PROBE_PATH}`, {
+        method: "GET",
+        headers: headers(token(input.config), JSON_ACCEPT),
+        signal: guard.signal,
+      }),
     );
+    status = response.status;
+    void response.body?.cancel().catch(() => undefined);
+    verdict = response.ok ? "accepted" : status === 401 ? "rejected" : "unknown";
   } catch {
-    return "unknown";
+    verdict = "unknown";
   } finally {
     guard.dispose();
   }
+  trace("status.auth_probe", { verdict, status, ms: guard.elapsedMs() });
+  return verdict;
 }
 
-function deniedMessage(detail: string): string {
+function deniedMessage(detail: string, modules: readonly string[] | undefined): string {
   const text = detail.toLowerCase();
-  const kept = "Il collegamento Lexroom è valido, non serve ricollegare.";
-  if (/credit|quota|plan|piano|subscription|abbonament/u.test(text)) {
-    return `Lexroom ha rifiutato la richiesta: crediti o piano non sufficienti per questa funzione. ${kept}`;
-  }
+  const shown = detail ? ` Dettaglio Lexroom: "${detail}".` : "";
+  const kept = "Il collegamento Lexroom resta valido, non serve ricollegare.";
   if (/modul/u.test(text)) {
-    return `Lexroom ha rifiutato la richiesta: il modulo richiesto non è abilitato per questo account. ${kept}`;
+    const which = modules?.length ? ` (${modules.join(", ")})` : "";
+    return `Lexroom ha rifiutato la richiesta: l'utente non è autorizzato a usare i moduli richiesti${which}. Prova con altri moduli o verifica quelli abilitati sul piano Lexroom.${shown} ${kept}`;
   }
-  const shown = detail && detail !== PERMISSION_DENIED ? `: ${detail}` : "";
-  return `Lexroom ha rifiutato la richiesta (403${shown}): l'account è collegato ma non ha i permessi per questa funzione, ad esempio modulo o piano. ${kept}`;
+  if (/credit|quota|plan|piano|subscription|abbonament/u.test(text)) {
+    return `Lexroom ha rifiutato la richiesta: crediti o piano non sufficienti per questa funzione.${shown} ${kept}`;
+  }
+  return `Lexroom ha negato la richiesta (403): l'account non ha i permessi per questa funzione.${shown} ${kept}`;
 }
 
 /**
- * Turns an error response into the failure to report. A 401 is a rejected bearer. A 403
- * reads the same whether the bearer is bad or the account lacks a module or plan, so it
- * is settled by a live authenticated call: only a rejected probe means "reconnect".
+ * Turns an error response into the failure to report. Only a 401 means the bearer is
+ * rejected. A 403 is an authenticated user lacking a permission, such as a research
+ * module: it is explained with Lexroom's own detail and never touches the saved sign-in.
  */
 async function errorMessage(
   response: Response,
-  call: {
-    guard: LexroomGuard;
-    trace: Trace;
-    step: string;
-    fetchImpl: FetchLike;
-    config: LexroomConfig;
-  },
+  call: { guard: LexroomGuard; config: LexroomConfig; modules?: readonly string[] },
 ): Promise<LexroomError> {
   const { guard, config } = call;
   const status = response.status;
@@ -294,27 +268,15 @@ async function errorMessage(
       http,
     );
   }
-  const rejected = new LexroomError(
-    "Lexroom rejected the saved sign-in. Call vera_lexroom_connect and send that link.",
-    "not_connected",
-    http,
-  );
   if (status === 401) {
-    return rejected;
-  }
-  if (status === 403) {
-    const verdict = await probeAuth(call.fetchImpl, config, guard, call.trace, call.step);
-    if (verdict === "rejected") {
-      return rejected;
-    }
-    if (verdict === "valid") {
-      return new LexroomError(deniedMessage(detail), undefined, http);
-    }
     return new LexroomError(
-      "Lexroom ha risposto 403 e non riesco a verificare l'accesso ora. Riprova tra poco.",
-      undefined,
+      "Lexroom rejected the saved sign-in. Call vera_lexroom_connect and send that link.",
+      "not_connected",
       http,
     );
+  }
+  if (status === 403) {
+    return new LexroomError(deniedMessage(detail, call.modules), undefined, http);
   }
   return new LexroomError(
     detail ? `Lexroom returned ${status}: ${detail}` : `Lexroom returned ${status}`,
@@ -347,7 +309,13 @@ async function request(
   url: string,
   config: LexroomConfig,
   init: { method: "GET" } | { method: "POST"; body: unknown },
-  call: { guard: LexroomGuard; trace: Trace; step: string; accept: string },
+  call: {
+    guard: LexroomGuard;
+    trace: Trace;
+    step: string;
+    accept: string;
+    modules?: readonly string[];
+  },
 ): Promise<Response> {
   const { guard, trace, step } = call;
   guard.touch();
@@ -366,7 +334,7 @@ async function request(
     headersMs: guard.elapsedMs(),
   });
   if (!response.ok) {
-    throw await errorMessage(response, { guard, trace, step, fetchImpl, config });
+    throw await errorMessage(response, { guard, config, modules: call.modules });
   }
   guard.touch();
   return response;
@@ -433,6 +401,11 @@ async function readFinalSnapshot(
       const status = snapshot.status?.toUpperCase();
       if (stats.lines === 1) {
         trace(`${step}.first_line`, { ms: guard.elapsedMs(), status: status ?? "" });
+      }
+      if (!stats.answered && answerText(snapshot.answer).trim()) {
+        stats.answered = true;
+        guard.endAnswerWait();
+        trace(`${step}.first_answer`, { ms: guard.elapsedMs(), lines: stats.lines });
       }
       if (status !== stats.status || stats.lines % PROGRESS_LOG_EVERY_LINES === 0) {
         trace(`${step}.progress`, {
@@ -535,7 +508,8 @@ export async function runResearch(input: {
   const trace = createTrace(input.log);
   const step = "research";
   const stats: StreamStats = { lines: 0 };
-  const guard = createGuard({ ...limits(input.config), signal: input.signal });
+  const answerMs = positiveMs(input.config.answerTimeoutMs, DEFAULT_ANSWER_TIMEOUT_MS);
+  const guard = createGuard({ ...limits(input.config), answerMs, signal: input.signal });
   try {
     const modules = modulesFor(input.modules, input.config);
     const library = libraryScope(input.libraryDocumentIds);
@@ -544,6 +518,7 @@ export async function runResearch(input: {
       queryLength: query.length,
       libraryDocuments: library.library_documents?.[0]?.document_ids.length ?? 0,
       ...limits(input.config),
+      answerMs,
     });
     const response = await request(
       fetchImpl,
@@ -563,7 +538,7 @@ export async function runResearch(input: {
             : {}),
         },
       },
-      { guard, trace, step, accept: STREAM_ACCEPT },
+      { guard, trace, step, accept: STREAM_ACCEPT, modules },
     );
     const snapshot = await readFinalSnapshot(response, { guard, trace, step, stats });
     const answer = clip(toWhatsAppText(answerText(snapshot.answer)), MAX_ANSWER_CHARS);
@@ -703,7 +678,7 @@ export async function runDraft(input: {
             : {}),
         },
       },
-      { guard, trace, step, accept: STREAM_ACCEPT },
+      { guard, trace, step, accept: STREAM_ACCEPT, modules },
     );
     let snapshot = await readFinalSnapshot(response, { guard, trace, step, stats });
     if (!draftContent(snapshot) && snapshot.id) {

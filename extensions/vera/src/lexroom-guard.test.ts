@@ -42,6 +42,29 @@ describe("createGuard", () => {
     guard.dispose();
   });
 
+  it("stops a stream that stays busy but never reaches an answer, until the answer arrives", async () => {
+    const waiting = createGuard({ idleMs: 45_000, totalMs: 180_000, answerMs: 60_000 });
+    for (let elapsed = 0; elapsed < 55_000; elapsed += 5_000) {
+      await vi.advanceTimersByTimeAsync(5_000);
+      waiting.touch();
+    }
+    expect(waiting.timedOut()).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(waiting.timedOut()).toBe("answer");
+    waiting.dispose();
+
+    const answered = createGuard({ idleMs: 45_000, totalMs: 180_000, answerMs: 60_000 });
+    await vi.advanceTimersByTimeAsync(40_000);
+    answered.touch();
+    answered.endAnswerWait();
+    for (let elapsed = 0; elapsed < 80_000; elapsed += 10_000) {
+      await vi.advanceTimersByTimeAsync(10_000);
+      answered.touch();
+    }
+    expect(answered.timedOut()).toBeUndefined();
+    answered.dispose();
+  });
+
   it("reports cancellation as an abort, not a timeout", async () => {
     const caller = new AbortController();
     const guard = createGuard({ idleMs: 45_000, totalMs: 180_000, signal: caller.signal });

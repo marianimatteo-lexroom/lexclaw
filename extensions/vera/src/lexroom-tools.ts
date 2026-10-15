@@ -1,6 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { LexroomAccountStore } from "./lexroom-account-contract.js";
 import { openVeraLexroomAccountFromApi } from "./lexroom-account.js";
+import { lexroomLogger } from "./lexroom-log.js";
 import {
   accessTokenExpiresAtMs,
   isLexroomAccessLive,
@@ -15,7 +16,6 @@ import {
   runResearch,
   type CitedSource,
   type LexroomConfig,
-  type LexroomLog,
 } from "./lexroom-client.js";
 import {
   readVeraWhatsAppTarget,
@@ -26,25 +26,10 @@ import type { DeadlineItem } from "./memory-contract.js";
 
 type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger">;
 
-/** Writes Lexroom call diagnostics to the gateway log as `vera lexroom <event> key=value ...`. */
-export function lexroomLogger(logger: Pick<StoreApi["logger"], "info" | "warn">): LexroomLog {
-  return (event, fields) => {
-    const pairs = Object.entries(fields)
-      .map(([key, value]) => `${key}=${value}`)
-      .join(" ");
-    const line = `vera lexroom ${event}${pairs ? ` ${pairs}` : ""}`;
-    if (/\.(failed|timeout)$/u.test(event)) {
-      logger.warn(line);
-    } else {
-      logger.info(line);
-    }
-  };
-}
-
 type ToolFailure = {
   ok: false;
   error: string;
-  reason?: "not_connected" | "unverified";
+  reason?: "not_connected";
 };
 
 function isStoreFailure(store: LexroomAccountStore | ToolFailure): store is ToolFailure {
@@ -152,13 +137,11 @@ async function dropRejectedAccount(params: {
   }
 }
 
-const CONNECT_UNVERIFIED =
-  "Non riesco a verificare ora il collegamento con Lexroom (Lexroom non risponde). Riprova tra poco, oppure richiama vera_lexroom_connect con force true per ottenere subito un nuovo link.";
-
 /**
- * Connection status and link issuer. A saved account counts as connected only after a live
- * authenticated Lexroom call accepts it; a rejected one is cleared and replaced by a new
- * link. `force` drops whatever is saved and always issues a link.
+ * Connection status and link issuer. A saved account is checked with a live authenticated
+ * Lexroom call; only a 401 proves it dead, so only then is it cleared and replaced by a new
+ * link. A 403, an error or silence from Lexroom leaves the sign-in in place. `force` drops
+ * whatever is saved and always issues a link.
  */
 export async function executeVeraLexroomConnect(
   config: LexroomConnectConfig,
@@ -194,9 +177,6 @@ export async function executeVeraLexroomConnect(
         signal: options.signal,
         log,
       });
-      if (verdict === "unknown") {
-        return { ok: false, reason: "unverified", error: CONNECT_UNVERIFIED };
-      }
       if (verdict === "rejected") {
         await clearAccountIfStill(store, account.accessToken, api, "status_check_rejected");
         account = null;
@@ -253,6 +233,7 @@ export async function resolveLexroomConfig(params: {
             baseUrl: params.config.baseUrl,
             timeoutMs: params.config.timeoutMs,
             idleTimeoutMs: params.config.idleTimeoutMs,
+            answerTimeoutMs: params.config.answerTimeoutMs,
             researchModules: params.config.researchModules,
           },
         };
@@ -288,6 +269,7 @@ export async function resolveLexroomConfig(params: {
         baseUrl: params.config.baseUrl,
         timeoutMs: params.config.timeoutMs,
         idleTimeoutMs: params.config.idleTimeoutMs,
+        answerTimeoutMs: params.config.answerTimeoutMs,
         researchModules: params.config.researchModules,
       },
     };

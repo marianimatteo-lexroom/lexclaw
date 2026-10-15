@@ -221,34 +221,35 @@ describe("executeVeraLexroomConnect", () => {
     expect(server.calls[0]?.headers.get("Accept-Encoding")).toBe("identity");
   });
 
-  it.each([401, 403])(
-    "clears a bearer Lexroom rejects with %i and issues a new link",
-    async (status) => {
-      const { store } = useLiveStore(account());
-      const server = lexroom({ "/v1/credits": () => json(DENIED, status) });
-      const result = await executeVeraLexroomConnect(CONNECT_CONFIG, api, NOW, {
-        fetchImpl: server.fetchImpl,
-      });
-      expect(result).toMatchObject({ ok: true, connected: false });
-      expect(store.clearAccount).toHaveBeenCalledTimes(1);
-      expect(store.replacePending).toHaveBeenCalledTimes(1);
-    },
-  );
-
-  it("neither claims connected nor clears when Lexroom cannot be reached", async () => {
-    const store = useStore(async () => account());
-    const server = lexroom({ "/v1/credits": () => json({}, 503) });
+  it("clears a bearer Lexroom rejects with 401 and issues a new link", async () => {
+    const { store } = useLiveStore(account());
+    const server = lexroom({ "/v1/credits": () => json({ detail: "expired" }, 401) });
     const result = await executeVeraLexroomConnect(CONNECT_CONFIG, api, NOW, {
       fetchImpl: server.fetchImpl,
     });
-    expect(result).toMatchObject({
-      ok: false,
-      reason: "unverified",
-      error: expect.stringContaining("force true"),
-    });
-    expect(store.clearAccount).not.toHaveBeenCalled();
-    expect(store.replacePending).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ ok: true, connected: false });
+    expect(store.clearAccount).toHaveBeenCalledTimes(1);
+    expect(store.replacePending).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ["403", () => json(DENIED, 403)],
+    ["503", () => json({}, 503)],
+    ["404", () => json({}, 404)],
+    ["a network failure", () => Promise.reject(new Error("socket hang up"))],
+  ])(
+    "keeps the sign-in and reports connected when the live check gets %s",
+    async (_label, respond) => {
+      const { store } = useLiveStore(account());
+      const server = lexroom({ "/v1/credits": respond });
+      const result = await executeVeraLexroomConnect(CONNECT_CONFIG, api, NOW, {
+        fetchImpl: server.fetchImpl,
+      });
+      expect(result).toEqual({ ok: true, connected: true, email: "lawyer@example.com" });
+      expect(store.clearAccount).not.toHaveBeenCalled();
+      expect(store.replacePending).not.toHaveBeenCalled();
+    },
+  );
 
   it("force drops a saved sign-in without asking Lexroom and always issues a link", async () => {
     const { store } = useLiveStore(account());
@@ -393,11 +394,11 @@ describe("a rejected Lexroom sign-in", () => {
     account({ accessExpiresAtMs: Date.now() + 3_600_000, ...overrides });
   const research = { matterId: "m", query: "Termini" };
 
-  it("is cleared, so status reports not connected and a new link is issued", async () => {
+  it("is cleared by a 401, so status reports not connected and a new link is issued", async () => {
     const { store } = useLiveStore(liveAccount());
     const server = lexroom({
-      "/v1/ask_me_anything": () => json(DENIED, 403),
-      "/v1/credits": () => json(DENIED, 403),
+      "/v1/ask_me_anything": () => json({ detail: "expired" }, 401),
+      "/v1/credits": () => json({ detail: "expired" }, 401),
     });
     const outcome = await executeVeraResearch({
       args: research,
@@ -413,7 +414,7 @@ describe("a rejected Lexroom sign-in", () => {
     });
     expect(status).toMatchObject({ ok: true, connected: false });
     expect(store.replacePending).toHaveBeenCalledTimes(1);
-    expect(server.calls.map((call) => call.path)).toEqual(["/v1/ask_me_anything", "/v1/credits"]);
+    expect(server.calls.map((call) => call.path)).toEqual(["/v1/ask_me_anything"]);
   });
 
   it("is cleared by a rejected drafting call too", async () => {
@@ -454,24 +455,31 @@ describe("a rejected Lexroom sign-in", () => {
     expect(store.clearAccount).not.toHaveBeenCalled();
   });
 
-  it("is not cleared for a 403 that the live check shows is not about the sign-in", async () => {
+  it("survives a 403: kept, still connected on the next status check, detail shown", async () => {
     const { store } = useLiveStore(liveAccount());
     const server = lexroom({
-      "/v1/ask_me_anything": () => json(DENIED, 403),
-      "/v1/credits": () => json({ credits: 0 }),
+      "/v1/ask_me_anything": () =>
+        json({ detail: "User not authorized to search on the specified modules" }, 403),
+      "/v1/credits": () => json({ credits: 3 }),
     });
     const outcome = await executeVeraResearch({
-      args: research,
+      args: { ...research, modules: ["Civile"] },
       config: {},
       api,
       fetchImpl: server.fetchImpl,
     });
     expect(outcome).toMatchObject({
       ok: false,
-      error: expect.stringContaining("non serve ricollegare"),
+      error: expect.stringContaining("User not authorized to search on the specified modules"),
     });
     expect(outcome).not.toHaveProperty("reason");
     expect(store.clearAccount).not.toHaveBeenCalled();
+
+    const status = await executeVeraLexroomConnect(CONNECT_CONFIG, api, NOW, {
+      fetchImpl: server.fetchImpl,
+    });
+    expect(status).toEqual({ ok: true, connected: true, email: "lawyer@example.com" });
+    expect(store.replacePending).not.toHaveBeenCalled();
   });
 
   it("logs the failed call's HTTP status and sanitized detail, never the token", async () => {
@@ -479,7 +487,6 @@ describe("a rejected Lexroom sign-in", () => {
     const server = lexroom({
       "/v1/ask_me_anything": () =>
         json({ detail: "Module Civile denied for test-account-token-0123456789abcdef" }, 403),
-      "/v1/credits": () => json({ credits: 1 }),
     });
     await executeVeraResearch({ args: research, config: {}, api, fetchImpl: server.fetchImpl });
     const warned = logger.warn.mock.calls.map((call) => String(call[0])).join("\n");

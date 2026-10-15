@@ -25,6 +25,10 @@
         "type": "integer",
         "minimum": 1000
       },
+      "answerTimeoutMs": {
+        "type": "integer",
+        "minimum": 1000
+      },
       "researchModules": {
         "type": "array",
         "minItems": 1,

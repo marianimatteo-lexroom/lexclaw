@@ -13,11 +13,9 @@ Follow this skill before research or draft when Lexroom is not connected, when t
 
 Call `vera_lexroom_connect`. Do not invent a URL. Do not ask for the Lexroom password in WhatsApp.
 
-`vera_lexroom_connect` checks the saved sign-in with a live Lexroom call, so `connected: true` means Lexroom accepts it right now. When Lexroom rejected it, the tool has already removed it and returns a new `ask`. If the lawyer says a link did not help or research keeps reporting a rejected sign-in, call it again with `force: true` to discard the saved sign-in and get a fresh link.
+`vera_lexroom_connect` checks the saved sign-in with a live Lexroom call, so `connected: true` means Lexroom has not rejected it. Only a 401 from Lexroom removes a saved sign-in; the tool then returns a new `ask`. If the lawyer says a link did not help or research keeps reporting a rejected sign-in, call it again with `force: true` to discard the saved sign-in and get a fresh link.
 
-When the result has `reason: "unverified"`, Lexroom did not answer the check. Tell the lawyer briefly that Lexroom is not responding and to try again in a few minutes. Do not send a link.
-
-When `vera_research` or `vera_draft` returns an error without `reason` that says the account lacks a module, plan or credits (or says "non serve ricollegare"), the sign-in is fine. Relay that message in the lawyer's language and do not send a connect link.
+When `vera_research` or `vera_draft` returns an error without `reason` (for example that the user is not authorized for a research module, or lacks a plan or credits, and "non serve ricollegare"), the sign-in is fine. Relay that message in the lawyer's language, with Lexroom's detail, and do not send a connect link.
 
 When the result is any other `ok: false`, the entire reply is exactly `NO_REPLY`. The tool error names the missing connect settings. Do not text that error to the lawyer.
 
