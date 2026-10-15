@@ -390,6 +390,7 @@ export async function handleAdaLexroomConnect(
     email,
     password,
     baseUrl: config.settings.baseUrl,
+    log,
   });
   if (!result.ok) {
     if (result.reason === "invalid_credentials") {

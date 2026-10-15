@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createGuard, LEXROOM_TIMEOUT_MESSAGE, LexroomTimeoutError } from "./lexroom-guard.js";
+import { createGuard, LexroomTimeoutError } from "./lexroom-guard.js";
 
 function never(): Promise<never> {
   return new Promise<never>((_resolve, _reject) => {
@@ -26,7 +26,9 @@ describe("createGuard", () => {
     expect(guard.signal.aborted).toBe(true);
     const error = await outcome;
     expect(error).toBeInstanceOf(LexroomTimeoutError);
-    expect((error as Error).message).toBe(LEXROOM_TIMEOUT_MESSAGE);
+    expect((error as Error).message).toBe(
+      "Lexroom did not respond within 45s; the request was abandoned.",
+    );
     guard.dispose();
   });
 

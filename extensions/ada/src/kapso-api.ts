@@ -19,7 +19,7 @@ export type KapsoEndpoint =
   | { ok: false; reason: "invalid"; error: string };
 
 export type KapsoPostResult =
-  | { ok: true; response: Response }
+  | { ok: true; response: Response; json?: unknown }
   | { ok: false; kind: "http"; status: number }
   | { ok: false; kind: "timeout" | "network" };
 
@@ -62,11 +62,16 @@ export function kapsoMessagesEndpoint(account: KapsoAccount): KapsoEndpoint {
   };
 }
 
-/** POST one JSON body to Kapso with a hard timeout. Never throws; the API key never appears in a result. */
+/**
+ * POST one JSON body to Kapso with a hard timeout. Never throws; the API key never appears in a
+ * result. The limit covers the response body too: with `readJson` the body is read inside it,
+ * because the limit stops applying once this returns.
+ */
 export async function postKapsoMessage(params: {
   endpoint: Extract<KapsoEndpoint, { ok: true }>;
   body: unknown;
   timeoutMs: number;
+  readJson?: boolean;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
 }): Promise<KapsoPostResult> {
@@ -74,6 +79,9 @@ export async function postKapsoMessage(params: {
   const timeout = setTimeout(() => controller.abort(), params.timeoutMs);
   timeout.unref?.();
   const onAbort = () => controller.abort();
+  if (params.signal?.aborted) {
+    controller.abort();
+  }
   params.signal?.addEventListener("abort", onAbort, { once: true });
   try {
     const response = await (params.fetchImpl ?? fetch)(params.endpoint.url, {
@@ -88,7 +96,11 @@ export async function postKapsoMessage(params: {
     if (!response.ok) {
       return { ok: false, kind: "http", status: response.status };
     }
-    return { ok: true, response };
+    if (!params.readJson) {
+      return { ok: true, response };
+    }
+    const json: unknown = await response.json().catch(() => undefined);
+    return { ok: true, response, json };
   } catch {
     const aborted = controller.signal.aborted || params.signal?.aborted === true;
     return { ok: false, kind: aborted ? "timeout" : "network" };

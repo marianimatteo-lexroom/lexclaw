@@ -1,5 +1,13 @@
-import { asciiJson, DEFAULT_LEXROOM_BASE_URL, LEXROOM_CLIENT_TYPE } from "./lexroom-client.js";
+import {
+  asciiJson,
+  DEFAULT_LEXROOM_BASE_URL,
+  LEXROOM_CLIENT_TYPE,
+  type LexroomLog,
+} from "./lexroom-client.js";
 import { accessTokenExpiresAtMs } from "./lexroom-connect.js";
+import { LexroomTimeoutError } from "./lexroom-guard.js";
+import { lexroomTimeoutMs, timeoutFailure, type LexroomTimeoutFailure } from "./lexroom-timeout.js";
+import { createTrace, exchange, newCorrelationId, readJsonGuarded } from "./lexroom-transport.js";
 
 type FetchLike = typeof fetch;
 
@@ -15,7 +23,8 @@ export type LexroomLoginSuccess = {
 export type LexroomLoginFailure =
   | { ok: false; reason: "invalid_credentials"; error: string }
   | { ok: false; reason: "mfa_required"; error: string }
-  | { ok: false; reason: "lexroom_error"; error: string };
+  | { ok: false; reason: "lexroom_error"; error: string }
+  | LexroomTimeoutFailure;
 
 export type LexroomLoginResult = LexroomLoginSuccess | LexroomLoginFailure;
 
@@ -34,14 +43,6 @@ function readString(record: Record<string, unknown>, keys: string[]): string {
     }
   }
   return "";
-}
-
-async function readJson(response: Response): Promise<unknown> {
-  try {
-    return await response.json();
-  } catch {
-    return null;
-  }
 }
 
 function detailCode(body: unknown): { detail: string; code: string } {
@@ -65,8 +66,11 @@ export async function loginLexroomAccount(params: {
   email: string;
   password: string;
   baseUrl?: string;
+  /** Hard limit on one attempt, connect to last body byte. Defaults to the Lexroom request limit. */
+  timeoutMs?: number;
   signal?: AbortSignal;
   fetchImpl?: FetchLike;
+  log?: LexroomLog;
 }): Promise<LexroomLoginResult> {
   const email = params.email.trim();
   const password = params.password;
@@ -77,24 +81,42 @@ export async function loginLexroomAccount(params: {
       error: "Email and password are required.",
     };
   }
-  let response: Response;
+  const trace = createTrace(params.log, newCorrelationId());
+  let sent: { status: number; ok: boolean; value: unknown };
   try {
-    response = await (params.fetchImpl ?? fetch)(`${apiBaseUrl(params.baseUrl)}/v1/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Client-Type": LEXROOM_CLIENT_TYPE },
-      body: asciiJson({ email, password }),
+    sent = await exchange({
+      fetchImpl: params.fetchImpl ?? fetch,
+      url: `${apiBaseUrl(params.baseUrl)}/v1/login`,
+      init: {
+        method: "POST",
+        headers: new Headers({
+          "Content-Type": "application/json",
+          "X-Client-Type": LEXROOM_CLIENT_TYPE,
+        }),
+        body: asciiJson({ email, password }),
+      },
+      timeoutMs: params.timeoutMs ?? lexroomTimeoutMs(),
       signal: params.signal,
+      trace,
+      step: "login",
+      // A login can be repeated safely, so a dropped connection or a silent server gets one more try.
+      retry: "any",
+      retryTimeout: true,
+      read: (response, guard) => readJsonGuarded(response, guard),
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof LexroomTimeoutError) {
+      return timeoutFailure(error.limitMs);
+    }
     return { ok: false, reason: "lexroom_error", error: "Ada could not reach Lexroom." };
   }
-  const json = await readJson(response);
-  if (!response.ok) {
+  const json = sent.value;
+  if (!sent.ok) {
     const { detail, code } = detailCode(json);
     if (detail.startsWith("mfa_") || code.startsWith("mfa_")) {
       return { ok: false, reason: "mfa_required", error: MFA_ERROR };
     }
-    if (response.status === 401 || code === "authentication_failed") {
+    if (sent.status === 401 || code === "authentication_failed") {
       return {
         ok: false,
         reason: "invalid_credentials",
@@ -105,8 +127,8 @@ export async function loginLexroomAccount(params: {
       ok: false,
       reason: "lexroom_error",
       error: detail
-        ? `Lexroom returned ${response.status}: ${detail.slice(0, 160)}`
-        : `Lexroom returned ${response.status}`,
+        ? `Lexroom returned ${sent.status}: ${detail.slice(0, 160)}`
+        : `Lexroom returned ${sent.status}`,
     };
   }
   if (!json || typeof json !== "object") {

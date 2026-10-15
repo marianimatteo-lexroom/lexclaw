@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { formatSource } from "./lexroom-citations.js";
 import { runDraft, runResearch } from "./lexroom-client.js";
 import { FALLBACK_MODULES } from "./lexroom-modules.js";
@@ -678,5 +678,229 @@ describe("runDraft", () => {
           : streamResponse(line({ id: "d", status: "DONE", draft: null })),
     });
     expect(result).toEqual({ ok: false, error: "Lexroom finished without producing a draft." });
+  });
+});
+
+describe("timeouts, retries and logging", () => {
+  const LIMIT = 1000;
+  const timedOut = (limit: string) => {
+    const message = `Lexroom did not respond within ${limit}; the request was abandoned.`;
+    return { ok: false, reason: "timeout", message, error: message };
+  };
+  const never = () =>
+    new Promise<Response>(() => {
+      // Never settles.
+    });
+  const withToken = (accessToken: string) => ({
+    accessToken,
+    baseUrl: "https://api.lexroom.ai",
+    idleTimeoutMs: LIMIT,
+    timeoutMs: 5000,
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it("times out a research endpoint that never responds, aborts it and leaves no timer", async () => {
+    const signals: AbortSignal[] = [];
+    const fetchImpl = lexroomFetch((_input, init) => {
+      signals.push(init?.signal as AbortSignal);
+      return never();
+    });
+    const pending = runResearch({
+      config: withToken("t-hang"),
+      matterId: "m",
+      query: "Q",
+      fetchImpl,
+    });
+    await vi.advanceTimersByTimeAsync(LIMIT);
+    await expect(pending).resolves.toEqual(timedOut("1s"));
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("times out a research stream that goes silent after headers", async () => {
+    const fetchImpl = lexroomFetch(
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull: () =>
+              new Promise<void>(() => {
+                // Never settles.
+              }),
+          }),
+          {
+            status: 200,
+          },
+        ),
+    );
+    const pending = runResearch({
+      config: withToken("t-silent"),
+      matterId: "m",
+      query: "Q",
+      fetchImpl,
+    });
+    await vi.advanceTimersByTimeAsync(LIMIT);
+    await expect(pending).resolves.toEqual(timedOut("1s"));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("answers with a timeout, not the fallback catalog, when the modules call never responds", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(() => never());
+    const pending = runResearch({
+      config: withToken("t-modules-hang"),
+      matterId: "m",
+      query: "Q",
+      fetchImpl,
+    });
+    await vi.advanceTimersByTimeAsync(LIMIT);
+    await expect(pending).resolves.toEqual(timedOut("1s"));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("takes its default limit from ADA_LEXROOM_TIMEOUT_MS, and VERA_LEXROOM_TIMEOUT_MS for compat", async () => {
+    for (const name of ["ADA_LEXROOM_TIMEOUT_MS", "VERA_LEXROOM_TIMEOUT_MS"]) {
+      vi.stubEnv("ADA_LEXROOM_TIMEOUT_MS", "");
+      vi.stubEnv("VERA_LEXROOM_TIMEOUT_MS", "");
+      vi.stubEnv(name, "2000");
+      const pending = runResearch({
+        config: { accessToken: `t-env-${name}`, baseUrl: "https://api.lexroom.ai" },
+        matterId: "m",
+        query: "Q",
+        fetchImpl: lexroomFetch(() => never()),
+      });
+      await vi.advanceTimersByTimeAsync(1999);
+      let settled = false;
+      void pending.then(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toEqual(timedOut("2s"));
+    }
+  });
+
+  it("surfaces a 403 at once: one request, no retry, Lexroom's own words in the message", async () => {
+    const detail = "You do not have permission to perform this action.";
+    const fetchImpl = lexroomFetch(() => jsonResponse({ detail }, 403));
+    const result = await runResearch({
+      config: withToken("t-403"),
+      matterId: "m",
+      query: "Q",
+      fetchImpl,
+    });
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining(`"${detail}"`) });
+    expect(result).not.toHaveProperty("reason");
+    expect(
+      fetchImpl.mock.calls.filter(([input]) => requestUrl(input).endsWith("/v1/ask_me_anything")),
+    ).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([400, 404, 500, 503])("never retries a %i", async (status) => {
+    const fetchImpl = lexroomFetch(() => jsonResponse({ detail: "no" }, status));
+    await runResearch({ config: withToken(`t-${status}`), matterId: "m", query: "Q", fetchImpl });
+    expect(
+      fetchImpl.mock.calls.filter(([input]) => requestUrl(input).endsWith("/v1/ask_me_anything")),
+    ).toHaveLength(1);
+  });
+
+  it("retries a research POST once when the connection was never made, and not after a drop", async () => {
+    const refused = Object.assign(new TypeError("fetch failed"), {
+      cause: { code: "ECONNREFUSED" },
+    });
+    let calls = 0;
+    const flaky = lexroomFetch(() => {
+      calls += 1;
+      if (calls === 1) {
+        throw refused;
+      }
+      return streamResponse(line({ id: "r", status: "DONE", answer: "ok" }));
+    });
+    const pending = runResearch({
+      config: withToken("t-refused"),
+      matterId: "m",
+      query: "Q",
+      fetchImpl: flaky,
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(pending).resolves.toMatchObject({ ok: true, answer: "ok" });
+    expect(calls).toBe(2);
+
+    const dropped = lexroomFetch(() => {
+      throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } });
+    });
+    const second = await runResearch({
+      config: withToken("t-reset"),
+      matterId: "m",
+      query: "Q",
+      fetchImpl: dropped,
+    });
+    expect(second).toMatchObject({ ok: false });
+    expect(
+      dropped.mock.calls.filter(([input]) => requestUrl(input).endsWith("/v1/ask_me_anything")),
+    ).toHaveLength(1);
+  });
+
+  it("logs every request with one correlation id, the endpoint and its outcome, and no secret", async () => {
+    const events: Array<{ event: string; fields: Record<string, string | number | boolean> }> = [];
+    const fetchImpl = lexroomFetch(() =>
+      streamResponse(line({ id: "r", status: "DONE", answer: "Segreto del cliente Rossi" })),
+    );
+    await runResearch({
+      config: withToken("t-secret-token-0123456789"),
+      matterId: "m",
+      query: "una domanda riservata sul cliente Rossi",
+      fetchImpl,
+      log: (event, fields) => events.push({ event, fields }),
+    });
+    const names = events.map((entry) => entry.event);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "modules.response",
+        "modules.done",
+        "research.start",
+        "research.response",
+        "research.done",
+      ]),
+    );
+    expect(new Set(events.map((entry) => entry.fields.cid)).size).toBe(1);
+    expect(events.find((entry) => entry.event === "research.response")?.fields).toMatchObject({
+      endpoint: "POST /v1/ask_me_anything",
+      status: 200,
+      attempt: 1,
+      ms: expect.any(Number),
+    });
+    expect(events.find((entry) => entry.event === "modules.done")?.fields).toMatchObject({
+      endpoint: "GET /v1/user/modules",
+    });
+    const logged = JSON.stringify(events);
+    expect(logged).not.toContain("t-secret-token");
+    expect(logged).not.toContain("Rossi");
+  });
+
+  it("logs a timed-out request as a timeout with its limit", async () => {
+    const events: Array<{ event: string; fields: Record<string, string | number | boolean> }> = [];
+    const pending = runResearch({
+      config: withToken("t-log-timeout"),
+      matterId: "m",
+      query: "Q",
+      fetchImpl: lexroomFetch(() => never()),
+      log: (event, fields) => events.push({ event, fields }),
+    });
+    await vi.advanceTimersByTimeAsync(LIMIT);
+    await pending;
+    expect(events.at(-1)).toMatchObject({
+      event: "research.timeout",
+      fields: { kind: "idle", limitMs: LIMIT },
+    });
   });
 });

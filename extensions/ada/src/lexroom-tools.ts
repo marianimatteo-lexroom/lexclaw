@@ -12,6 +12,7 @@ import {
   runResearch,
   type CitedSource,
   type LexroomConfig,
+  type LexroomFailure,
 } from "./lexroom-client.js";
 import {
   accessTokenExpiresAtMs,
@@ -21,6 +22,7 @@ import {
   type LexroomConnectConfig,
   type LexroomConnectResult,
 } from "./lexroom-connect.js";
+import { startResearchJob } from "./lexroom-jobs.js";
 import { lexroomLogger } from "./lexroom-log.js";
 import {
   clearAccountIfStill,
@@ -29,6 +31,11 @@ import {
   renewLexroomAccount,
   type RenewFailure,
 } from "./lexroom-session.js";
+import {
+  defaultTotalTimeoutMs,
+  lexroomTimeoutMs,
+  MIN_LEXROOM_TIMEOUT_MS,
+} from "./lexroom-timeout.js";
 import type { DeadlineItem } from "./memory-contract.js";
 
 type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger">;
@@ -114,7 +121,17 @@ export async function sendLexroomConnectedNotice(params: {
   return { ok: true };
 }
 
-type Failure = { ok: false; error: string; reason?: "not_connected" };
+type Failure = LexroomFailure;
+
+/** The tool result for a renewal that did not produce a usable token. */
+function renewalFailure(failure: RenewFailure): Failure {
+  if (failure.reason === "timeout") {
+    return { ok: false, reason: "timeout", message: failure.error, error: failure.error };
+  }
+  return needsReconnect(failure)
+    ? { ok: false, reason: "not_connected", error: failure.error }
+    : { ok: false, error: failure.error };
+}
 
 /**
  * Runs a Lexroom call with the saved account's token. When Lexroom answers 401, the token is
@@ -155,13 +172,10 @@ async function runWithRecovery<T extends { ok: boolean; reason?: string }>(param
       why: "rejected",
     });
     if (!renewed.ok) {
-      if (renewed.reason === "unavailable") {
-        return { ok: false, error: renewed.error };
-      }
-      if (renewed.reason !== "invalid_credentials") {
+      if (needsReconnect(renewed) && renewed.reason !== "invalid_credentials") {
         await clearAccountIfStill(store, account.accessToken, log, "lexroom_rejected");
       }
-      return { ok: false, reason: "not_connected", error: renewed.error };
+      return renewalFailure(renewed);
     }
     const second = await params.run({
       ...resolved.config,
@@ -276,8 +290,7 @@ export async function resolveLexroomConfig(params: {
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
 }): Promise<
-  | { ok: true; config: LexroomConfig; email?: string; source: "account" | "config" }
-  | { ok: false; reason?: "not_connected"; error: string }
+  { ok: true; config: LexroomConfig; email?: string; source: "account" | "config" } | LexroomFailure
 > {
   const now = params.now ?? new Date();
   const store = await openStore(params.api);
@@ -294,11 +307,7 @@ export async function resolveLexroomConfig(params: {
           now,
         });
         if (!ensured.ok) {
-          return {
-            ok: false,
-            ...(needsReconnect(ensured) ? { reason: "not_connected" as const } : {}),
-            error: ensured.error,
-          };
+          return renewalFailure(ensured);
         }
         return {
           ok: true,
@@ -429,6 +438,44 @@ export async function executeAdaResearch(params: {
   });
 }
 
+/**
+ * ada_research: checks the arguments, then runs the research as a background job and returns
+ * its handle at once. The job gets its own abort signal, because the tool call's ends when the
+ * tool returns.
+ */
+export function startAdaResearch(params: {
+  args: ResearchArgs;
+  config: LexroomConfig & LexroomConnectConfig;
+  api: StoreApi;
+  fetchImpl?: typeof fetch;
+}) {
+  const matterId = params.args.matterId.trim();
+  if (!matterId) {
+    return { ok: false as const, error: "matterId is required" };
+  }
+  if (!params.args.query.trim()) {
+    return { ok: false as const, error: "query is required" };
+  }
+  const total =
+    params.config.timeoutMs && params.config.timeoutMs >= MIN_LEXROOM_TIMEOUT_MS
+      ? params.config.timeoutMs
+      : defaultTotalTimeoutMs();
+  return startResearchJob({
+    matterId,
+    // The call's own total cap, plus room for the sign-in and module lookups before it.
+    deadlineMs: total + 3 * lexroomTimeoutMs(),
+    log: lexroomLogger(params.api.logger),
+    run: (signal) =>
+      executeAdaResearch({
+        args: params.args,
+        config: params.config,
+        api: params.api,
+        fetchImpl: params.fetchImpl,
+        signal,
+      }),
+  });
+}
+
 /** ada_draft: nothing is resolved or sent until the lawyer has confirmed. */
 export async function executeAdaDraft(params: {
   args: DraftArgs;
@@ -492,7 +539,7 @@ export function buildDeadlineResearchQuery(params: {
 
 export type DeadlineResearchResult =
   | { ok: true; answer: string; sources: CitedSource[]; researchId?: string }
-  | { ok: false; error: string; reason?: "not_connected" };
+  | LexroomFailure;
 
 /**
  * Lexroom research for one tracked item, scoped to its matter. Read-only: it never

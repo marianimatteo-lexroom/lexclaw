@@ -2,13 +2,15 @@ import type { LexroomAccountRecord, LexroomAccountStore } from "./lexroom-accoun
 import type { LexroomLog } from "./lexroom-client.js";
 import { isLexroomAccessLive } from "./lexroom-connect.js";
 import { loginLexroomAccount } from "./lexroom-login.js";
+import { lexroomTimeoutMs, timeoutFailure, withDeadline } from "./lexroom-timeout.js";
 
 /** How long a "needs a one-time code" answer is reused instead of asking Lexroom again. */
 const MFA_RETRY_AFTER_MS = 5 * 60 * 1000;
 
 type SilentLogin =
   | { ok: true; accessToken: string; accessExpiresAtMs: number | null }
-  | { ok: false; reason: "invalid_credentials" | "mfa_required" | "unavailable" };
+  | { ok: false; reason: "invalid_credentials" | "mfa_required" | "unavailable" }
+  | { ok: false; reason: "timeout"; error: string };
 
 /** The same `POST /v1/login` the lexroom-bot client uses, with the saved email and password. */
 async function signInSilently(params: {
@@ -17,6 +19,7 @@ async function signInSilently(params: {
   baseUrl?: string;
   fetchImpl: typeof fetch;
   signal?: AbortSignal;
+  log: LexroomLog;
 }): Promise<SilentLogin> {
   const result = await loginLexroomAccount(params);
   if (result.ok) {
@@ -26,6 +29,9 @@ async function signInSilently(params: {
       accessExpiresAtMs: result.accessExpiresAtMs,
     };
   }
+  if (result.reason === "timeout") {
+    return { ok: false, reason: "timeout", error: result.error };
+  }
   return {
     ok: false,
     reason: result.reason === "lexroom_error" ? "unavailable" : result.reason,
@@ -33,12 +39,12 @@ async function signInSilently(params: {
 }
 
 export type RenewFailure = {
-  reason: "invalid_credentials" | "mfa_required" | "no_password" | "unavailable";
+  reason: "invalid_credentials" | "mfa_required" | "no_password" | "unavailable" | "timeout";
   /** Text for the agent. The first three mean the lawyer must reconnect. */
   error: string;
 };
 
-const FAILURE_TEXT: Record<RenewFailure["reason"], string> = {
+const FAILURE_TEXT: Record<Exclude<RenewFailure["reason"], "timeout">, string> = {
   invalid_credentials:
     "Lexroom no longer accepts the saved email and password. Call ada_lexroom_connect and send that link.",
   mfa_required:
@@ -48,12 +54,16 @@ const FAILURE_TEXT: Record<RenewFailure["reason"], string> = {
     "Ada could not renew the Lexroom sign-in because Lexroom did not answer. Try again shortly.",
 };
 
-export function renewFailure(reason: RenewFailure["reason"]): RenewFailure {
+export function renewFailure(reason: RenewFailure["reason"], timeoutError?: string): RenewFailure {
+  if (reason === "timeout") {
+    return { reason, error: timeoutError ?? timeoutFailure(lexroomTimeoutMs()).error };
+  }
   return { reason, error: FAILURE_TEXT[reason] };
 }
 
+/** Neither a silent Lexroom nor an unreachable one says anything about the saved sign-in. */
 export function needsReconnect(failure: RenewFailure): boolean {
-  return failure.reason !== "unavailable";
+  return failure.reason !== "unavailable" && failure.reason !== "timeout";
 }
 
 type RenewDeps = {
@@ -90,9 +100,9 @@ export async function clearAccountIfStill(
 
 async function renew(account: LexroomAccountRecord, deps: RenewDeps): Promise<RenewResult> {
   const { store, log } = deps;
-  const fail = (reason: RenewFailure["reason"]): RenewResult => ({
+  const fail = (reason: RenewFailure["reason"], timeoutError?: string): RenewResult => ({
     ok: false,
-    ...renewFailure(reason),
+    ...renewFailure(reason, timeoutError),
   });
   if (!account.password) {
     log("relogin.skipped", { why: deps.why, reason: "no_saved_password" });
@@ -111,6 +121,7 @@ async function renew(account: LexroomAccountRecord, deps: RenewDeps): Promise<Re
     baseUrl: deps.baseUrl,
     fetchImpl: deps.fetchImpl ?? fetch,
     signal: deps.signal,
+    log,
   });
   const ms = Date.now() - startedAt;
   if (login.ok) {
@@ -138,7 +149,7 @@ async function renew(account: LexroomAccountRecord, deps: RenewDeps): Promise<Re
     mfaBlockedUntil.set(account.email, deps.now.getTime() + MFA_RETRY_AFTER_MS);
   }
   log("relogin.failed", { why: deps.why, reason: login.reason, ms });
-  return fail(login.reason);
+  return login.reason === "timeout" ? fail("timeout", login.error) : fail(login.reason);
 }
 
 /**
@@ -154,7 +165,16 @@ export function renewLexroomAccount(
   if (pending) {
     return pending;
   }
-  const running = renew(account, deps)
+  // Two login attempts plus the local store writes; past this the renewal is reported, not awaited.
+  const deadlineMs = 2 * lexroomTimeoutMs() + 10_000;
+  const running = withDeadline(
+    renew(account, deps),
+    deadlineMs,
+    (): RenewResult => {
+      deps.log("relogin.failed", { why: deps.why, reason: "deadline", ms: deadlineMs });
+      return { ok: false, ...renewFailure("timeout", timeoutFailure(deadlineMs).error) };
+    },
+  )
     .catch((error: unknown): RenewResult => {
       deps.log("relogin.failed", {
         why: deps.why,

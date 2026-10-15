@@ -28,6 +28,7 @@ import {
 } from "./google-api.js";
 import { googleConnectConfigFrom, readGoogleConnectConfig } from "./google-connect.js";
 import { isConfiguredLawyerSender } from "./google-notify.js";
+import { abortResearchJobs } from "./lexroom-jobs.js";
 import { openAdaMemoryFromApi, type MemoryStore } from "./memory.js";
 import { buildDailyTimelineRecord, buildOnePagerRecord } from "./reconcile.js";
 import { nextSlotMs, previousSlotMs } from "./schedule.js";
@@ -798,6 +799,7 @@ export function registerAdaService(deps: AdaServiceDeps): void {
     },
     stop() {
       stopped = true;
+      abortResearchJobs();
       for (const timer of fallbackTimers) {
         clearTimeout(timer);
         clearInterval(timer);

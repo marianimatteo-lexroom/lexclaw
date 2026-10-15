@@ -28,12 +28,13 @@ import { openAdaLexroomAccountFromApi } from "./src/lexroom-account.js";
 import type { LexroomConfig } from "./src/lexroom-client.js";
 import { lexroomConfigProperties } from "./src/lexroom-config-schema.js";
 import { handleAdaLexroomConnect } from "./src/lexroom-connect-http.js";
+import { readResearchJob } from "./src/lexroom-jobs.js";
 import {
   executeAdaLexroomConnect,
   lexroomConnectConfigFrom,
   executeAdaDraft,
-  executeAdaResearch,
   sendLexroomConnectedNotice,
+  startAdaResearch,
 } from "./src/lexroom-tools.js";
 import { MEMORY_FOLDERS } from "./src/memory-contract.js";
 import {
@@ -240,7 +241,7 @@ const tools = defineToolPlugin({
       name: "ada_research",
       label: "Lexroom research",
       description:
-        "Run Lexroom research for one matter. Returns a WhatsApp-formatted answer whose [n] markers match the numbered sources. Pass modules (for example Civile) to pick what is searched; otherwise the configured default is used. Pass libraryDocumentIds only for documents that belong to that matter. The private library is not searched unless those ids are present.",
+        "Start Lexroom research for one matter. Returns a jobId at once; the research runs in the background and takes one to three minutes. Tell the lawyer it is running, then call ada_research_status with the jobId to read the WhatsApp-formatted answer, whose [n] markers match the numbered sources. Pass modules (for example Civile) to pick what is searched; otherwise every module the Lexroom user may search is used. Pass libraryDocumentIds only for documents that belong to that matter. The private library is not searched unless those ids are present.",
       parameters: Type.Object(
         {
           matterId: Type.String({ minLength: 1 }),
@@ -252,13 +253,25 @@ const tools = defineToolPlugin({
         { additionalProperties: false },
       ),
       optional: true,
-      async execute(params, config: LexroomConfig, context) {
-        return await executeAdaResearch({
-          args: params,
-          config,
-          api: context.api,
-          signal: context.signal,
-        });
+      execute(params, config: LexroomConfig, context) {
+        return startAdaResearch({ args: params, config, api: context.api });
+      },
+    }),
+    tool({
+      name: "ada_research_status",
+      label: "Lexroom research status",
+      description:
+        "Read a research started with ada_research. state is running (call again), done (the answer and sources are in the result) or failed (the result says why; reason timeout means Lexroom did not respond). waitSeconds waits up to that long, at most 30, for it to finish; it defaults to 15.",
+      parameters: Type.Object(
+        {
+          jobId: Type.String({ minLength: 1 }),
+          waitSeconds: Type.Optional(Type.Integer({ minimum: 0, maximum: 30 })),
+        },
+        { additionalProperties: false },
+      ),
+      optional: true,
+      async execute(params) {
+        return await readResearchJob({ jobId: params.jobId, waitSeconds: params.waitSeconds });
       },
     }),
     tool({

@@ -1,12 +1,6 @@
+import { mergeAnswer } from "./lexroom-answer.js";
 import { citedSources, toWhatsAppText, type CitedSource } from "./lexroom-citations.js";
-import {
-  createGuard,
-  DEFAULT_ANSWER_TIMEOUT_MS,
-  DEFAULT_IDLE_TIMEOUT_MS,
-  DEFAULT_TOTAL_TIMEOUT_MS,
-  LexroomTimeoutError,
-  type LexroomGuard,
-} from "./lexroom-guard.js";
+import { createGuard, LexroomTimeoutError, type LexroomGuard } from "./lexroom-guard.js";
 import {
   chooseModules,
   FALLBACK_MODULES,
@@ -14,6 +8,20 @@ import {
   normalizeModules,
 } from "./lexroom-modules.js";
 import { ndjsonLines, parseNdjsonLine } from "./lexroom-stream.js";
+import {
+  defaultTotalTimeoutMs,
+  lexroomTimeoutMs,
+  timeoutFailure,
+  type LexroomTimeoutFailure,
+} from "./lexroom-timeout.js";
+import {
+  createTrace,
+  exchange,
+  fetchGuarded,
+  newCorrelationId,
+  readJsonGuarded,
+  type Trace,
+} from "./lexroom-transport.js";
 
 export type { CitedSource } from "./lexroom-citations.js";
 
@@ -31,11 +39,11 @@ const AUTH_PROBE_TIMEOUT_MS = 15_000;
 export type LexroomConfig = {
   accessToken?: string;
   baseUrl?: string;
-  /** Cap on one whole research or draft call, selectors and stream included. Default 180000. */
+  /** Cap on one whole research or draft call, selectors and stream included. Default 180000, never below three request limits. */
   timeoutMs?: number;
-  /** Longest silence tolerated before the call is abandoned. Default 45000. */
+  /** Longest silence tolerated before the call is abandoned. Default: the request limit, 60000. */
   idleTimeoutMs?: number;
-  /** Research only: time allowed until the first answer text appears. Default 60000. */
+  /** Research only: time allowed until the first answer text appears. Default: the request limit, 60000. */
   answerTimeoutMs?: number;
   /** Modules searched when the caller names none. Defaults to every module the user may search. */
   researchModules?: readonly string[];
@@ -77,26 +85,17 @@ export type DraftOutcome =
       sources: CitedSource[];
     };
 
-export type LexroomFailure = { ok: false; error: string; reason?: "not_connected" };
+export type LexroomFailure =
+  | { ok: false; error: string; reason?: "not_connected" }
+  | LexroomTimeoutFailure;
 
 type FetchLike = typeof fetch;
 
 export type LexroomLogFields = Record<string, string | number | boolean>;
 /** Structured diagnostics. Never pass tokens or query text, only lengths and counts. */
 export type LexroomLog = (event: string, fields: LexroomLogFields) => void;
-type Trace = (event: string, fields?: LexroomLogFields) => void;
 
 type StreamStats = { lines: number; status?: string; answered?: boolean };
-
-function createTrace(log: LexroomLog | undefined): Trace {
-  return (event, fields = {}) => {
-    try {
-      log?.(event, fields);
-    } catch {
-      // Diagnostics must never change the outcome of a Lexroom call.
-    }
-  };
-}
 
 class LexroomError extends Error {
   constructor(
@@ -130,8 +129,8 @@ function positiveMs(value: number | undefined, fallback: number): number {
 
 function limits(config: LexroomConfig): { idleMs: number; totalMs: number } {
   return {
-    idleMs: positiveMs(config.idleTimeoutMs, DEFAULT_IDLE_TIMEOUT_MS),
-    totalMs: positiveMs(config.timeoutMs, DEFAULT_TOTAL_TIMEOUT_MS),
+    idleMs: positiveMs(config.idleTimeoutMs, lexroomTimeoutMs()),
+    totalMs: positiveMs(config.timeoutMs, defaultTotalTimeoutMs()),
   };
 }
 
@@ -203,31 +202,30 @@ export async function checkLexroomAuth(input: {
   signal?: AbortSignal;
   log?: LexroomLog;
 }): Promise<LexroomAuthVerdict> {
-  const trace = createTrace(input.log);
-  const guard = createGuard({
-    idleMs: AUTH_PROBE_TIMEOUT_MS,
-    totalMs: AUTH_PROBE_TIMEOUT_MS,
-    signal: input.signal,
-  });
+  const trace = createTrace(input.log, newCorrelationId());
+  const startedAt = Date.now();
   let verdict: LexroomAuthVerdict = "unknown";
   let status = 0;
   try {
-    const response = await guard.race(
-      (input.fetchImpl ?? fetch)(`${baseUrl(input.config)}${AUTH_PROBE_PATH}`, {
-        method: "GET",
-        headers: headers(token(input.config), "GET"),
-        signal: guard.signal,
-      }),
-    );
-    status = response.status;
-    void response.body?.cancel().catch(() => undefined);
-    verdict = response.ok ? "accepted" : status === 401 ? "rejected" : "unknown";
+    const result = await exchange({
+      fetchImpl: input.fetchImpl ?? fetch,
+      url: `${baseUrl(input.config)}${AUTH_PROBE_PATH}`,
+      init: { method: "GET", headers: headers(token(input.config), "GET") },
+      timeoutMs: Math.min(AUTH_PROBE_TIMEOUT_MS, limits(input.config).idleMs),
+      signal: input.signal,
+      trace,
+      step: "auth_probe",
+      retry: "any",
+      read: async (response) => {
+        void response.body?.cancel().catch(() => undefined);
+      },
+    });
+    status = result.status;
+    verdict = result.ok ? "accepted" : status === 401 ? "rejected" : "unknown";
   } catch {
-    verdict = "unknown";
-  } finally {
-    guard.dispose();
+    // A probe that failed or timed out proves nothing about the bearer.
   }
-  trace("status.auth_probe", { verdict, status, ms: guard.elapsedMs() });
+  trace("status.auth_probe", { verdict, status, ms: Date.now() - startedAt });
   return verdict;
 }
 
@@ -256,17 +254,8 @@ async function errorMessage(
 ): Promise<LexroomError> {
   const { guard, config } = call;
   const status = response.status;
-  let rawDetail = "";
-  try {
-    const body = (await guard.race(response.json())) as { detail?: unknown };
-    if (typeof body.detail === "string") {
-      rawDetail = body.detail;
-    }
-  } catch (error) {
-    if (guard.timedOut() || (error instanceof Error && error.name === "AbortError")) {
-      throw error;
-    }
-  }
+  const body = (await readJsonGuarded(response, guard)) as { detail?: unknown } | null | undefined;
+  const rawDetail = typeof body?.detail === "string" ? body.detail : "";
   const detail = safeDetail(rawDetail, config.accessToken ?? "");
   const http = { status, detail };
   if (detail === "mfa_step_up_required") {
@@ -298,9 +287,11 @@ function failure(
   fallback: string,
   accessToken: string | undefined,
 ): LexroomFailure {
-  if (error instanceof LexroomError || error instanceof LexroomTimeoutError) {
-    const reason = error instanceof LexroomError ? error.reason : undefined;
-    return { ok: false, error: error.message, ...(reason ? { reason } : {}) };
+  if (error instanceof LexroomTimeoutError) {
+    return timeoutFailure(error.limitMs);
+  }
+  if (error instanceof LexroomError) {
+    return { ok: false, error: error.message, ...(error.reason ? { reason: error.reason } : {}) };
   }
   if (error instanceof Error && error.name === "AbortError") {
     return { ok: false, error: "The Lexroom request was cancelled." };
@@ -325,20 +316,18 @@ async function request(
   },
 ): Promise<Response> {
   const { guard, trace, step } = call;
-  guard.touch();
-  const response = await guard.race(
-    fetchImpl(url, {
+  const response = await fetchGuarded({
+    fetchImpl,
+    url,
+    init: {
       method: init.method,
       headers: headers(token(config), init.method),
       ...(init.method === "POST" ? { body: asciiJson(init.body) } : {}),
-      signal: guard.signal,
-    }),
-  );
-  trace(`${step}.response`, {
-    status: response.status,
-    contentType: response.headers.get("content-type") ?? "",
-    contentEncoding: response.headers.get("content-encoding") ?? "none",
-    headersMs: guard.elapsedMs(),
+    },
+    guard,
+    trace,
+    step,
+    retry: init.method === "GET" ? "any" : "connect",
   });
   if (!response.ok) {
     throw await errorMessage(response, { guard, config, modules: call.modules });
@@ -353,38 +342,50 @@ let modulesCache: ModulesCache | undefined;
 /**
  * The modules this user may search, from `GET /v1/user/modules`, kept for an hour like the
  * lexroom-bot client does. A failed lookup falls back to the full catalog instead of failing
- * the research; a stale token is then caught by the research call itself.
+ * the research; a stale token is then caught by the research call itself. The lookup has its
+ * own deadline, and a timeout is not swallowed: a Lexroom that does not answer a GET will not
+ * answer the research either.
  */
 async function userModules(
   fetchImpl: FetchLike,
   config: LexroomConfig,
-  call: { guard: LexroomGuard; trace: Trace },
+  call: { trace: Trace; signal?: AbortSignal },
 ): Promise<string[]> {
   const key = `${baseUrl(config)}\n${token(config)}`;
   if (modulesCache?.key === key && Date.now() - modulesCache.at < MODULES_TTL_MS) {
     return modulesCache.modules;
   }
   try {
-    const response = await request(
+    const result = await exchange({
       fetchImpl,
-      `${baseUrl(config)}/v1/user/modules`,
-      config,
-      { method: "GET" },
-      { ...call, step: "modules" },
-    );
-    const modules = normalizeModules(await call.guard.race(response.json()));
+      url: `${baseUrl(config)}/v1/user/modules`,
+      init: { method: "GET", headers: headers(token(config), "GET") },
+      timeoutMs: limits(config).idleMs,
+      signal: call.signal,
+      trace: call.trace,
+      step: "modules",
+      retry: "any",
+      read: (response, guard) => readJsonGuarded(response, guard),
+    });
+    if (!result.ok) {
+      throw new LexroomError(`Lexroom user/modules returned ${result.status}`);
+    }
+    const modules = normalizeModules(result.value);
     if (modules.length === 0) {
       throw new LexroomError("Lexroom user/modules returned an empty list");
     }
     modulesCache = { key, modules, at: Date.now() };
-    call.trace("modules.done", { count: modules.length });
+    call.trace("modules.loaded", { count: modules.length });
     return modules;
   } catch (error) {
-    if (call.guard.timedOut() || (error instanceof Error && error.name === "AbortError")) {
+    if (
+      error instanceof LexroomTimeoutError ||
+      (error instanceof Error && error.name === "AbortError")
+    ) {
       throw error;
     }
     call.trace("modules.fallback", {
-      error: (error instanceof Error ? error.message : "unknown").slice(0, 160),
+      error: error instanceof LexroomError ? error.message.slice(0, 160) : "unreachable",
     });
     return modulesCache?.key === key ? modulesCache.modules : [...FALLBACK_MODULES];
   }
@@ -410,34 +411,6 @@ function snapshotFrom(parsed: unknown): ResearchSnapshot | undefined {
     throw new LexroomError(snapshot.error.trim().slice(0, 200));
   }
   return typeof snapshot.id === "string" && snapshot.id ? snapshot : undefined;
-}
-
-function stripHtml(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/giu, "\n")
-    .replace(/<\/(p|div|h[1-6]|li|tr)>/giu, "\n")
-    .replace(/<[^>]+>/gu, "")
-    .replace(/&nbsp;/giu, " ")
-    .replace(/&amp;/giu, "&")
-    .replace(/&lt;/giu, "<")
-    .replace(/&gt;/giu, ">")
-    .replace(/&#39;|&apos;/giu, "'")
-    .replace(/&quot;/giu, '"')
-    .trim();
-}
-
-/**
- * The answer text of a snapshot, falling back to its HTML and then to the previous snapshot.
- * A terminal event often repeats the id without the answer body, and must not blank the answer.
- */
-function mergeAnswer(previous: string, incoming: ResearchSnapshot["answer"]): string {
-  const record = incoming && typeof incoming === "object" ? incoming : undefined;
-  const raw = typeof incoming === "string" ? incoming : record?.text;
-  const text = (typeof raw === "string" ? raw : "").replaceAll("</END>", "").trim();
-  const html = (typeof record?.html === "string" ? record.html : "")
-    .replaceAll("</END>", "")
-    .trim();
-  return text || (html ? stripHtml(html) : "") || previous;
 }
 
 function groupCount(value: unknown): number {
@@ -571,10 +544,12 @@ function failed(params: {
 }): LexroomFailure {
   const { guard, trace, step, stats } = params;
   const result = failure(params.error, params.fallback, params.config.accessToken);
-  const kind = guard.timedOut();
+  const timeout = params.error instanceof LexroomTimeoutError ? params.error : undefined;
+  const kind = timeout?.kind ?? guard.timedOut();
   const http = params.error instanceof LexroomError ? params.error.http : undefined;
   trace(kind ? `${step}.timeout` : `${step}.failed`, {
     ...(kind ? { kind } : { error: result.error.slice(0, 160) }),
+    ...(timeout ? { limitMs: timeout.limitMs } : {}),
     ...(http ? { httpStatus: http.status, detail: http.detail } : {}),
     ...(result.ok === false && result.reason ? { reason: result.reason } : {}),
     durationMs: guard.elapsedMs(),
@@ -604,18 +579,20 @@ export async function runResearch(input: {
     return { ok: false, error: "query is required" };
   }
   const fetchImpl = input.fetchImpl ?? fetch;
-  const trace = createTrace(input.log);
+  const trace = createTrace(input.log, newCorrelationId());
   const step = "research";
   const stats: StreamStats = { lines: 0 };
-  const answerMs = positiveMs(input.config.answerTimeoutMs, DEFAULT_ANSWER_TIMEOUT_MS);
+  const answerMs = positiveMs(input.config.answerTimeoutMs, lexroomTimeoutMs());
   const guard = createGuard({ ...limits(input.config), answerMs, signal: input.signal });
   try {
     const modules = chooseModules(
       requestedModules(input.modules, input.config),
-      await userModules(fetchImpl, input.config, { guard, trace }),
+      await userModules(fetchImpl, input.config, { trace, signal: input.signal }),
     );
+    guard.touch();
     const library = libraryScope(input.libraryDocumentIds);
     trace(`${step}.start`, {
+      endpoint: "POST /v1/ask_me_anything",
       modules: modules.join(","),
       queryLength: query.length,
       libraryDocuments: library.library_documents?.[0]?.document_ids.length ?? 0,
@@ -697,15 +674,19 @@ async function selectModules(
     { method: "POST", body: { prompt, template: null } },
     { ...call, step: "selectors" },
   );
-  const body = (await call.guard.race(response.json())) as {
-    modules?: Array<{ name?: unknown; is_active?: unknown }>;
-  };
-  const selected = (body.modules ?? [])
+  const body = (await readJsonGuarded(response, call.guard)) as
+    | { modules?: Array<{ name?: unknown; is_active?: unknown }> }
+    | null
+    | undefined;
+  const selected = (body?.modules ?? [])
     .filter((module) => module.is_active !== false)
     .map((module) => (typeof module.name === "string" ? module.name : ""));
   const picked = requestedModules(selected, config);
-  const modules = picked.length > 0 ? picked : await userModules(fetchImpl, config, call);
-  call.trace("selectors.done", { offered: body.modules?.length ?? 0, chosen: modules.join(",") });
+  const modules =
+    picked.length > 0
+      ? picked
+      : await userModules(fetchImpl, config, { trace: call.trace, signal: call.guard.signal });
+  call.trace("selectors.done", { offered: body?.modules?.length ?? 0, chosen: modules.join(",") });
   return modules;
 }
 
@@ -726,10 +707,11 @@ async function loadStoredDraft(
     { method: "GET" },
     { ...call, step: "stored_draft" },
   );
-  const body = (await call.guard.race(response.json())) as ResearchSnapshot & {
-    research?: ResearchSnapshot;
-  };
-  return body.research ?? body;
+  const body = (await readJsonGuarded(response, call.guard)) as
+    | (ResearchSnapshot & { research?: ResearchSnapshot })
+    | null
+    | undefined;
+  return body?.research ?? body ?? {};
 }
 
 function draftContent(snapshot: ResearchSnapshot): string {
@@ -759,12 +741,13 @@ export async function runDraft(input: {
     return { ok: true, drafted: false, reason: "confirmation_required", matterId };
   }
   const fetchImpl = input.fetchImpl ?? fetch;
-  const trace = createTrace(input.log);
+  const trace = createTrace(input.log, newCorrelationId());
   const step = "draft";
   const stats: StreamStats = { lines: 0 };
   const guard = createGuard({ ...limits(input.config), signal: input.signal });
   try {
     trace(`${step}.start`, {
+      endpoint: "POST /v2/ai/drafting",
       promptLength: prompt.length,
       modulesProvided: names(input.modules).length,
       ...limits(input.config),

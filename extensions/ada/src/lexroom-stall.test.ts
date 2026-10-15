@@ -3,8 +3,13 @@ import type { AddressInfo } from "node:net";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { runDraft, runResearch, type LexroomLogFields } from "./lexroom-client.js";
+import { loginLexroomAccount } from "./lexroom-login.js";
 
-const MESSAGE = "Lexroom non risponde, riprova tra poco";
+/** The structured result every Lexroom tool returns when a request outlived its limit. */
+function timedOut(limit: string) {
+  const message = `Lexroom did not respond within ${limit}; the request was abandoned.`;
+  return { ok: false, reason: "timeout", message, error: message };
+}
 const LIMITS = { idleTimeoutMs: 1000, timeoutMs: 2500 };
 const QUERY = "una domanda riservata sul cliente Rossi";
 
@@ -91,7 +96,7 @@ describe("stalled Lexroom streams", () => {
       () => undefined,
       async (server) => {
         const { result, tookMs } = await research(server.baseUrl);
-        expect(result).toEqual({ ok: false, error: MESSAGE });
+        expect(result).toEqual(timedOut("1s"));
         expect(tookMs).toBeGreaterThanOrEqual(900);
         expect(tookMs).toBeLessThan(2400);
         await server.closed();
@@ -103,7 +108,7 @@ describe("stalled Lexroom streams", () => {
       (_req, res) => startStream(res),
       async (server) => {
         const { result } = await research(server.baseUrl);
-        expect(result).toEqual({ ok: false, error: MESSAGE });
+        expect(result).toEqual(timedOut("1s"));
         await server.closed();
       },
     ));
@@ -117,7 +122,7 @@ describe("stalled Lexroom streams", () => {
       async (server) => {
         const recorded = recorder();
         const { result } = await research(server.baseUrl, recorded.log);
-        expect(result).toEqual({ ok: false, error: MESSAGE });
+        expect(result).toEqual(timedOut("1s"));
         await server.closed();
         expect(
           recorded.events
@@ -148,7 +153,7 @@ describe("stalled Lexroom streams", () => {
       async (server) => {
         const recorded = recorder();
         const { result, tookMs } = await research(server.baseUrl, recorded.log);
-        expect(result).toEqual({ ok: false, error: MESSAGE });
+        expect(result).toEqual(timedOut("2.5s"));
         expect(tookMs).toBeGreaterThanOrEqual(2400);
         expect(recorded.events.at(-1)).toMatchObject({
           event: "research.timeout",
@@ -197,7 +202,7 @@ describe("stalled Lexroom streams", () => {
           query: QUERY,
           log: recorded.log,
         });
-        expect(result).toEqual({ ok: false, error: MESSAGE });
+        expect(result).toEqual(timedOut("1s"));
         expect(Date.now() - startedAt).toBeLessThan(2000);
         expect(recorded.events.at(-1)).toMatchObject({
           event: "research.timeout",
@@ -251,7 +256,7 @@ describe("stalled Lexroom streams", () => {
           prompt: "Diffida",
           confirmed: true,
         });
-        expect(result).toEqual({ ok: false, error: MESSAGE });
+        expect(result).toEqual(timedOut("1s"));
         expect(server.seen.map((request) => request.url)).toEqual(["/v2/ai/drafting/selectors"]);
         await server.closed();
       },
@@ -277,7 +282,7 @@ describe("stalled Lexroom streams", () => {
           confirmed: true,
           log: recorded.log,
         });
-        expect(result).toEqual({ ok: false, error: MESSAGE });
+        expect(result).toEqual(timedOut("1s"));
         expect(recorded.events.map((entry) => entry.event)).toContain("draft.timeout");
         await server.closed();
       },
@@ -290,6 +295,28 @@ function never<T>(): Promise<T> {
   });
 }
 
+describe("a login against a Lexroom that never answers", () => {
+  it.concurrent("ends as a timeout after one retry and closes both connections", () =>
+    withServer(
+      () => undefined,
+      async (server) => {
+        const startedAt = Date.now();
+        const result = await loginLexroomAccount({
+          email: "lawyer@example.com",
+          password: "secret-password",
+          baseUrl: server.baseUrl,
+          timeoutMs: 1000,
+        });
+        const tookMs = Date.now() - startedAt;
+        expect(result).toEqual(timedOut("1s"));
+        expect(tookMs).toBeGreaterThanOrEqual(2400);
+        expect(tookMs).toBeLessThan(4000);
+        expect(server.seen.map((request) => request.url)).toEqual(["/v1/login", "/v1/login"]);
+        await server.closed();
+      },
+    ));
+});
+
 describe("a transport that ignores the abort signal", () => {
   const config = { accessToken: "secret-token", baseUrl: "https://api.lexroom.ai", ...LIMITS };
 
@@ -300,7 +327,7 @@ describe("a transport that ignores the abort signal", () => {
       query: QUERY,
       fetchImpl: () => never<Response>(),
     });
-    expect(result).toEqual({ ok: false, error: MESSAGE });
+    expect(result).toEqual(timedOut("1s"));
   });
 
   it.concurrent("still gives up when a body read never settles", async () => {
@@ -313,7 +340,7 @@ describe("a transport that ignores the abort signal", () => {
       query: QUERY,
       fetchImpl: async () => new Response(stalled, { status: 200 }),
     });
-    expect(result).toEqual({ ok: false, error: MESSAGE });
+    expect(result).toEqual(timedOut("1s"));
   });
 });
 

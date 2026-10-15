@@ -53,6 +53,17 @@ export type GoogleToken = {
 
 type FetchLike = typeof fetch;
 
+const GOOGLE_REQUEST_TIMEOUT_MS = 20_000;
+
+/**
+ * Every Google request ends within the limit, connect to last body byte, even when the caller
+ * brings its own signal: that signal can cancel sooner but never lifts the limit.
+ */
+function withGoogleTimeout(signal: AbortSignal | undefined): AbortSignal {
+  const limit = AbortSignal.timeout(GOOGLE_REQUEST_TIMEOUT_MS);
+  return signal ? AbortSignal.any([signal, limit]) : limit;
+}
+
 type TokenFailure = {
   ok: false;
   reason: "reconnect" | "no_refresh_token" | "denied_scopes" | "google_error";
@@ -93,7 +104,7 @@ async function postToken(
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body,
-      signal: signal ?? AbortSignal.timeout(20_000),
+      signal: withGoogleTimeout(signal),
     });
   } catch {
     return { ok: false, reason: "google_error" };
@@ -121,7 +132,7 @@ async function authorizedGet(
   try {
     response = await fetchImpl(url, {
       headers: { authorization: `Bearer ${accessToken}` },
-      signal: signal ?? AbortSignal.timeout(20_000),
+      signal: withGoogleTimeout(signal),
     });
   } catch {
     return { ok: false, status: 0 };
@@ -359,7 +370,7 @@ export async function sendGmailMessage(params: {
           text: params.text,
         }),
       }),
-      signal: params.signal ?? AbortSignal.timeout(20_000),
+      signal: withGoogleTimeout(params.signal),
     });
   } catch {
     return { ok: false, status: 0 };
@@ -522,7 +533,7 @@ export async function watchGmailInbox(params: {
         "content-type": "application/json",
       },
       body: JSON.stringify({ topicName, labelIds: ["INBOX"] }),
-      signal: params.signal ?? AbortSignal.timeout(20_000),
+      signal: withGoogleTimeout(params.signal),
     });
   } catch {
     return { ok: false, status: 0 };

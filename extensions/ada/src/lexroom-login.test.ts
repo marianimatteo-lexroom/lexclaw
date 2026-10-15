@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loginLexroomAccount } from "./lexroom-login.js";
 
 function jsonResponse(body: unknown, status: number): Response {
@@ -157,5 +157,121 @@ describe("loginLexroomAccount", () => {
       loginLexroomAccount({ email: "a@b.it", password: "", fetchImpl }),
     ).resolves.toMatchObject({ ok: false, reason: "invalid_credentials" });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("loginLexroomAccount timeouts and retries", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const login = (
+    fetchImpl: typeof fetch,
+    extra: {
+      log?: (event: string, fields: Record<string, string | number | boolean>) => void;
+    } = {},
+  ) =>
+    loginLexroomAccount({
+      email: "a@b.it",
+      password: "secret-password",
+      timeoutMs: 1000,
+      fetchImpl,
+      ...extra,
+    });
+
+  it("returns the structured timeout for a login that never answers, and aborts every attempt", async () => {
+    const signals: AbortSignal[] = [];
+    const fetchImpl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      signals.push(init?.signal as AbortSignal);
+      return new Promise<Response>(() => {
+        // Never settles.
+      });
+    });
+    const pending = login(fetchImpl as unknown as typeof fetch);
+    await vi.advanceTimersByTimeAsync(1000 + 500 + 1000);
+    await expect(pending).resolves.toEqual({
+      ok: false,
+      reason: "timeout",
+      message: "Lexroom did not respond within 1s; the request was abandoned.",
+      error: "Lexroom did not respond within 1s; the request was abandoned.",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("covers a login body that never finishes", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull: () =>
+              new Promise<void>(() => {
+                // Never settles.
+              }),
+          }),
+          {
+            status: 200,
+          },
+        ),
+    );
+    const pending = login(fetchImpl as unknown as typeof fetch);
+    await vi.advanceTimersByTimeAsync(1000 + 500 + 1000);
+    await expect(pending).resolves.toMatchObject({ ok: false, reason: "timeout" });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("retries a dropped connection once and then signs in", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce(jsonResponse({ access_token: "tok" }, 200));
+    const pending = login(fetchImpl);
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(pending).resolves.toMatchObject({ ok: true, accessToken: "tok" });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [401, { detail: "No active account", code: "authentication_failed" }, "invalid_credentials"],
+    [403, { detail: "You do not have permission to perform this action." }, "lexroom_error"],
+    [500, { detail: "boom" }, "lexroom_error"],
+  ])("answers a %i at once, with no retry", async (status, body, reason) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(body, status));
+    const result = await login(fetchImpl);
+    expect(result).toMatchObject({ ok: false, reason });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces Lexroom's 403 detail clearly", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        jsonResponse({ detail: "You do not have permission to perform this action." }, 403),
+      );
+    await expect(login(fetchImpl)).resolves.toEqual({
+      ok: false,
+      reason: "lexroom_error",
+      error: "Lexroom returned 403: You do not have permission to perform this action.",
+    });
+  });
+
+  it("logs the login with a correlation id and endpoint, never the password or the address", async () => {
+    const events: Array<{ event: string; fields: Record<string, string | number | boolean> }> = [];
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse({ access_token: "tok-secret" }, 200));
+    await login(fetchImpl, { log: (event, fields) => events.push({ event, fields }) });
+    expect(events.map((entry) => entry.event)).toEqual(["login.response", "login.done"]);
+    const cids = new Set(events.map((entry) => entry.fields.cid));
+    expect(cids.size).toBe(1);
+    expect(events[1]?.fields).toMatchObject({ endpoint: "POST /v1/login", status: 200 });
+    const logged = JSON.stringify(events);
+    expect(logged).not.toContain("secret-password");
+    expect(logged).not.toContain("tok-secret");
+    expect(logged).not.toContain("a@b.it");
   });
 });
