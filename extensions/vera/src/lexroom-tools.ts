@@ -149,6 +149,7 @@ export async function resolveLexroomConfig(params: {
             accessToken: account.accessToken,
             baseUrl: params.config.baseUrl,
             timeoutMs: params.config.timeoutMs,
+            researchModules: params.config.researchModules,
           },
         };
       }
@@ -182,6 +183,7 @@ export async function resolveLexroomConfig(params: {
         accessToken: fallback,
         baseUrl: params.config.baseUrl,
         timeoutMs: params.config.timeoutMs,
+        researchModules: params.config.researchModules,
       },
     };
   }
@@ -254,7 +256,7 @@ export async function runDeadlineResearch(params: {
     fetchImpl: params.fetchImpl,
   });
   if (!outcome.ok) {
-    return { ok: false, error: outcome.error };
+    return outcome;
   }
   if (!outcome.answer.trim()) {
     return { ok: false, error: "Lexroom returned an empty briefing." };

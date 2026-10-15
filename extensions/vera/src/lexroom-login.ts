@@ -363,14 +363,12 @@ async function readAppSession(params: {
   if (!response.ok || !json || typeof json !== "object") {
     return { accessToken: "", email: "" };
   }
-  const user = (json as { user?: unknown }).user;
-  if (!user || typeof user !== "object") {
-    return { accessToken: "", email: "" };
-  }
-  const record = user as Record<string, unknown>;
+  const session = json as Record<string, unknown>;
+  const user = (session.user ?? {}) as Record<string, unknown>;
+  const keys = ["accessToken", "access_token", "access"];
   return {
-    accessToken: readString(record, ["accessToken", "access_token", "access"]),
-    email: readString(record, ["email", "user_email", "username"]).toLowerCase(),
+    accessToken: readString(user, keys) || readString(session, keys),
+    email: readString(user, ["email", "user_email", "username"]).toLowerCase(),
   };
 }
 

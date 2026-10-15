@@ -31,7 +31,7 @@ Use `vera_memory_search` / `vera_memory_get` only for the matters named in `plan
 
 ## After the lawyer answers
 
-A yes to the research step calls `vera_research` with that step's `matterId` only. Pass `libraryDocumentIds` only for documents in that matter. Show the answer and its source titles.
+A yes to the research step calls `vera_research` with that step's `matterId` only. Pass `libraryDocumentIds` only for documents in that matter. Show the answer with its `[n]` markers, then the numbered `sources` as `[n] title - court, date`. Pass `modules` when the matter clearly belongs to one area, such as `Civile`; otherwise leave it out.
 
 A draft waits for a separate yes after research. Only then call `vera_draft` with `confirmed: true` and the same `matterId`. If the lawyer has not agreed, call it with `confirmed: false` or do not call it.
 
