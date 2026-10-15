@@ -88,7 +88,18 @@ const tools = defineToolPlugin({
       ),
       baseUrl: Type.Optional(Type.String({ description: "Lexroom API base URL." })),
       timeoutMs: Type.Optional(
-        Type.Integer({ minimum: 1000, description: "Research and draft stream timeout." }),
+        Type.Integer({
+          minimum: 1000,
+          description:
+            "Timeout in milliseconds for each Lexroom request, including the research and draft streams. Default 120000.",
+        }),
+      ),
+      researchModules: Type.Optional(
+        Type.Array(Type.String({ minLength: 1 }), {
+          minItems: 1,
+          description:
+            'Lexroom modules searched by vera_research and deadline briefs when the call names none, for example ["Civile", "Societario"]. Default ["Civile"].',
+        }),
       ),
       googleClientId: Type.Optional(
         Type.String({ description: "Google OAuth client id for Gmail and Calendar." }),
@@ -243,7 +254,7 @@ const tools = defineToolPlugin({
       name: "vera_research",
       label: "Lexroom research",
       description:
-        "Run Lexroom research for one matter. Pass libraryDocumentIds only for documents that belong to that matter. The private library is not searched unless those ids are present.",
+        "Run Lexroom research for one matter. Returns a WhatsApp-formatted answer whose [n] markers match the numbered sources. Pass modules (for example Civile) to pick what is searched; otherwise the configured default is used. Pass libraryDocumentIds only for documents that belong to that matter. The private library is not searched unless those ids are present.",
       parameters: Type.Object(
         {
           matterId: Type.String({ minLength: 1 }),

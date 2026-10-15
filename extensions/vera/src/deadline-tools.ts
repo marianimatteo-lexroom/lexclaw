@@ -6,6 +6,7 @@ import {
   seedReminders,
   type DeadlineIntakeConfig,
 } from "./deadline-intake.js";
+import { formatSources } from "./lexroom-citations.js";
 import type { LexroomConfig } from "./lexroom-client.js";
 import type { LexroomConnectConfig } from "./lexroom-connect.js";
 import { runDeadlineResearch } from "./lexroom-tools.js";
@@ -238,7 +239,7 @@ export async function executeVeraDeadlineReply(
     {
       researchStatus: "done",
       brief: research.sources.length
-        ? `${research.answer}\n\nSources: ${research.sources.map((source) => source.title).join("; ")}`
+        ? `${research.answer}\n\nSources:\n${formatSources(research.sources)}`
         : research.answer,
       briefAtMs: nowMs,
     },

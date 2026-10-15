@@ -207,6 +207,7 @@ describe("vera_draft confirmation gate", () => {
       status: "DONE",
       title: "Lettera",
       content: "Gentile collega,",
+      sources: [],
     });
     expect(calls).toEqual([
       {
@@ -258,7 +259,7 @@ describe("vera_draft confirmation gate", () => {
     [
       "401",
       () => json({ detail: "expired" }, 401),
-      "Lexroom rejected the access token. Sign in again and update Vera's access token.",
+      "Lexroom rejected the saved sign-in. Call vera_lexroom_connect and send that link.",
     ],
     [
       "MFA step-up",
@@ -275,20 +276,28 @@ describe("vera_draft confirmation gate", () => {
     useLexroomAccount(lexroomAccount());
     fetchMock.mockImplementation(async () => respond());
     const { callTool } = registerVera();
-    expect(await callTool("vera_draft", { ...draft, confirmed: true })).toEqual({
+    expect(await callTool("vera_draft", { ...draft, confirmed: true })).toMatchObject({
       ok: false,
       error,
     });
   });
 
-  it("fails when Lexroom selects no drafting module", async () => {
+  it("drafts with the default module when Lexroom selects none", async () => {
     useLexroomAccount(lexroomAccount());
-    fetchMock.mockImplementation(async () => json({ modules: [] }));
-    const { callTool } = registerVera();
-    expect(await callTool("vera_draft", { ...draft, confirmed: true })).toEqual({
-      ok: false,
-      error: "Lexroom did not select a drafting module for this prompt",
+    const bodies: unknown[] = [];
+    fetchMock.mockImplementation(async (input, init) => {
+      if (urlOf(input).endsWith("/v2/ai/drafting/selectors")) {
+        return json({ modules: [] });
+      }
+      bodies.push(JSON.parse(String(init?.body)));
+      return ndjson({ research: { id: "draft-4", status: "DONE", draft: { content: "Bozza" } } });
     });
+    const { callTool } = registerVera();
+    expect(await callTool("vera_draft", { ...draft, confirmed: true })).toMatchObject({
+      ok: true,
+      drafted: true,
+    });
+    expect(bodies[0]).toMatchObject({ modules: ["Civile"] });
   });
 
   it("fails when the draft stream ends before DONE", async () => {
@@ -299,7 +308,7 @@ describe("vera_draft confirmation gate", () => {
     const { callTool } = registerVera();
     expect(
       await callTool("vera_draft", { ...draft, confirmed: true, modules: ["Civile"] }),
-    ).toEqual({ ok: false, error: "Lexroom research stream ended before DONE or FAILED" });
+    ).toEqual({ ok: false, error: "Lexroom research stream ended before DONE" });
   });
 
   it("returns a network failure as an error result", async () => {
@@ -348,8 +357,8 @@ describe("vera_research", () => {
       matterId: "matter-a",
       researchId: "res-1",
       status: "DONE",
-      answer: "Il datore prova il fatto [Cass. civ. 1/2024].",
-      sources: [{ title: "Cass. civ. 1/2024" }],
+      answer: "Il datore prova il fatto [1].",
+      sources: [{ id: 1, title: "Cass. civ. 1/2024" }],
     });
     expect(seen[0]).toMatchObject({
       url: "https://lexroom.example/v1/ask_me_anything",
@@ -361,9 +370,19 @@ describe("vera_research", () => {
         library_documents: [{ document_ids: ["doc-1"] }],
       },
     });
-    expect(seen[1]).toMatchObject({
-      url: "https://lexroom.example/v1/ask_me_anything/res-1",
-      method: "GET",
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.body).toMatchObject({ search_on_modules: ["Civile"], documents: [] });
+  });
+
+  it("searches the configured research modules", async () => {
+    useLexroomAccount(lexroomAccount());
+    fetchMock.mockImplementation(async () =>
+      ndjson({ research: { id: "res-5", status: "DONE", answer: "ok" } }),
+    );
+    const { callTool } = registerVera({ ...PLUGIN_CONFIG, researchModules: ["Societario"] });
+    await callTool("vera_research", { matterId: "matter-a", query: "Question" });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      search_on_modules: ["Societario"],
     });
   });
 

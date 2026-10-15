@@ -481,8 +481,8 @@ describe("replying to a digest line", () => {
           ],
         },
         brief: {
-          answer: "Brief: verificare i termini ex art. 183 c.p.c. [Cass. civ. 1111/2024]",
-          sources: [{ title: "Cass. civ. 1111/2024" }],
+          answer: "Brief: verificare i termini ex art. 183 c.p.c. [1]",
+          sources: [{ id: 1, title: "Cass. civ. 1111/2024" }],
           researchId: "res-1",
         },
       });
@@ -539,7 +539,7 @@ describe("replying to a digest line", () => {
         ok: true,
         brief: {
           stored: true,
-          answer: expect.stringContaining("Sources: Cass. civ. 1111/2024"),
+          answer: expect.stringContaining("Sources:\n[1] Cass. civ. 1111/2024"),
         },
       });
       expect(lexroom.bodies).toHaveLength(1);

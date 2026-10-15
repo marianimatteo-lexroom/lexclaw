@@ -38,7 +38,7 @@ Match a bare number, "reply 1", "1", or "yes to 1" to the line with that `no` fr
 
 `research` is the lawyer's confirmation to track the item: reminders start from that moment on the schedule in the result (default 7 days before, 2 days before, and the morning of, in the 07:40 digest slot), and steps whose time already passed are skipped, not sent late. Lexroom research runs for that matter only and does not search the private library.
 
-When the result has `brief`, send the brief back in one WhatsApp message in this turn: a short summary first, the key points, then the source titles from `brief.sources`. Mention the date and that reminders are set. Do not draft anything; a draft needs its own yes and the `vera_draft` confirmation from the vera-morning-digest skill.
+When the result has `brief`, send the brief back in one WhatsApp message in this turn: a short summary first, the key points, then the numbered sources from `brief.sources` as `[n] title - court, date`, keeping the `[n]` markers in the text. Mention the date and that reminders are set. Do not draft anything; a draft needs its own yes and the `vera_draft` confirmation from the vera-morning-digest skill.
 
 When the result has `reason: "not_connected"`, the item is tracked but there is no brief yet. Follow the vera-lexroom-connect skill, and tell the lawyer to reply with the number again once connected. Other errors: say plainly that research did not run, that the item is still tracked, and offer to retry.
 

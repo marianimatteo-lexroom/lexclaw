@@ -26,6 +26,8 @@ Disable the Gateway model heartbeat for this install (`agents.defaults.heartbeat
         config: {
           // optional static fallback; prefer vera_lexroom_connect
           // accessToken: "${LEXROOM_ACCESS_TOKEN}",
+          // modules vera_research searches when the call names none (default ["Civile"])
+          // researchModules: ["Civile", "Societario"],
           googleClientId: "${VERA_GOOGLE_CLIENT_ID}",
           googleClientSecret: "${VERA_GOOGLE_CLIENT_SECRET}",
           googleRedirectUri: "https://gateway.example/vera/google/callback",
@@ -69,7 +71,7 @@ Disable the Gateway model heartbeat for this install (`agents.defaults.heartbeat
 
 ## Lexroom account
 
-Research (`LEXROOM_AMA`) and drafting (`LEXROOM_DRAFTING`) call `https://api.lexroom.ai` with `Authorization: Bearer`, `X-Client-Type: app_lex`, and `X-Request-ID`. Research posts `/v1/ask_me_anything` and reloads `/v1/ask_me_anything/{id}`. Drafting posts `/v2/ai/drafting`. Machine API keys are not accepted by those endpoints yet.
+Research (`LEXROOM_AMA`) and drafting (`LEXROOM_DRAFTING`) call `https://api.lexroom.ai` with `Authorization: Bearer` (the NextAuth session token), `X-Client-Type: app_lex`, and `X-Request-ID`. Research posts `/v1/ask_me_anything`; drafting asks `/v2/ai/drafting/selectors` for modules and then posts `/v2/ai/drafting`. Both answer with NDJSON (one cumulative snapshot per line, lines up to several MB); Vera keeps the last snapshot and stops at `DONE`. Each request has its own `timeoutMs` budget (default 120 seconds). Research needs at least one module: the call's `modules`, else `researchModules` in config, else `["Civile"]`. Answers come back in WhatsApp formatting with their `[n]` markers, plus only the cited sources as `[n] title - court, date`. The bearer is never logged and is only sent to an https `baseUrl` (or http on localhost). Machine API keys are not accepted by those endpoints yet.
 
 The lawyer connects Lexroom the same way as Google: WhatsApp gets one link from `vera_lexroom_connect`, opens `/vera/lexroom/connect`, and signs in with Lexroom email/password (plus MFA when Lexroom requires it). The password is posted only to Lexroom. When Lexroom returns `mfa_step_up_required`, Vera continues through Lexroom's app MFA challenge (`/api/auth/mfa/start` + `/api/auth/mfa/verify` + session exchange) and keeps a short-lived sealed MFA ticket in the connect form—not a 401 error page. The bearer stays (encrypted, see Token encryption) in `$OPENCLAW_STATE_DIR/vera/lexroom-account.sqlite`. The connect URL defaults from the `googleRedirectUri` origin; override with `lexroomConnectUri` when needed. The state HMAC reuses `googleStateSecret` unless `lexroomStateSecret` is set. Links expire after 30 minutes. When the saved bearer expires, `vera_research` / `vera_draft` return `not_connected` and Vera asks for a new link. A static `accessToken` in config remains a fallback only.
 

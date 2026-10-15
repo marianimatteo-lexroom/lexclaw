@@ -187,6 +187,42 @@ describe("loginLexroomAccount", () => {
     });
   });
 
+  it("reads the bearer from the top of the NextAuth session when the user has none", async () => {
+    const mfaTicket = sealLexroomMfaTicket(STATE_SECRET, {
+      email: "lawyer@lexroom.ai",
+      password: "secret",
+      method: "totp",
+      cookies: { "__Secure-next-auth.session-token": "pending-mfa" },
+      appBaseUrl: "https://app.lexroom.ai",
+    });
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/mfa/start")) {
+        return jsonResponse({}, 200);
+      }
+      if (url.endsWith("/api/auth/mfa/verify")) {
+        return jsonResponse({ needsSessionExchange: false }, 200);
+      }
+      if (url.endsWith("/api/auth/session")) {
+        return jsonResponse(
+          { accessToken: "opaque-session-token", user: { email: "lawyer@lexroom.ai" } },
+          200,
+        );
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    await expect(
+      loginLexroomAccount({
+        email: "lawyer@lexroom.ai",
+        password: "",
+        otp: "123456",
+        mfaTicket,
+        stateSecret: STATE_SECRET,
+        fetchImpl,
+      }),
+    ).resolves.toMatchObject({ ok: true, accessToken: "opaque-session-token" });
+  });
+
   it("surfaces API MFA enrollment without starting an OTP challenge", async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
