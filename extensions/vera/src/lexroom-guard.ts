@@ -2,7 +2,10 @@ export const DEFAULT_IDLE_TIMEOUT_MS = 45_000;
 export const DEFAULT_TOTAL_TIMEOUT_MS = 180_000;
 export const LEXROOM_TIMEOUT_MESSAGE = "Lexroom non risponde, riprova tra poco";
 
-export type TimeoutKind = "idle" | "total";
+export const DEFAULT_ANSWER_TIMEOUT_MS = 60_000;
+
+/** `answer`: the stream was alive but never produced answer text within the answer limit. */
+export type TimeoutKind = "idle" | "total" | "answer";
 
 export class LexroomTimeoutError extends Error {
   constructor(readonly kind: TimeoutKind) {
@@ -16,6 +19,8 @@ export type LexroomGuard = {
   signal: AbortSignal;
   /** Progress was seen; restarts the idle clock. */
   touch(): void;
+  /** The milestone the answer limit waits for has happened; that limit stops applying. */
+  endAnswerWait(): void;
   /**
    * Settles with `promise`, or rejects as soon as a limit trips. The abort alone is not
    * trusted to unblock a pending read, so every network await goes through here.
@@ -33,6 +38,8 @@ export type LexroomGuard = {
 export function createGuard(options: {
   idleMs: number;
   totalMs: number;
+  /** Optional earlier limit on reaching the first answer text, lifted by endAnswerWait(). */
+  answerMs?: number;
   signal?: AbortSignal;
 }): LexroomGuard {
   const controller = new AbortController();
@@ -57,6 +64,10 @@ export function createGuard(options: {
     stop(new LexroomTimeoutError(kind));
   };
   const totalTimer = setTimeout(() => expire("total"), options.totalMs);
+  const answerTimer =
+    options.answerMs === undefined
+      ? undefined
+      : setTimeout(() => expire("answer"), options.answerMs);
   const touch = () => {
     if (expiredKind || controller.signal.aborted) {
       return;
@@ -76,6 +87,7 @@ export function createGuard(options: {
   return {
     signal: controller.signal,
     touch,
+    endAnswerWait: () => clearTimeout(answerTimer),
     race(promise) {
       promise.catch(() => undefined);
       return Promise.race([promise, expired]);
@@ -84,6 +96,7 @@ export function createGuard(options: {
     timedOut: () => expiredKind,
     dispose() {
       clearTimeout(totalTimer);
+      clearTimeout(answerTimer);
       clearTimeout(idleTimer);
       options.signal?.removeEventListener("abort", callerAborted);
       if (!controller.signal.aborted) {

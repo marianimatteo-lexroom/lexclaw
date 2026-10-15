@@ -166,6 +166,72 @@ describe("stalled Lexroom streams", () => {
       },
     ));
 
+  it.concurrent("stops a stream that stays busy but has no answer by the answer limit", () =>
+    withServer(
+      (_req, res) => {
+        startStream(res);
+        const timer = setInterval(() => res.write(line({ id: "r", status: "RUNNING" })), 150);
+        res.on("close", () => clearInterval(timer));
+      },
+      async (server) => {
+        const recorded = recorder();
+        const startedAt = Date.now();
+        const result = await runResearch({
+          config: {
+            accessToken: "secret-token",
+            baseUrl: server.baseUrl,
+            idleTimeoutMs: 2000,
+            timeoutMs: 5000,
+            answerTimeoutMs: 1000,
+          },
+          matterId: "m",
+          query: QUERY,
+          log: recorded.log,
+        });
+        expect(result).toEqual({ ok: false, error: MESSAGE });
+        expect(Date.now() - startedAt).toBeLessThan(2000);
+        expect(recorded.events.at(-1)).toMatchObject({
+          event: "research.timeout",
+          fields: { kind: "answer" },
+        });
+        await server.closed();
+      },
+    ));
+
+  it.concurrent("lets a stream that reached its answer run past the answer limit", () =>
+    withServer(
+      (_req, res) => {
+        startStream(res);
+        res.write(line({ id: "r", status: "RUNNING" }));
+        setTimeout(
+          () => res.write(line({ id: "r", status: "RUNNING", answer: { text: "Prima" } })),
+          300,
+        );
+        setTimeout(
+          () => res.write(line({ id: "r", status: "RUNNING", answer: { text: "Prima parte" } })),
+          900,
+        );
+        setTimeout(
+          () => res.end(line({ id: "r", status: "DONE", answer: { text: "Prima parte, fine" } })),
+          1500,
+        );
+      },
+      async (server) => {
+        const result = await runResearch({
+          config: {
+            accessToken: "secret-token",
+            baseUrl: server.baseUrl,
+            idleTimeoutMs: 1000,
+            timeoutMs: 5000,
+            answerTimeoutMs: 1000,
+          },
+          matterId: "m",
+          query: QUERY,
+        });
+        expect(result).toMatchObject({ ok: true, answer: "Prima parte, fine" });
+      },
+    ));
+
   it.concurrent("fails module selection that never answers", () =>
     withServer(
       () => undefined,

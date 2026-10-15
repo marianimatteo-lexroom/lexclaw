@@ -20,6 +20,13 @@ export const lexroomConfigProperties = {
         "Abandon a Lexroom call after this many milliseconds with no data from the stream. Default 45000.",
     }),
   ),
+  answerTimeoutMs: Type.Optional(
+    Type.Integer({
+      minimum: 1000,
+      description:
+        "Research only: give up when no answer text has appeared after this many milliseconds, even if the stream keeps sending progress. Lifted once the answer starts. Default 60000.",
+    }),
+  ),
   researchModules: Type.Optional(
     Type.Array(Type.String({ minLength: 1 }), {
       minItems: 1,

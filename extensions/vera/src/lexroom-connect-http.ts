@@ -1,18 +1,24 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { GoogleConnectedNotice } from "./google-notify.js";
 import type { LexroomAccountStore } from "./lexroom-account-contract.js";
 import {
+  isLexroomAccessLive,
   readConnectState,
   readLexroomConnectConfig,
   type LexroomConnectConfig,
 } from "./lexroom-connect.js";
+import { lexroomLogger } from "./lexroom-log.js";
 import { loginLexroomAccount } from "./lexroom-login.js";
-import type { GoogleConnectedNotice } from "./google-notify.js";
 
 type ConnectHttpDeps = {
   config: LexroomConnectConfig;
   now: () => Date;
   store: LexroomAccountStore;
-  log: { error: (message: string) => void };
+  log: {
+    error: (message: string) => void;
+    info?: (message: string) => void;
+    warn?: (message: string) => void;
+  };
   notifyConnected?: (email: string) => Promise<GoogleConnectedNotice>;
   login?: typeof loginLexroomAccount;
 };
@@ -174,6 +180,10 @@ button {
   color: var(--ready);
   background: var(--ready-wash);
 }
+.badge.error {
+  color: var(--blocked);
+  background: var(--blocked-wash);
+}
 .foot {
   margin: 18px 0 0;
   padding-top: 16px;
@@ -199,16 +209,23 @@ function writeHtml(res: ServerResponse, status: number, html: string, formAction
   res.end(html);
 }
 
+const CHECK_ICON =
+  '<path d="M7 13.2 11.1 17.3 19 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>';
+const CROSS_ICON =
+  '<path d="M8 8 18 18M18 8 8 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>';
+
+/** Only the Connected page may show the green check; every failure state gets the red cross. */
 function renderStatusPage(params: {
   heading: string;
   message: string;
   email?: string;
+  failed?: boolean;
 }): string {
   const email = params.email?.trim() ?? "";
   const account = email
     ? `<p class="foot">Signed in as <b>${escapeHtml(email)}</b>. You can close this page and return to WhatsApp.</p>`
     : `<p class="foot">You can close this page and return to WhatsApp.</p>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Vera</title><style>${PAGE_STYLE}</style></head><body><main class="card"><p class="brand"><i></i>Vera</p><div class="badge" aria-hidden="true"><svg width="26" height="26" viewBox="0 0 26 26" fill="none"><path d="M7 13.2 11.1 17.3 19 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div><h1>${escapeHtml(params.heading)}</h1><p class="lead">${escapeHtml(params.message)}</p>${account}</main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Vera</title><style>${PAGE_STYLE}</style></head><body><main class="card"><p class="brand"><i></i>Vera</p><div class="badge${params.failed ? " error" : ""}" aria-hidden="true"><svg width="26" height="26" viewBox="0 0 26 26" fill="none">${params.failed ? CROSS_ICON : CHECK_ICON}</svg></div><h1>${escapeHtml(params.heading)}</h1><p class="lead">${escapeHtml(params.message)}</p>${account}</main></body></html>`;
 }
 
 function renderLoginForm(params: {
@@ -252,6 +269,47 @@ async function readFormBody(req: IncomingMessage): Promise<URLSearchParams> {
   return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
 }
 
+/**
+ * Saves the credential and reads it back before the page may claim success. A credential
+ * that cannot be read back, or that Vera would already treat as expired, is not a connection.
+ */
+async function persistAndConfirm(
+  deps: ConnectHttpDeps,
+  record: Parameters<LexroomAccountStore["upsertAccount"]>[0],
+): Promise<{ reason: string; message: string } | undefined> {
+  const saveFailed = {
+    reason: "not_saved",
+    message:
+      "Vera could not save the Lexroom sign-in. Return to WhatsApp and ask Vera for a new link.",
+  };
+  try {
+    await deps.store.upsertAccount(record);
+    const saved = await deps.store.readAccount();
+    if (!saved || saved.accessToken !== record.accessToken || saved.email !== record.email) {
+      return { ...saveFailed, reason: "not_readable_after_write" };
+    }
+    if (
+      !isLexroomAccessLive({
+        accessToken: saved.accessToken,
+        accessExpiresAtMs: saved.accessExpiresAtMs,
+        now: deps.now(),
+      })
+    ) {
+      return {
+        reason: "already_expired",
+        message:
+          "Lexroom signed you in, but the sign-in it issued expires almost immediately, so Vera cannot use it. Return to WhatsApp and ask Vera for a new link; if it happens again, contact support.",
+      };
+    }
+    return undefined;
+  } catch (error) {
+    deps.log.error(
+      `vera lexroom connect could not save the credential: ${error instanceof Error ? error.message : "unknown"}`,
+    );
+    return saveFailed;
+  }
+}
+
 export async function handleVeraLexroomConnect(
   req: IncomingMessage,
   res: ServerResponse,
@@ -265,6 +323,7 @@ export async function handleVeraLexroomConnect(
       503,
       renderStatusPage({
         heading: "Not ready",
+        failed: true,
         message: "Vera Lexroom connect is not configured.",
       }),
     );
@@ -281,6 +340,7 @@ export async function handleVeraLexroomConnect(
         400,
         renderStatusPage({
           heading: "Link expired",
+          failed: true,
           message:
             "This connect link is no longer valid. Return to WhatsApp and ask Vera for a new link.",
         }),
@@ -297,6 +357,7 @@ export async function handleVeraLexroomConnect(
       405,
       renderStatusPage({
         heading: "Could not connect",
+        failed: true,
         message: "Vera could not finish connecting the Lexroom account.",
       }),
     );
@@ -312,6 +373,7 @@ export async function handleVeraLexroomConnect(
       413,
       renderStatusPage({
         heading: "Could not connect",
+        failed: true,
         message: "Vera could not read the sign-in form.",
       }),
     );
@@ -331,6 +393,7 @@ export async function handleVeraLexroomConnect(
       400,
       renderStatusPage({
         heading: "Link expired",
+        failed: true,
         message:
           "This connect link is no longer valid. Return to WhatsApp and ask Vera for a new link.",
       }),
@@ -339,6 +402,10 @@ export async function handleVeraLexroomConnect(
   }
 
   const login = deps.login ?? loginLexroomAccount;
+  const log = lexroomLogger({
+    info: (message) => (deps.log.info ?? (() => undefined))(message),
+    warn: (message) => (deps.log.warn ?? deps.log.error)(message),
+  });
   const result = await login({
     email,
     password,
@@ -413,6 +480,7 @@ export async function handleVeraLexroomConnect(
       400,
       renderStatusPage({
         heading: "Link expired",
+        failed: true,
         message:
           "This connect link is no longer valid. Return to WhatsApp and ask Vera for a new link.",
       }),
@@ -420,13 +488,29 @@ export async function handleVeraLexroomConnect(
     return true;
   }
 
-  await deps.store.upsertAccount({
+  const record = {
     email: result.email,
     accessToken: result.accessToken,
     refreshToken: result.refreshToken,
     accessExpiresAtMs: result.accessExpiresAtMs,
     connectedAtMs: now.getTime(),
+  };
+  log("connect.callback.write", {
+    emailInput: email,
+    emailStored: record.email,
+    normalization: email === record.email ? "unchanged" : "lowercased-or-from-session",
   });
+  const failure = await persistAndConfirm(deps, record);
+  if (failure) {
+    log("connect.callback.rejected", { reason: failure.reason });
+    writeHtml(
+      res,
+      500,
+      renderStatusPage({ heading: "Could not connect", message: failure.message, failed: true }),
+    );
+    return true;
+  }
+  log("connect.callback.confirmed", { email: record.email });
   if (deps.notifyConnected) {
     const notice = await deps.notifyConnected(result.email);
     if (!notice.ok) {

@@ -289,7 +289,7 @@ const tools = defineToolPlugin({
       name: "vera_lexroom_connect",
       label: "Connect Lexroom",
       description:
-        "Check whether this lawyer connected Lexroom for research and drafts. The saved sign-in is verified with a live Lexroom call; when there is none, it expired, or Lexroom rejects it, it is removed and one WhatsApp ask with a single Vera-hosted Lexroom sign-in link is returned. Set force true to discard the saved sign-in and always get a new link, for example when research reports the sign-in was rejected. Does not send the message.",
+        "Check whether this lawyer connected Lexroom for research and drafting. The saved sign-in is checked with a live Lexroom call; when there is none, it expired, or Lexroom answers 401, it is removed and one WhatsApp ask with a single Vera-hosted Lexroom sign-in link is returned. A 403 or an unreachable Lexroom never removes it. Set force true to discard the saved sign-in and always get a new link. Does not send the message.",
       parameters: Type.Object(
         { force: Type.Optional(Type.Boolean()) },
         { additionalProperties: false },
