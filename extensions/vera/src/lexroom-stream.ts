@@ -20,6 +20,7 @@ function joinChunks(chunks: Uint8Array[]): Uint8Array {
 export async function* ndjsonLines(
   body: ReadableStream<Uint8Array>,
   maxLineBytes = MAX_NDJSON_LINE_BYTES,
+  onChunk?: (chunk: Uint8Array) => void,
 ): AsyncGenerator<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -47,6 +48,7 @@ export async function* ndjsonLines(
       if (done) {
         break;
       }
+      onChunk?.(value);
       let start = 0;
       for (;;) {
         const end = value.indexOf(NEWLINE, start);

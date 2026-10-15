@@ -1,0 +1,94 @@
+export const DEFAULT_IDLE_TIMEOUT_MS = 45_000;
+export const DEFAULT_TOTAL_TIMEOUT_MS = 180_000;
+export const LEXROOM_TIMEOUT_MESSAGE = "Lexroom non risponde, riprova tra poco";
+
+export type TimeoutKind = "idle" | "total";
+
+export class LexroomTimeoutError extends Error {
+  constructor(readonly kind: TimeoutKind) {
+    super(LEXROOM_TIMEOUT_MESSAGE);
+    this.name = "LexroomTimeoutError";
+  }
+}
+
+export type LexroomGuard = {
+  /** Aborts the fetch and its body when a limit trips, the caller cancels, or the guard is disposed. */
+  signal: AbortSignal;
+  /** Progress was seen; restarts the idle clock. */
+  touch(): void;
+  /**
+   * Settles with `promise`, or rejects as soon as a limit trips. The abort alone is not
+   * trusted to unblock a pending read, so every network await goes through here.
+   */
+  race<T>(promise: Promise<T>): Promise<T>;
+  elapsedMs(): number;
+  timedOut(): TimeoutKind | undefined;
+  dispose(): void;
+};
+
+/**
+ * One guard covers a whole Lexroom operation (selectors, stream, stored-draft fetch).
+ * `idleMs` bounds silence between progress signals, `totalMs` bounds the operation.
+ */
+export function createGuard(options: {
+  idleMs: number;
+  totalMs: number;
+  signal?: AbortSignal;
+}): LexroomGuard {
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  let expiredKind: TimeoutKind | undefined;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let rejectExpired: (error: unknown) => void = () => undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    rejectExpired = reject;
+  });
+  expired.catch(() => undefined);
+
+  const stop = (reason: unknown) => {
+    controller.abort(reason);
+    rejectExpired(reason);
+  };
+  const expire = (kind: TimeoutKind) => {
+    if (expiredKind || controller.signal.aborted) {
+      return;
+    }
+    expiredKind = kind;
+    stop(new LexroomTimeoutError(kind));
+  };
+  const totalTimer = setTimeout(() => expire("total"), options.totalMs);
+  const touch = () => {
+    if (expiredKind || controller.signal.aborted) {
+      return;
+    }
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => expire("idle"), options.idleMs);
+  };
+  const callerAborted = () =>
+    stop(options.signal?.reason ?? new DOMException("The operation was aborted", "AbortError"));
+  if (options.signal?.aborted) {
+    callerAborted();
+  } else {
+    options.signal?.addEventListener("abort", callerAborted, { once: true });
+  }
+  touch();
+
+  return {
+    signal: controller.signal,
+    touch,
+    race(promise) {
+      promise.catch(() => undefined);
+      return Promise.race([promise, expired]);
+    },
+    elapsedMs: () => Date.now() - startedAt,
+    timedOut: () => expiredKind,
+    dispose() {
+      clearTimeout(totalTimer);
+      clearTimeout(idleTimer);
+      options.signal?.removeEventListener("abort", callerAborted);
+      if (!controller.signal.aborted) {
+        controller.abort(new DOMException("Lexroom request finished", "AbortError"));
+      }
+    },
+  };
+}

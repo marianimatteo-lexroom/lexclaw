@@ -365,7 +365,7 @@ describe("vera_research", () => {
       method: "POST",
       auth: "Bearer test-account-token",
       body: {
-        query: "Onere della prova",
+        query: "Onere della prova\n",
         search_on_user_data: true,
         library_documents: [{ document_ids: ["doc-1"] }],
       },
