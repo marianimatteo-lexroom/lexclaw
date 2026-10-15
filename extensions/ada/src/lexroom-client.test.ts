@@ -171,6 +171,37 @@ describe("runResearch", () => {
     expect(JSON.stringify(result.sources)).not.toContain("MATALUCCI");
   });
 
+  describe("researchUrl", () => {
+    const run = (extra: { baseUrl?: string; parentResearchId?: string }) =>
+      runResearch({
+        config: { accessToken: "link-token", baseUrl: extra.baseUrl ?? "https://api.lexroom.ai" },
+        matterId: "m",
+        query: "Q",
+        parentResearchId: extra.parentResearchId,
+        fetchImpl: lexroomFetch(() =>
+          streamResponse(line({ id: "res-77", status: "DONE", answer: "ok" })),
+        ),
+      });
+
+    it("points at the research in the Lexroom web app", async () => {
+      expect(await run({})).toMatchObject({
+        researchId: "res-77",
+        researchUrl: "https://app.lexroom.ai/research/res-77",
+      });
+    });
+
+    it("points a follow-up at the page of the thread's first research", async () => {
+      expect(await run({ parentResearchId: "thread-root" })).toMatchObject({
+        researchId: "res-77",
+        researchUrl: "https://app.lexroom.ai/research/thread-root",
+      });
+    });
+
+    it("is left out for a non-production API", async () => {
+      expect(await run({ baseUrl: "https://lexroom.example" })).not.toHaveProperty("researchUrl");
+    });
+  });
+
   it("lists only the sources the answer cites", async () => {
     const documents = [
       {

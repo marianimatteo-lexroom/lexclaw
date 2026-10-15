@@ -241,7 +241,7 @@ const tools = defineToolPlugin({
       name: "ada_research",
       label: "Lexroom research",
       description:
-        "Start Lexroom research for one matter. Returns a jobId at once; the research runs in the background and takes one to three minutes. Tell the lawyer it is running, then call ada_research_status with the jobId to read the WhatsApp-formatted answer, whose [n] markers match the numbered sources. Pass modules (for example Civile) to pick what is searched; otherwise every module the Lexroom user may search is used. Pass libraryDocumentIds only for documents that belong to that matter. The private library is not searched unless those ids are present.",
+        "Start Lexroom research for one matter. Returns a jobId at once; the research runs in the background and takes one to three minutes. Tell the lawyer it is running, then call ada_research_status with the jobId to read the WhatsApp-formatted answer, whose [n] markers match the numbered sources. End the message to the lawyer with the result's researchUrl, the link to this research in the Lexroom app. Pass modules (for example Civile) to pick what is searched; otherwise every module the Lexroom user may search is used. Pass libraryDocumentIds only for documents that belong to that matter. The private library is not searched unless those ids are present.",
       parameters: Type.Object(
         {
           matterId: Type.String({ minLength: 1 }),
@@ -261,7 +261,7 @@ const tools = defineToolPlugin({
       name: "ada_research_status",
       label: "Lexroom research status",
       description:
-        "Read a research started with ada_research. state is running (call again), done (the answer and sources are in the result) or failed (the result says why; reason timeout means Lexroom did not respond). waitSeconds waits up to that long, at most 30, for it to finish; it defaults to 15.",
+        "Read a research started with ada_research. state is running (call again), done (the answer, the sources and researchUrl, the link to open this research in the Lexroom app, are in the result; end the message to the lawyer with it) or failed (the result says why; reason timeout means Lexroom did not respond). waitSeconds waits up to that long, at most 30, for it to finish; it defaults to 15.",
       parameters: Type.Object(
         {
           jobId: Type.String({ minLength: 1 }),

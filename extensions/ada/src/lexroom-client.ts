@@ -1,6 +1,7 @@
 import { mergeAnswer } from "./lexroom-answer.js";
 import { citedSources, toWhatsAppText, type CitedSource } from "./lexroom-citations.js";
 import { createGuard, LexroomTimeoutError, type LexroomGuard } from "./lexroom-guard.js";
+import { lexroomResearchUrl } from "./lexroom-links.js";
 import {
   chooseModules,
   FALLBACK_MODULES,
@@ -63,6 +64,8 @@ export type ResearchOutcome = {
   ok: true;
   matterId: string;
   researchId?: string;
+  /** The research in the Lexroom web app, for the lawyer to keep reading there. */
+  researchUrl?: string;
   status: string;
   /** WhatsApp-formatted text. `[n]` markers match `sources[].id`. */
   answer: string;
@@ -634,10 +637,16 @@ export async function runResearch(input: {
       answerChars: answer.length,
       sources: sources.length,
     });
+    const researchUrl = lexroomResearchUrl({
+      researchId: snapshot.id,
+      parentResearchId: input.parentResearchId,
+      apiBaseUrl: baseUrl(input.config),
+    });
     return {
       ok: true,
       matterId,
       ...(snapshot.id ? { researchId: snapshot.id } : {}),
+      ...(researchUrl ? { researchUrl } : {}),
       status: snapshot.status ?? "DONE",
       answer,
       sources,
