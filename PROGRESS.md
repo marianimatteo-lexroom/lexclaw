@@ -98,7 +98,7 @@ Project `Lexroom` `<KAPSO_PROJECT_ID>`. Customer `<KAPSO_CUSTOMER_ID>` ("Default
 
 Production sender Lexroom `+1 202-490-8196`. `phone_number_id` `<KAPSO_PHONE_NUMBER_ID>`. Internal id `<KAPSO_NUMBER_ID>`. Status CONNECTED, name APPROVED, quality GREEN. `code_verification_status` EXPIRED does not block inbound. Sandbox number `<KAPSO_SANDBOX_NUMBER_ID>` must not be used.
 
-Lawyer test number: Test Lawyer `+390000000000` (digits `390000000000`, WhatsApp user id `<WHATSAPP_BSUID>`). Allowlist must include both `+E.164` and digits. Conversation seen: `<KAPSO_CONVERSATION_ID>`.
+Lawyer test number: Test Lawyer `+390000000000` (digits `390000000000`, WhatsApp user id `<WHATSAPP_BSUID>`). DMs are open to any sender (no allowlist), so the number only matters as `defaultTo`. Conversation seen: `<KAPSO_CONVERSATION_ID>`.
 
 Railway webhook `<WEBHOOK_ID>`, URL `https://vera.example.com/kapso/webhook`, active, payload v2, event `whatsapp.message.received`. Doctor reported registration ok. A POST with no valid signature returns 401 `invalid_signature`.
 
@@ -106,7 +106,7 @@ The earlier Cursor-automation webhook `<PAUSED_WEBHOOK_ID>` was paused (`active`
 
 WhatsApp Cloud API rejects non-template outbound outside the 24-hour customer-care window (HTTP 422). Text the business number from `+390000000000` to open the window before an outbound test.
 
-Channel config: `channels["kapso-whatsapp"]` enabled, `dmSecurity` `allowlist`, `defaultTo` `+390000000000`. `plugins.entries.vera` and `plugins.entries.kapso-whatsapp` enabled. Do not set a restrictive `plugins.allow`. An empty allow list loads bundled plugins. A non-empty list blocks model plugins.
+Channel config: `channels["kapso-whatsapp"]` enabled, `dmSecurity` `open` with `allowFrom` `["*"]`, `defaultTo` `+390000000000`. `plugins.entries.vera` and `plugins.entries.kapso-whatsapp` enabled. Do not set a restrictive `plugins.allow`. An empty allow list loads bundled plugins. A non-empty list blocks model plugins.
 
 Kapso MCP is OAuth. There is no MCP tool to create an API key. Do not run interactive `openclaw kapso-whatsapp cli login`.
 

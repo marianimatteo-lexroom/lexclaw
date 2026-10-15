@@ -818,11 +818,11 @@ export async function recordLawyerInbound(params: {
   if (params.channelId && params.channelId !== "kapso-whatsapp") {
     return;
   }
-  // The channel allowlist is not enough: this opens the paid WhatsApp window and
-  // releases a held digest, so only the configured lawyer may do that.
+  // Anyone may chat with the bot, but only the configured lawyer's message opens the paid
+  // WhatsApp window and releases a held digest. Other senders are normal traffic, not a warning.
   if (!isConfiguredLawyerSender(params.api.config, ...params.senders)) {
-    params.api.logger.warn(
-      "vera ignored an inbound message that is not from the configured lawyer",
+    params.api.logger.debug?.(
+      "vera did not record an inbound message: not from the configured lawyer",
     );
     return;
   }
