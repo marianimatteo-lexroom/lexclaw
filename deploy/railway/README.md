@@ -43,7 +43,7 @@ Values stay in Railway. Nothing here belongs in git. `start.sh` writes config fr
 | Variable                | Notes                                                                                                                                                       |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `KAPSO_PHONE_NUMBER_ID` | Kapso `phone_number_id` of the business sender.                                                                                                             |
-| `KAPSO_DEFAULT_TO`      | Lawyer WhatsApp number in `+E.164` form. Also the only sender Ada accepts as the lawyer.                                                                   |
+| `KAPSO_DEFAULT_TO`      | Lawyer WhatsApp number in `+E.164` form: the default outbound recipient, and the only sender whose message opens the digest window. It does not limit who can chat; anyone can message the bot (`dmSecurity` is `open`).                                                                   |
 | `KAPSO_PLUGIN_VERSION`  | Exact version such as `0.1.4`. The Dockerfile sets the default, so it only needs a service variable to move the pin.                                        |
 | `ADA_PUBLIC_ORIGIN`    | Public origin such as `https://ada.example.com`. Not needed when Railway provides `RAILWAY_PUBLIC_DOMAIN` (a generated domain). One of the two must exist. |
 
@@ -53,9 +53,8 @@ Also needed for a working gateway, but not checked by `start.sh`: `OPENCLAW_GATE
 
 | Variable                | Effect                                                                                                                                                                |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `KAPSO_API_KEY`         | Kapso API key (secret).                                                                                                                                               |
+| `KAPSO_API_KEY`         | Kapso API key (secret). `KAPSO_BASE_URL` and `KAPSO_WEBHOOK_PATH` are read by the plugin directly.                                                                                                                                               |
 | `KAPSO_WEBHOOK_SECRET`  | Kapso webhook secret (secret).                                                                                                                                        |
-| `KAPSO_ALLOW_FROM`      | Comma-separated sender allowlist. Defaults to `KAPSO_DEFAULT_TO` with and without the `+`. `KAPSO_BASE_URL` and `KAPSO_WEBHOOK_PATH` are read by the plugin directly. |
 | `ADA_MODEL`            | Default `anthropic/claude-opus-5`.                                                                                                                                    |
 | `ANTHROPIC_API_KEY`     | API key. Required when `ANTHROPIC_SETUP_TOKEN` is unset or its import fails.                                                                                          |
 | `ANTHROPIC_SETUP_TOKEN` | Imported on boot. A failed import is fatal unless `ANTHROPIC_API_KEY` is set.                                                                                         |

@@ -105,6 +105,9 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
     expect(config["plugins.entries.ada.config.lexroomConnectUri"]).toBe(
       "https://vera.verus.legal/ada/lexroom/connect",
     );
+    expect(config['channels["kapso-whatsapp"].dmSecurity']).toBe("open");
+    expect(config['channels["kapso-whatsapp"].allowFrom']).toEqual(["*"]);
+    expect(config['channels["kapso-whatsapp"].defaultTo']).toBe("+390000000000");
     expect(config["tools.alsoAllow"]).toContain("ada_lexroom_connect");
     expect(JSON.stringify(config["tools.alsoAllow"])).not.toContain("vera_");
   });
