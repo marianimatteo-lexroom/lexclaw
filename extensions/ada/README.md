@@ -112,7 +112,7 @@ Plugin config values can reference environment variables, for example `googleNot
 
 ## Lawyer sender check
 
-Ada records a lawyer inbound message (which opens the WhatsApp 24-hour window and releases a held digest) only when the sender matches `channels["kapso-whatsapp"].defaultTo`. Comparison uses digits only, so `+390000000000`, `390000000000`, and `whatsapp:+390000000000` are the same number. A missing `defaultTo` or any other sender is ignored and logged, even if the channel allowlist accepted it.
+Ada records a lawyer inbound message (which opens the WhatsApp 24-hour window and releases a held digest) only when the sender matches `channels["kapso-whatsapp"].defaultTo`. Comparison uses digits only, so `+390000000000`, `390000000000`, and `whatsapp:+390000000000` are the same number. A missing `defaultTo` or any other sender is not recorded (a debug log line only): it still chats normally, because DMs are open to anyone, but it cannot open the window or release a digest.
 
 ## Monitoring
 

@@ -17,7 +17,7 @@ function config(defaultTo: string | undefined) {
 }
 
 function api(defaultTo: string | undefined) {
-  const logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn() };
+  const logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() };
   return {
     api: { config: config(defaultTo), logger } as unknown as OpenClawPluginApi,
     logger,
@@ -79,7 +79,7 @@ describe("recordLawyerInbound", () => {
     expect(writeWake).toHaveBeenCalledWith({ lastLawyerInboundAtMs: 1 });
   });
 
-  it("ignores any other sender, even one the channel allowlist let through", async () => {
+  it("does not record any other sender, quietly: they chat normally but never open the window", async () => {
     const { api: other, logger } = api("+390000000001");
     await recordLawyerInbound({
       api: other,
@@ -89,6 +89,7 @@ describe("recordLawyerInbound", () => {
     });
     await recordLawyerInbound({ api: other, atMs: 3, senders: [] });
     expect(writeWake).not.toHaveBeenCalled();
-    expect(logger.warn).toHaveBeenCalledTimes(2);
+    expect(logger.debug).toHaveBeenCalledTimes(2);
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 });

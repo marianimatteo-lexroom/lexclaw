@@ -191,14 +191,6 @@ ADA_TOOLS_JSON="$(node -e '
   process.stdout.write(JSON.stringify(manifest.contracts.tools));
 ' "${ADA_DIR}")"
 
-# Allowlist needs both +E.164 and bare digits (see PROGRESS.md). Override with a
-# comma-separated KAPSO_ALLOW_FROM.
-KAPSO_ALLOW_FROM_JSON="$(node -p '
-  const configured = (process.env.KAPSO_ALLOW_FROM ?? "").split(",").map((v) => v.trim()).filter(Boolean);
-  const to = process.env.KAPSO_DEFAULT_TO;
-  JSON.stringify(configured.length > 0 ? configured : [to, to.replace(/^\+/, "")]);
-')"
-
 config_set plugins.entries.ada.enabled true
 config_set plugins.entries.ada.hooks.allowConversationAccess true
 config_set plugins.entries.kapso-whatsapp.enabled true
@@ -206,8 +198,11 @@ config_set tools.alsoAllow "${ADA_TOOLS_JSON}"
 config_set 'channels["kapso-whatsapp"].enabled' true
 config_set 'channels["kapso-whatsapp"].phoneNumberId' "$(json_of_env KAPSO_PHONE_NUMBER_ID)"
 config_set 'channels["kapso-whatsapp"].defaultTo' "$(json_of_env KAPSO_DEFAULT_TO)"
-config_set 'channels["kapso-whatsapp"].dmSecurity' '"allowlist"'
-config_set 'channels["kapso-whatsapp"].allowFrom' "${KAPSO_ALLOW_FROM_JSON}"
+# Anyone may message the bot: dmSecurity "open" needs allowFrom to hold the wildcard. The
+# lawyer's own number stays in defaultTo (outbound default, and the sender that opens the
+# digest window), but it no longer gates who can chat.
+config_set 'channels["kapso-whatsapp"].dmSecurity' '"open"'
+config_set 'channels["kapso-whatsapp"].allowFrom' '["*"]'
 config_set agents.defaults.model.primary "$(json_of_env ADA_MODEL)"
 # Ada's own service owns the 15-minute poll and the 07:40 Europe/Rome pass.
 config_set agents.defaults.heartbeat.every '"0m"'
