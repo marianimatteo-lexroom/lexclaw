@@ -7,14 +7,18 @@ import {
   LexroomTimeoutError,
   type LexroomGuard,
 } from "./lexroom-guard.js";
+import {
+  chooseModules,
+  FALLBACK_MODULES,
+  MODULES_TTL_MS,
+  normalizeModules,
+} from "./lexroom-modules.js";
 import { ndjsonLines, parseNdjsonLine } from "./lexroom-stream.js";
 
 export type { CitedSource } from "./lexroom-citations.js";
 
 export const DEFAULT_LEXROOM_BASE_URL = "https://api.lexroom.ai";
 export const LEXROOM_CLIENT_TYPE = "app_lex";
-/** Lexroom rejects a research request with no module, so one is always sent. */
-export const DEFAULT_RESEARCH_MODULES: readonly string[] = ["Civile"];
 
 const MIN_TIMEOUT_MS = 1000;
 const PROGRESS_LOG_EVERY_LINES = 10;
@@ -33,14 +37,14 @@ export type LexroomConfig = {
   idleTimeoutMs?: number;
   /** Research only: time allowed until the first answer text appears. Default 60000. */
   answerTimeoutMs?: number;
-  /** Modules searched when the caller names none. Defaults to ["Civile"]. */
+  /** Modules searched when the caller names none. Defaults to every module the user may search. */
   researchModules?: readonly string[];
 };
 
 type ResearchSnapshot = {
   id?: string;
   status?: string;
-  answer?: string | { text?: string };
+  answer?: string | { text?: string; html?: string };
   documents?: unknown;
   sources?: unknown;
   analysis?: unknown;
@@ -141,34 +145,38 @@ function token(config: LexroomConfig): string {
   return accessToken;
 }
 
-/**
- * The web app sends only the bearer and a JSON content type. `Accept-Encoding: identity`
- * is deliberate: Node's fetch hands back a gzip-encoded body only once it ends, so a
- * compressing proxy would make a live stream look silent until it is over.
- */
-function headers(accessToken: string, accept: string): Headers {
+/** Exactly what the lexroom-bot client sends: the bearer, the client type, and JSON for POSTs. */
+function headers(accessToken: string, method: "GET" | "POST"): Headers {
   const result = new Headers();
   result.set("Authorization", `Bearer ${accessToken}`);
-  result.set("Content-Type", "application/json");
-  result.set("Accept", accept);
-  result.set("Accept-Encoding", "identity");
+  result.set("X-Client-Type", LEXROOM_CLIENT_TYPE);
+  if (method === "POST") {
+    result.set("Content-Type", "application/json");
+  }
   return result;
 }
 
-const STREAM_ACCEPT = "text/event-stream, application/x-ndjson, */*;q=0.5";
-const JSON_ACCEPT = "application/json, */*;q=0.5";
+/**
+ * Escapes non-ASCII to \uXXXX so a request body is pure ASCII bytes, which keeps the
+ * Python backend from choking on a UTF-8 decode whatever the runtime encoding is.
+ */
+export function asciiJson(value: unknown): string {
+  return JSON.stringify(value).replace(
+    /[\u0080-\uFFFF]/gu,
+    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
 
 function names(values: readonly string[] | undefined): string[] {
   return [...new Set((values ?? []).map((name) => name.trim()).filter((name) => name.length > 0))];
 }
 
-function modulesFor(explicit: readonly string[] | undefined, config: LexroomConfig): string[] {
+function requestedModules(
+  explicit: readonly string[] | undefined,
+  config: LexroomConfig,
+): string[] {
   const chosen = names(explicit);
-  if (chosen.length > 0) {
-    return chosen;
-  }
-  const configured = names(config.researchModules);
-  return configured.length > 0 ? configured : [...DEFAULT_RESEARCH_MODULES];
+  return chosen.length > 0 ? chosen : names(config.researchModules);
 }
 
 /** Keeps a server-supplied `detail` loggable: no token, no control characters, bounded. */
@@ -207,7 +215,7 @@ export async function checkLexroomAuth(input: {
     const response = await guard.race(
       (input.fetchImpl ?? fetch)(`${baseUrl(input.config)}${AUTH_PROBE_PATH}`, {
         method: "GET",
-        headers: headers(token(input.config), JSON_ACCEPT),
+        headers: headers(token(input.config), "GET"),
         signal: guard.signal,
       }),
     );
@@ -313,7 +321,6 @@ async function request(
     guard: LexroomGuard;
     trace: Trace;
     step: string;
-    accept: string;
     modules?: readonly string[];
   },
 ): Promise<Response> {
@@ -322,8 +329,8 @@ async function request(
   const response = await guard.race(
     fetchImpl(url, {
       method: init.method,
-      headers: headers(token(config), call.accept),
-      ...(init.method === "POST" ? { body: JSON.stringify(init.body) } : {}),
+      headers: headers(token(config), init.method),
+      ...(init.method === "POST" ? { body: asciiJson(init.body) } : {}),
       signal: guard.signal,
     }),
   );
@@ -340,24 +347,97 @@ async function request(
   return response;
 }
 
+type ModulesCache = { key: string; modules: string[]; at: number };
+let modulesCache: ModulesCache | undefined;
+
+/**
+ * The modules this user may search, from `GET /v1/user/modules`, kept for an hour like the
+ * lexroom-bot client does. A failed lookup falls back to the full catalog instead of failing
+ * the research; a stale token is then caught by the research call itself.
+ */
+async function userModules(
+  fetchImpl: FetchLike,
+  config: LexroomConfig,
+  call: { guard: LexroomGuard; trace: Trace },
+): Promise<string[]> {
+  const key = `${baseUrl(config)}\n${token(config)}`;
+  if (modulesCache?.key === key && Date.now() - modulesCache.at < MODULES_TTL_MS) {
+    return modulesCache.modules;
+  }
+  try {
+    const response = await request(
+      fetchImpl,
+      `${baseUrl(config)}/v1/user/modules`,
+      config,
+      { method: "GET" },
+      { ...call, step: "modules" },
+    );
+    const modules = normalizeModules(await call.guard.race(response.json()));
+    if (modules.length === 0) {
+      throw new LexroomError("Lexroom user/modules returned an empty list");
+    }
+    modulesCache = { key, modules, at: Date.now() };
+    call.trace("modules.done", { count: modules.length });
+    return modules;
+  } catch (error) {
+    if (call.guard.timedOut() || (error instanceof Error && error.name === "AbortError")) {
+      throw error;
+    }
+    call.trace("modules.fallback", {
+      error: (error instanceof Error ? error.message : "unknown").slice(0, 160),
+    });
+    return modulesCache?.key === key ? modulesCache.modules : [...FALLBACK_MODULES];
+  }
+}
+
+/**
+ * One stream line as a research snapshot. Like lexroom-bot, the snapshot is the `research`
+ * envelope when there is one and the line itself otherwise, and a line without an `id` is
+ * not a snapshot.
+ */
 function snapshotFrom(parsed: unknown): ResearchSnapshot | undefined {
   if (!parsed || typeof parsed !== "object") {
     return undefined;
   }
-  const record = parsed as { research?: unknown; error?: unknown; detail?: unknown };
+  const record = parsed as { research?: unknown; error?: unknown; detail?: unknown; id?: unknown };
   const message = [record.error, record.detail].find((value) => typeof value === "string");
-  if (typeof message === "string" && message.trim() && record.research === undefined) {
+  if (typeof message === "string" && message.trim() && !record.research && !record.id) {
     throw new LexroomError(message.trim().slice(0, 200));
   }
-  const nested = record.research;
-  if (!nested || typeof nested !== "object") {
-    return undefined;
+  const nested = record.research && typeof record.research === "object" ? record.research : parsed;
+  const snapshot = nested as ResearchSnapshot & { error?: unknown };
+  if (typeof snapshot.error === "string" && snapshot.error.trim()) {
+    throw new LexroomError(snapshot.error.trim().slice(0, 200));
   }
-  const error = (nested as { error?: unknown }).error;
-  if (typeof error === "string" && error.trim()) {
-    throw new LexroomError(error.trim().slice(0, 200));
-  }
-  return nested as ResearchSnapshot;
+  return typeof snapshot.id === "string" && snapshot.id ? snapshot : undefined;
+}
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/giu, "\n")
+    .replace(/<\/(p|div|h[1-6]|li|tr)>/giu, "\n")
+    .replace(/<[^>]+>/gu, "")
+    .replace(/&nbsp;/giu, " ")
+    .replace(/&amp;/giu, "&")
+    .replace(/&lt;/giu, "<")
+    .replace(/&gt;/giu, ">")
+    .replace(/&#39;|&apos;/giu, "'")
+    .replace(/&quot;/giu, '"')
+    .trim();
+}
+
+/**
+ * The answer text of a snapshot, falling back to its HTML and then to the previous snapshot.
+ * A terminal event often repeats the id without the answer body, and must not blank the answer.
+ */
+function mergeAnswer(previous: string, incoming: ResearchSnapshot["answer"]): string {
+  const record = incoming && typeof incoming === "object" ? incoming : undefined;
+  const raw = typeof incoming === "string" ? incoming : record?.text;
+  const text = (typeof raw === "string" ? raw : "").replaceAll("</END>", "").trim();
+  const html = (typeof record?.html === "string" ? record.html : "")
+    .replaceAll("</END>", "")
+    .trim();
+  return text || (html ? stripHtml(html) : "") || previous;
 }
 
 function groupCount(value: unknown): number {
@@ -370,13 +450,21 @@ function hasPayload(chunk: Uint8Array): boolean {
 
 /**
  * Every line is a full cumulative snapshot, so only the last one matters. Returns
- * as soon as one reports DONE; a stream that ends first is an error, not a partial.
+ * as soon as one reports DONE. A stream that ends first is an error, except where the caller
+ * accepts the last snapshot (research does, as lexroom-bot does).
  * Any payload bytes count as progress for the idle limit, so one multi-MB line that
  * is still downloading is not mistaken for silence.
  */
 async function readFinalSnapshot(
   response: Response,
-  call: { guard: LexroomGuard; trace: Trace; step: string; stats: StreamStats },
+  call: {
+    guard: LexroomGuard;
+    trace: Trace;
+    step: string;
+    stats: StreamStats;
+    /** Research keeps whatever arrived before the stream ended; a draft must reach DONE. */
+    partialOk?: boolean;
+  },
 ): Promise<ResearchSnapshot> {
   const { guard, trace, step, stats } = call;
   if (!response.body) {
@@ -387,16 +475,24 @@ async function readFinalSnapshot(
       guard.touch();
     }
   })[Symbol.asyncIterator]();
+  let last: ResearchSnapshot | undefined;
   try {
     for (;;) {
       const next = await guard.race(iterator.next());
       if (next.done) {
         break;
       }
-      const snapshot = snapshotFrom(parseNdjsonLine(next.value));
-      if (!snapshot) {
+      const line = snapshotFrom(parseNdjsonLine(next.value));
+      if (!line) {
         continue;
       }
+      const snapshot: ResearchSnapshot = {
+        ...line,
+        answer: mergeAnswer(answerText(last?.answer), line.answer),
+        documents: Array.isArray(line.documents) ? line.documents : last?.documents,
+        sources: Array.isArray(line.sources) ? line.sources : last?.sources,
+      };
+      last = snapshot;
       stats.lines += 1;
       const status = snapshot.status?.toUpperCase();
       if (stats.lines === 1) {
@@ -427,8 +523,11 @@ async function readFinalSnapshot(
   } finally {
     void iterator.return(undefined).catch(() => undefined);
   }
+  if (last && call.partialOk) {
+    return last;
+  }
   throw new LexroomError(
-    stats.lines > 0
+    last
       ? "Lexroom research stream ended before DONE"
       : "Lexroom returned an empty research stream",
   );
@@ -511,7 +610,10 @@ export async function runResearch(input: {
   const answerMs = positiveMs(input.config.answerTimeoutMs, DEFAULT_ANSWER_TIMEOUT_MS);
   const guard = createGuard({ ...limits(input.config), answerMs, signal: input.signal });
   try {
-    const modules = modulesFor(input.modules, input.config);
+    const modules = chooseModules(
+      requestedModules(input.modules, input.config),
+      await userModules(fetchImpl, input.config, { guard, trace }),
+    );
     const library = libraryScope(input.libraryDocumentIds);
     trace(`${step}.start`, {
       modules: modules.join(","),
@@ -527,21 +629,27 @@ export async function runResearch(input: {
       {
         method: "POST",
         body: {
-          // The web app appends a newline to what the lawyer typed.
-          query: `${query}\n`,
-          search_on_modules: modules,
-          documents: [],
-          is_temporary: false,
+          query,
           ...library,
+          search_on_modules: modules,
           ...(input.parentResearchId?.trim()
             ? { parent_research_id: input.parentResearchId.trim() }
             : {}),
         },
       },
-      { guard, trace, step, accept: STREAM_ACCEPT, modules },
+      { guard, trace, step, modules },
     );
-    const snapshot = await readFinalSnapshot(response, { guard, trace, step, stats });
+    const snapshot = await readFinalSnapshot(response, {
+      guard,
+      trace,
+      step,
+      stats,
+      partialOk: true,
+    });
     const answer = clip(toWhatsAppText(answerText(snapshot.answer)), MAX_ANSWER_CHARS);
+    if (!answer && snapshot.status?.toUpperCase() !== "DONE") {
+      throw new LexroomError("Lexroom research stream ended before DONE");
+    }
     const sources = citedSources(snapshot.documents, answer);
     trace(`${step}.done`, {
       durationMs: guard.elapsedMs(),
@@ -558,6 +666,9 @@ export async function runResearch(input: {
       sources,
     };
   } catch (error) {
+    if (error instanceof LexroomError && error.http?.status === 401) {
+      modulesCache = undefined;
+    }
     return failed({
       error,
       fallback: "Lexroom research failed",
@@ -572,7 +683,7 @@ export async function runResearch(input: {
   }
 }
 
-/** Lexroom flags the modules it picked for the prompt; inactive ones are not chosen. */
+/** Lexroom flags the modules it picked for the prompt; inactive ones are not chosen. Without any pick, every module the user may search. */
 async function selectModules(
   fetchImpl: FetchLike,
   config: LexroomConfig,
@@ -584,7 +695,7 @@ async function selectModules(
     `${baseUrl(config)}/v2/ai/drafting/selectors`,
     config,
     { method: "POST", body: { prompt, template: null } },
-    { ...call, step: "selectors", accept: JSON_ACCEPT },
+    { ...call, step: "selectors" },
   );
   const body = (await call.guard.race(response.json())) as {
     modules?: Array<{ name?: unknown; is_active?: unknown }>;
@@ -592,7 +703,8 @@ async function selectModules(
   const selected = (body.modules ?? [])
     .filter((module) => module.is_active !== false)
     .map((module) => (typeof module.name === "string" ? module.name : ""));
-  const modules = modulesFor(selected, config);
+  const picked = requestedModules(selected, config);
+  const modules = picked.length > 0 ? picked : await userModules(fetchImpl, config, call);
   call.trace("selectors.done", { offered: body.modules?.length ?? 0, chosen: modules.join(",") });
   return modules;
 }
@@ -612,7 +724,7 @@ async function loadStoredDraft(
     `${baseUrl(config)}/v2/craft/drafting/${encodeURIComponent(id)}`,
     config,
     { method: "GET" },
-    { ...call, step: "stored_draft", accept: JSON_ACCEPT },
+    { ...call, step: "stored_draft" },
   );
   const body = (await call.guard.race(response.json())) as ResearchSnapshot & {
     research?: ResearchSnapshot;
@@ -678,7 +790,7 @@ export async function runDraft(input: {
             : {}),
         },
       },
-      { guard, trace, step, accept: STREAM_ACCEPT, modules },
+      { guard, trace, step, modules },
     );
     let snapshot = await readFinalSnapshot(response, { guard, trace, step, stats });
     if (!draftContent(snapshot) && snapshot.id) {

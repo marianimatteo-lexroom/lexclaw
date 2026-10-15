@@ -108,6 +108,16 @@ function headerOf(init: RequestInit | undefined, name: string): string | null {
 
 const fetchMock = vi.fn<typeof fetch>();
 
+/** Lexroom's module lookup, answered with the modules the linked user may search. */
+function modulesRoute(input: RequestInfo | URL, modules: string[] = ["Civile", "Societario"]) {
+  return urlOf(input).endsWith("/v1/user/modules") ? json(modules) : undefined;
+}
+
+function askBody(): Record<string, unknown> {
+  const call = fetchMock.mock.calls.find(([input]) => urlOf(input).endsWith("/v1/ask_me_anything"));
+  return JSON.parse(String(call?.[1]?.body)) as Record<string, unknown>;
+}
+
 function lexroomAccount(overrides: Record<string, unknown> = {}) {
   return {
     email: "lawyer@example.com",
@@ -282,10 +292,14 @@ describe("ada_draft confirmation gate", () => {
     });
   });
 
-  it("drafts with the default module when Lexroom selects none", async () => {
-    useLexroomAccount(lexroomAccount());
+  it("drafts with the user's modules when Lexroom selects none", async () => {
+    useLexroomAccount(lexroomAccount({ accessToken: "draft-modules-token" }));
     const bodies: unknown[] = [];
     fetchMock.mockImplementation(async (input, init) => {
+      const modules = modulesRoute(input, ["Tributario"]);
+      if (modules) {
+        return modules;
+      }
       if (urlOf(input).endsWith("/v2/ai/drafting/selectors")) {
         return json({ modules: [] });
       }
@@ -297,7 +311,7 @@ describe("ada_draft confirmation gate", () => {
       ok: true,
       drafted: true,
     });
-    expect(bodies[0]).toMatchObject({ modules: ["Civile"] });
+    expect(bodies[0]).toMatchObject({ modules: ["Tributario"] });
   });
 
   it("fails when the draft stream ends before DONE", async () => {
@@ -306,24 +320,24 @@ describe("ada_draft confirmation gate", () => {
       ndjson({ research: { id: "draft-3", status: "RUNNING" } }),
     );
     const { callTool } = registerAda();
-    expect(
-      await callTool("ada_draft", { ...draft, confirmed: true, modules: ["Civile"] }),
-    ).toEqual({ ok: false, error: "Lexroom research stream ended before DONE" });
+    expect(await callTool("ada_draft", { ...draft, confirmed: true, modules: ["Civile"] })).toEqual(
+      { ok: false, error: "Lexroom research stream ended before DONE" },
+    );
   });
 
   it("returns a network failure as an error result", async () => {
     useLexroomAccount(lexroomAccount());
     fetchMock.mockRejectedValue(new Error("socket hang up"));
     const { callTool } = registerAda();
-    expect(
-      await callTool("ada_draft", { ...draft, confirmed: true, modules: ["Civile"] }),
-    ).toEqual({ ok: false, error: "socket hang up" });
+    expect(await callTool("ada_draft", { ...draft, confirmed: true, modules: ["Civile"] })).toEqual(
+      { ok: false, error: "socket hang up" },
+    );
   });
 });
 
 describe("ada_research", () => {
   it("runs research with the linked account token and replaces citation ids", async () => {
-    useLexroomAccount(lexroomAccount());
+    useLexroomAccount(lexroomAccount({ accessToken: "research-token" }));
     const seen: Array<{ url: string; method?: string; auth: string | null; body?: unknown }> = [];
     fetchMock.mockImplementation(async (input, init) => {
       const url = urlOf(input);
@@ -333,17 +347,17 @@ describe("ada_research", () => {
         auth: headerOf(init, "Authorization"),
         body: init?.body ? JSON.parse(String(init.body)) : undefined,
       });
-      if (init?.method === "POST") {
-        return ndjson({
+      return (
+        modulesRoute(input) ??
+        ndjson({
           research: {
             id: "res-1",
             status: "DONE",
             answer: { text: "Il datore prova il fatto [1]." },
             documents: [{ files: [{ citation_id: 1, title: "Cass. civ. 1/2024" }] }],
           },
-        });
-      }
-      return new Response(null, { status: 204 });
+        })
+      );
     });
     const { callTool } = registerAda();
     expect(
@@ -360,58 +374,59 @@ describe("ada_research", () => {
       answer: "Il datore prova il fatto [1].",
       sources: [{ id: 1, title: "Cass. civ. 1/2024" }],
     });
-    expect(seen[0]).toMatchObject({
-      url: "https://lexroom.example/v1/ask_me_anything",
+    expect(seen.map((call) => call.url)).toEqual([
+      "https://lexroom.example/v1/user/modules",
+      "https://lexroom.example/v1/ask_me_anything",
+    ]);
+    expect(seen[1]).toMatchObject({
       method: "POST",
-      auth: "Bearer test-account-token",
+      auth: "Bearer research-token",
       body: {
-        query: "Onere della prova\n",
+        query: "Onere della prova",
         search_on_user_data: true,
         library_documents: [{ document_ids: ["doc-1"] }],
+        search_on_modules: ["Civile", "Societario"],
       },
     });
-    expect(seen).toHaveLength(1);
-    expect(seen[0]?.body).toMatchObject({ search_on_modules: ["Civile"], documents: [] });
+    expect(seen[1]?.body).not.toHaveProperty("documents");
   });
 
-  it("searches the configured research modules", async () => {
-    useLexroomAccount(lexroomAccount());
-    fetchMock.mockImplementation(async () =>
-      ndjson({ research: { id: "res-5", status: "DONE", answer: "ok" } }),
+  it("searches the configured research modules the user may search", async () => {
+    useLexroomAccount(lexroomAccount({ accessToken: "configured-modules-token" }));
+    fetchMock.mockImplementation(
+      async (input) =>
+        modulesRoute(input) ?? ndjson({ research: { id: "res-5", status: "DONE", answer: "ok" } }),
     );
     const { callTool } = registerAda({ ...PLUGIN_CONFIG, researchModules: ["Societario"] });
     await callTool("ada_research", { matterId: "matter-a", query: "Question" });
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
-      search_on_modules: ["Societario"],
-    });
+    expect(askBody()).toMatchObject({ search_on_modules: ["Societario"] });
   });
 
   it("does not search the private library without document ids", async () => {
-    useLexroomAccount(lexroomAccount());
-    fetchMock.mockImplementation(async (_input, init) =>
-      init?.method === "POST"
-        ? ndjson({ research: { id: "res-2", status: "DONE", answer: "ok" } })
-        : new Response(null, { status: 204 }),
+    useLexroomAccount(lexroomAccount({ accessToken: "no-library-token" }));
+    fetchMock.mockImplementation(
+      async (input) =>
+        modulesRoute(input) ?? ndjson({ research: { id: "res-2", status: "DONE", answer: "ok" } }),
     );
     const { callTool } = registerAda();
     await callTool("ada_research", { matterId: "matter-a", query: "Question" });
-    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+    const body = askBody();
     expect(body.search_on_user_data).toBe(false);
     expect(body).not.toHaveProperty("library_documents");
   });
 
   it("falls back to the static config token when no account is linked", async () => {
     useLexroomAccount(null);
-    fetchMock.mockImplementation(async (_input, init) =>
-      init?.method === "POST"
-        ? ndjson({ research: { id: "res-3", status: "DONE", answer: "ok" } })
-        : new Response(null, { status: 204 }),
+    fetchMock.mockImplementation(
+      async (input) =>
+        modulesRoute(input) ?? ndjson({ research: { id: "res-3", status: "DONE", answer: "ok" } }),
     );
     const { callTool } = registerAda({ ...PLUGIN_CONFIG, accessToken: "test-config-token" });
     await callTool("ada_research", { matterId: "matter-a", query: "Question" });
-    expect(headerOf(fetchMock.mock.calls[0]?.[1], "Authorization")).toBe(
-      "Bearer test-config-token",
+    const asked = fetchMock.mock.calls.find(([input]) =>
+      urlOf(input).endsWith("/v1/ask_me_anything"),
     );
+    expect(headerOf(asked?.[1], "Authorization")).toBe("Bearer test-config-token");
   });
 
   it("returns not_connected without a request when no token exists", async () => {
@@ -436,13 +451,17 @@ describe("ada_research", () => {
   it("returns an HTTP failure and a stream error as error results", async () => {
     useLexroomAccount(lexroomAccount());
     const { callTool } = registerAda();
-    fetchMock.mockImplementationOnce(async () => json({ detail: "boom" }, 500));
+    fetchMock.mockImplementation(
+      async (input) => modulesRoute(input) ?? json({ detail: "boom" }, 500),
+    );
     expect(await callTool("ada_research", { matterId: "matter-a", query: "Q" })).toEqual({
       ok: false,
       error: "Lexroom returned 500: boom",
     });
-    fetchMock.mockImplementationOnce(async () =>
-      ndjson({ research: { id: "res-4", status: "RUNNING", error: "model unavailable" } }),
+    fetchMock.mockImplementation(
+      async (input) =>
+        modulesRoute(input) ??
+        ndjson({ research: { id: "res-4", status: "RUNNING", error: "model unavailable" } }),
     );
     expect(await callTool("ada_research", { matterId: "matter-a", query: "Q" })).toEqual({
       ok: false,

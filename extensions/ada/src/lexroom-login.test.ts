@@ -1,57 +1,77 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  loginLexroomAccount,
-  openLexroomMfaTicket,
-  sealLexroomMfaTicket,
-} from "./lexroom-login.js";
+import { loginLexroomAccount } from "./lexroom-login.js";
 
-const STATE_SECRET = "0123456789abcdef";
+function jsonResponse(body: unknown, status: number): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
 
-function jsonResponse(
-  body: unknown,
-  status: number,
-  headers?: Record<string, string | string[]>,
-): Response {
-  const headerInit = new Headers();
-  headerInit.set("content-type", "application/json");
-  if (headers) {
-    for (const [name, value] of Object.entries(headers)) {
-      if (Array.isArray(value)) {
-        for (const item of value) {
-          headerInit.append(name, item);
-        }
-      } else {
-        headerInit.set(name, value);
-      }
-    }
-  }
-  return new Response(JSON.stringify(body), { status, headers: headerInit });
+function jwt(exp: number): string {
+  return [
+    Buffer.from("{}").toString("base64url"),
+    Buffer.from(JSON.stringify({ exp })).toString("base64url"),
+    "sig",
+  ].join(".");
 }
 
 describe("loginLexroomAccount", () => {
-  it("stores access and refresh tokens from a successful login", async () => {
-    const exp = Math.floor(Date.now() / 1000) + 3600;
-    const access = [
-      Buffer.from("{}").toString("base64url"),
-      Buffer.from(JSON.stringify({ exp })).toString("base64url"),
-      "sig",
-    ].join(".");
-    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      expect(init?.method).toBe("POST");
-      expect(new Headers(init?.headers).get("X-Client-Type")).toBe("app_lex");
-      expect(JSON.parse(String(init?.body))).toEqual({
-        email: "lawyer@lexroom.ai",
-        password: "secret",
-      });
-      return jsonResponse({ access, refresh: "refresh-token" }, 200);
+  it("posts one /v1/login with the lexroom-bot headers and an ASCII-only JSON body", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      return jsonResponse({ access_token: "tok" }, 200);
     });
+    await loginLexroomAccount({ email: " Lawyer@Lexroom.ai ", password: "pässwörd", fetchImpl });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe("https://api.lexroom.ai/v1/login");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(Object.fromEntries(new Headers(calls[0]?.init?.headers))).toEqual({
+      "content-type": "application/json",
+      "x-client-type": "app_lex",
+    });
+    const body = String(calls[0]?.init?.body);
+    expect(body).toBe('{"email":"Lawyer@Lexroom.ai","password":"p\\u00e4ssw\\u00f6rd"}');
+    expect(JSON.parse(body)).toEqual({ email: "Lawyer@Lexroom.ai", password: "pässwörd" });
+  });
+
+  it("honors a configured base URL", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) =>
+      jsonResponse({ access_token: "tok" }, 200),
+    );
+    await loginLexroomAccount({
+      email: "a@b.it",
+      password: "x",
+      baseUrl: "https://staging.lexroom.test/",
+      fetchImpl,
+    });
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("https://staging.lexroom.test/v1/login");
+  });
+
+  it.each([
+    ["access_token", { access_token: "a", token: "b", accessToken: "c" }, "a"],
+    ["token", { token: "b", accessToken: "c" }, "b"],
+    ["accessToken", { accessToken: "c" }, "c"],
+    ["access", { access: "d" }, "d"],
+  ])("reads the bearer from %s", async (_key, body, expected) => {
+    const fetchImpl = vi.fn(async () => jsonResponse(body, 200));
     await expect(
-      loginLexroomAccount({
-        email: "Lawyer@Lexroom.ai",
-        password: "secret",
-        stateSecret: STATE_SECRET,
-        fetchImpl,
-      }),
+      loginLexroomAccount({ email: "a@b.it", password: "x", fetchImpl }),
+    ).resolves.toMatchObject({ ok: true, accessToken: expected });
+  });
+
+  it("returns the token, refresh token, expiry and email without cookies or a web session", async () => {
+    const exp = Math.floor(Date.now() / 1000) + 3600;
+    const access = jwt(exp);
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(
+        { access_token: access, refresh: "refresh-token", email: "lawyer@lexroom.ai" },
+        200,
+      ),
+    );
+    await expect(
+      loginLexroomAccount({ email: "Lawyer@Lexroom.ai", password: "secret", fetchImpl }),
     ).resolves.toEqual({
       ok: true,
       email: "lawyer@lexroom.ai",
@@ -59,287 +79,34 @@ describe("loginLexroomAccount", () => {
       refreshToken: "refresh-token",
       accessExpiresAtMs: exp * 1000,
     });
-  });
-
-  it("starts the Lexroom app MFA challenge instead of failing hard", async () => {
-    const calls: string[] = [];
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      calls.push(`${init?.method ?? "GET"} ${url}`);
-      if (url.endsWith("/v1/login")) {
-        return jsonResponse({ detail: "mfa_step_up_required", code: "mfa_step_up_required" }, 403);
-      }
-      if (url.endsWith("/api/auth/csrf")) {
-        return jsonResponse(
-          { csrfToken: "csrf-token" },
-          200,
-          {
-            "set-cookie":
-              "__Host-next-auth.csrf-token=csrf-token%7Chash; Path=/; HttpOnly; Secure; SameSite=Strict",
-          },
-        );
-      }
-      if (url.endsWith("/api/auth/callback/credentials")) {
-        return jsonResponse(
-          { url: "https://app.lexroom.ai/auth/mfa" },
-          200,
-          {
-            "set-cookie":
-              "__Secure-next-auth.session-token=pending-mfa; Path=/; HttpOnly; Secure; SameSite=Lax",
-          },
-        );
-      }
-      if (url.endsWith("/auth/mfa")) {
-        return new Response("", { status: 200 });
-      }
-      if (url.endsWith("/api/auth/mfa/start")) {
-        expect(JSON.parse(String(init?.body))).toMatchObject({ method: "totp" });
-        expect(new Headers(init?.headers).get("Cookie")).toContain(
-          "__Secure-next-auth.session-token=pending-mfa",
-        );
-        return jsonResponse({ resendAfterSeconds: 0 }, 200);
-      }
-      throw new Error(`unexpected fetch ${url}`);
-    });
-
-    const result = await loginLexroomAccount({
-      email: "lawyer@lexroom.ai",
-      password: "secret",
-      stateSecret: STATE_SECRET,
-      fetchImpl,
-    });
-    expect(result).toMatchObject({
-      ok: false,
-      reason: "mfa_required",
-      method: "totp",
-    });
-    if (!result.ok && result.reason === "mfa_required") {
-      const opened = openLexroomMfaTicket(STATE_SECRET, result.mfaTicket);
-      expect(opened?.method).toBe("totp");
-      expect(opened?.cookies["__Secure-next-auth.session-token"]).toBe("pending-mfa");
-    }
-    expect(calls.some((call) => call.includes("/api/auth/mfa/start"))).toBe(true);
-  });
-
-  it("completes MFA through verify and session exchange", async () => {
-    const exp = Math.floor(Date.now() / 1000) + 3600;
-    const access = [
-      Buffer.from("{}").toString("base64url"),
-      Buffer.from(JSON.stringify({ exp })).toString("base64url"),
-      "sig",
-    ].join(".");
-    const mfaTicket = sealLexroomMfaTicket(STATE_SECRET, {
-      email: "lawyer@lexroom.ai",
-      password: "secret",
-      method: "totp",
-      cookies: { "__Secure-next-auth.session-token": "pending-mfa" },
-      appBaseUrl: "https://app.lexroom.ai",
-    });
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.endsWith("/api/auth/mfa/start")) {
-        return jsonResponse({ resendAfterSeconds: 0 }, 200);
-      }
-      if (url.endsWith("/api/auth/mfa/verify")) {
-        expect(JSON.parse(String(init?.body))).toEqual({
-          code: "123456",
-          rememberDevice: false,
-        });
-        return jsonResponse({ needsSessionExchange: true }, 200);
-      }
-      if (url.endsWith("/api/auth/csrf")) {
-        return jsonResponse({ csrfToken: "csrf-2" }, 200);
-      }
-      if (url.endsWith("/api/auth/callback/mfa-session-exchange")) {
-        return jsonResponse(
-          { url: "https://app.lexroom.ai/" },
-          200,
-          {
-            "set-cookie":
-              "__Secure-next-auth.session-token=full-session; Path=/; HttpOnly; Secure; SameSite=Lax",
-          },
-        );
-      }
-      if (url.endsWith("/api/auth/session")) {
-        return jsonResponse(
-          { user: { accessToken: access, email: "lawyer@lexroom.ai" } },
-          200,
-        );
-      }
-      throw new Error(`unexpected fetch ${url}`);
-    });
-
-    await expect(
-      loginLexroomAccount({
-        email: "lawyer@lexroom.ai",
-        password: "",
-        otp: "123456",
-        mfaTicket,
-        stateSecret: STATE_SECRET,
-        fetchImpl,
-      }),
-    ).resolves.toEqual({
-      ok: true,
-      email: "lawyer@lexroom.ai",
-      accessToken: access,
-      refreshToken: "",
-      accessExpiresAtMs: exp * 1000,
-    });
-  });
-
-  it("reads the bearer from the top of the NextAuth session when the user has none", async () => {
-    const mfaTicket = sealLexroomMfaTicket(STATE_SECRET, {
-      email: "lawyer@lexroom.ai",
-      password: "secret",
-      method: "totp",
-      cookies: { "__Secure-next-auth.session-token": "pending-mfa" },
-      appBaseUrl: "https://app.lexroom.ai",
-    });
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.endsWith("/api/auth/mfa/start")) {
-        return jsonResponse({}, 200);
-      }
-      if (url.endsWith("/api/auth/mfa/verify")) {
-        return jsonResponse({ needsSessionExchange: false }, 200);
-      }
-      if (url.endsWith("/api/auth/session")) {
-        return jsonResponse(
-          { accessToken: "opaque-session-token", user: { email: "lawyer@lexroom.ai" } },
-          200,
-        );
-      }
-      throw new Error(`unexpected fetch ${url}`);
-    });
-    await expect(
-      loginLexroomAccount({
-        email: "lawyer@lexroom.ai",
-        password: "",
-        otp: "123456",
-        mfaTicket,
-        stateSecret: STATE_SECRET,
-        fetchImpl,
-      }),
-    ).resolves.toMatchObject({ ok: true, accessToken: "opaque-session-token" });
-  });
-
-  it("surfaces API MFA enrollment without starting an OTP challenge", async () => {
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.endsWith("/v1/login")) {
-        return jsonResponse(
-          { detail: "mfa_enrollment_required", code: "mfa_enrollment_required" },
-          403,
-        );
-      }
-      throw new Error(`unexpected fetch ${url}`);
-    });
-    const result = await loginLexroomAccount({
-      email: "lawyer@lexroom.ai",
-      password: "secret",
-      stateSecret: STATE_SECRET,
-      fetchImpl,
-    });
-    expect(result).toMatchObject({ ok: false, reason: "lexroom_error" });
-    expect(result.ok ? "" : result.error).toContain("MFA setup");
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("asks the lawyer to finish Lexroom MFA setup instead of an OTP form", async () => {
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.endsWith("/v1/login")) {
-        return jsonResponse({ detail: "mfa_step_up_required", code: "mfa_step_up_required" }, 403);
-      }
-      if (url.endsWith("/api/auth/csrf")) {
-        return jsonResponse(
-          { csrfToken: "csrf-token" },
-          200,
-          {
-            "set-cookie":
-              "__Host-next-auth.csrf-token=csrf-token%7Chash; Path=/; HttpOnly; Secure; SameSite=Strict",
-          },
-        );
-      }
-      if (url.endsWith("/api/auth/callback/credentials")) {
-        return jsonResponse({ url: "https://app.lexroom.ai/auth/mfa/setup" }, 200);
-      }
-      throw new Error(`unexpected fetch ${url}`);
-    });
-    const result = await loginLexroomAccount({
+  it("falls back to the typed email and an empty refresh token", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ access_token: "opaque" }, 200));
+    await expect(
+      loginLexroomAccount({ email: "lawyer@lexroom.ai", password: "secret", fetchImpl }),
+    ).resolves.toEqual({
+      ok: true,
       email: "lawyer@lexroom.ai",
-      password: "secret",
-      stateSecret: STATE_SECRET,
-      fetchImpl,
-    });
-    expect(result).toMatchObject({
-      ok: false,
-      reason: "lexroom_error",
-    });
-    expect(result.ok ? "" : result.error).toContain("MFA setup");
-  });
-
-  it("still asks for MFA when start is forbidden but a session cookie exists", async () => {
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.endsWith("/v1/login")) {
-        return jsonResponse({ detail: "mfa_step_up_required", code: "mfa_step_up_required" }, 403);
-      }
-      if (url.endsWith("/api/auth/csrf")) {
-        return jsonResponse(
-          { csrfToken: "csrf-token" },
-          200,
-          {
-            "set-cookie":
-              "__Host-next-auth.csrf-token=csrf-token%7Chash; Path=/; HttpOnly; Secure; SameSite=Strict",
-          },
-        );
-      }
-      if (url.endsWith("/api/auth/callback/credentials")) {
-        return jsonResponse(
-          { url: "https://app.lexroom.ai/auth/mfa" },
-          200,
-          {
-            "set-cookie":
-              "__Secure-next-auth.session-token=pending-mfa; Path=/; HttpOnly; Secure; SameSite=Lax",
-          },
-        );
-      }
-      if (url.endsWith("/auth/mfa")) {
-        return new Response("", { status: 200 });
-      }
-      if (url.endsWith("/api/auth/mfa/start")) {
-        return jsonResponse({ message: "Forbidden" }, 403);
-      }
-      throw new Error(`unexpected fetch ${url}`);
-    });
-    const result = await loginLexroomAccount({
-      email: "lawyer@lexroom.ai",
-      password: "secret",
-      stateSecret: STATE_SECRET,
-      fetchImpl,
-    });
-    expect(result).toMatchObject({
-      ok: false,
-      reason: "mfa_required",
-      method: "totp",
+      accessToken: "opaque",
+      refreshToken: "",
+      accessExpiresAtMs: null,
     });
   });
 
-  it("maps authentication failures", async () => {
+  it("maps a 401 to invalid credentials", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse(
-        { detail: "No active account found with the given credentials", code: "authentication_failed" },
+        {
+          detail: "No active account found with the given credentials",
+          code: "authentication_failed",
+        },
         401,
       ),
     );
     await expect(
-      loginLexroomAccount({
-        email: "lawyer@lexroom.ai",
-        password: "wrong",
-        stateSecret: STATE_SECRET,
-        fetchImpl,
-      }),
+      loginLexroomAccount({ email: "a@b.it", password: "wrong", fetchImpl }),
     ).resolves.toEqual({
       ok: false,
       reason: "invalid_credentials",
@@ -347,27 +114,48 @@ describe("loginLexroomAccount", () => {
     });
   });
 
-  it("rejects an expired MFA ticket", async () => {
-    const mfaTicket = sealLexroomMfaTicket(STATE_SECRET, {
-      email: "lawyer@lexroom.ai",
-      password: "secret",
-      method: "totp",
-      cookies: { session: "x" },
-      appBaseUrl: "https://app.lexroom.ai",
-      exp: Date.now() - 1_000,
+  it("reports an account that needs MFA instead of starting a web-app sign-in", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ detail: "mfa_step_up_required" }, 403));
+    await expect(
+      loginLexroomAccount({ email: "a@b.it", password: "x", fetchImpl }),
+    ).resolves.toMatchObject({ ok: false, reason: "mfa_required" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("is a Lexroom error for a 5xx, a missing token, an empty body or a network failure", async () => {
+    const run = (fetchImpl: typeof fetch) =>
+      loginLexroomAccount({ email: "a@b.it", password: "x", fetchImpl });
+    await expect(run(vi.fn(async () => jsonResponse({}, 503)))).resolves.toEqual({
+      ok: false,
+      reason: "lexroom_error",
+      error: "Lexroom returned 503",
+    });
+    await expect(run(vi.fn(async () => jsonResponse({ ok: true }, 200)))).resolves.toMatchObject({
+      ok: false,
+      reason: "lexroom_error",
+      error: "Lexroom login did not return an access token.",
+    });
+    await expect(run(vi.fn(async () => new Response("", { status: 200 })))).resolves.toMatchObject({
+      ok: false,
+      reason: "lexroom_error",
     });
     await expect(
-      loginLexroomAccount({
-        email: "lawyer@lexroom.ai",
-        password: "",
-        otp: "123456",
-        mfaTicket,
-        stateSecret: STATE_SECRET,
-        fetchImpl: vi.fn(),
-      }),
-    ).resolves.toMatchObject({
-      ok: false,
-      reason: "invalid_mfa",
-    });
+      run(
+        vi.fn(async () => {
+          throw new Error("network");
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: false, reason: "lexroom_error" });
+  });
+
+  it("does not call Lexroom without an email and password", async () => {
+    const fetchImpl = vi.fn();
+    await expect(
+      loginLexroomAccount({ email: "", password: "x", fetchImpl }),
+    ).resolves.toMatchObject({ ok: false, reason: "invalid_credentials" });
+    await expect(
+      loginLexroomAccount({ email: "a@b.it", password: "", fetchImpl }),
+    ).resolves.toMatchObject({ ok: false, reason: "invalid_credentials" });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

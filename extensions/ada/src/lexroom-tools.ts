@@ -1,22 +1,11 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import {
+  readAdaWhatsAppTarget,
+  ADA_WHATSAPP_CHANNEL,
+  type GoogleConnectedNotice,
+} from "./google-notify.js";
 import type { LexroomAccountStore } from "./lexroom-account-contract.js";
 import { openAdaLexroomAccountFromApi } from "./lexroom-account.js";
-import { lexroomLogger } from "./lexroom-log.js";
-import {
-  clearAccountIfStill,
-  ensureUsableAccount,
-  needsReconnect,
-  renewLexroomAccount,
-  type RenewFailure,
-} from "./lexroom-session.js";
-import {
-  accessTokenExpiresAtMs,
-  isLexroomAccessLive,
-  lexroomConnectConfigFrom,
-  prepareLexroomConnect,
-  type LexroomConnectConfig,
-  type LexroomConnectResult,
-} from "./lexroom-connect.js";
 import {
   checkLexroomAuth,
   runDraft,
@@ -25,10 +14,21 @@ import {
   type LexroomConfig,
 } from "./lexroom-client.js";
 import {
-  readAdaWhatsAppTarget,
-  ADA_WHATSAPP_CHANNEL,
-  type GoogleConnectedNotice,
-} from "./google-notify.js";
+  accessTokenExpiresAtMs,
+  isLexroomAccessLive,
+  lexroomConnectConfigFrom,
+  prepareLexroomConnect,
+  type LexroomConnectConfig,
+  type LexroomConnectResult,
+} from "./lexroom-connect.js";
+import { lexroomLogger } from "./lexroom-log.js";
+import {
+  clearAccountIfStill,
+  ensureUsableAccount,
+  needsReconnect,
+  renewLexroomAccount,
+  type RenewFailure,
+} from "./lexroom-session.js";
 import type { DeadlineItem } from "./memory-contract.js";
 
 type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger">;
@@ -61,21 +61,32 @@ export function lexroomConnectedText(_email: string): string {
 export async function sendLexroomConnectedNotice(params: {
   config: OpenClawPluginApi["config"];
   email: string;
-  loadAdapter: (channelId: string) => Promise<{ sendText?: (params: {
-    cfg: OpenClawPluginApi["config"];
-    to: string;
-    text: string;
-  }) => Promise<unknown> } | null | undefined>;
+  loadAdapter: (channelId: string) => Promise<
+    | {
+        sendText?: (params: {
+          cfg: OpenClawPluginApi["config"];
+          to: string;
+          text: string;
+        }) => Promise<unknown>;
+      }
+    | null
+    | undefined
+  >;
 }): Promise<GoogleConnectedNotice> {
   const to = readAdaWhatsAppTarget(params.config);
   if (!to) {
     return { ok: false, error: "kapso-whatsapp defaultTo is not set" };
   }
-  let adapter: { sendText?: (params: {
-    cfg: OpenClawPluginApi["config"];
-    to: string;
-    text: string;
-  }) => Promise<unknown> } | null | undefined;
+  let adapter:
+    | {
+        sendText?: (params: {
+          cfg: OpenClawPluginApi["config"];
+          to: string;
+          text: string;
+        }) => Promise<unknown>;
+      }
+    | null
+    | undefined;
   try {
     adapter = await params.loadAdapter(ADA_WHATSAPP_CHANNEL);
   } catch (error) {
@@ -136,6 +147,7 @@ async function runWithRecovery<T extends { ok: boolean; reason?: string }>(param
     }
     const renewed = await renewLexroomAccount(account, {
       store,
+      baseUrl: resolved.config.baseUrl,
       fetchImpl: params.fetchImpl,
       signal: params.signal,
       log,
@@ -190,7 +202,14 @@ export async function executeAdaLexroomConnect(
     return store;
   }
   const log = lexroomLogger(api.logger);
-  const renewal = { store, fetchImpl: options.fetchImpl, signal: options.signal, log, now };
+  const renewal = {
+    store,
+    baseUrl: config.baseUrl,
+    fetchImpl: options.fetchImpl,
+    signal: options.signal,
+    log,
+    now,
+  };
   try {
     let account = await store.readAccount();
     let reconnect: RenewFailure | undefined;
@@ -268,6 +287,7 @@ export async function resolveLexroomConfig(params: {
       if (account) {
         const ensured = await ensureUsableAccount(account, {
           store,
+          baseUrl: params.config.baseUrl,
           fetchImpl: params.fetchImpl,
           signal: params.signal,
           log: lexroomLogger(params.api.logger),

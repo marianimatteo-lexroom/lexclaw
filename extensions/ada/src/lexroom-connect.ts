@@ -3,8 +3,8 @@ import { isAdaPath } from "./http-paths.js";
 
 /**
  * Lexroom has no public OAuth for research. The lawyer opens an Ada-hosted
- * login page, signs in with Lexroom email/password (and MFA when required),
- * and Ada keeps the bearer in SQLite like the Google connection.
+ * login page, signs in with Lexroom email/password (accounts that need MFA
+ * are not supported), and Ada keeps the bearer in SQLite like the Google connection.
  */
 const LEXROOM_CONNECT_SUFFIX = "/lexroom/connect";
 export const LEXROOM_CONNECT_PATH = `/ada${LEXROOM_CONNECT_SUFFIX}`;
@@ -85,8 +85,7 @@ export function readLexroomConnectConfig(
   config: LexroomConnectConfig,
 ): { ok: true; settings: LexroomConnectSettings } | { ok: false; error: string } {
   const connectUri = deriveConnectUri(config);
-  const stateSecret =
-    config.lexroomStateSecret?.trim() || config.googleStateSecret?.trim() || "";
+  const stateSecret = config.lexroomStateSecret?.trim() || config.googleStateSecret?.trim() || "";
   if (!connectUri || !stateSecret) {
     return { ok: false, error: NOT_CONFIGURED };
   }
@@ -114,7 +113,10 @@ export function readLexroomConnectConfig(
     };
   }
   if (!isAdaPath(parsed.pathname, LEXROOM_CONNECT_SUFFIX)) {
-    return { ok: false, error: "lexroomConnectUri must use the path /ada/lexroom/connect or /vera/lexroom/connect." };
+    return {
+      ok: false,
+      error: "lexroomConnectUri must use the path /ada/lexroom/connect or /vera/lexroom/connect.",
+    };
   }
   return {
     ok: true,
@@ -183,7 +185,7 @@ export function buildLexroomConnectUrl(params: { connectUri: string; state: stri
 export function lexroomConnectMessage(url: string, reason?: "mfa"): string {
   return [
     reason === "mfa"
-      ? "Your Lexroom account needs a one-time code at every sign-in, so Ada cannot renew the connection herself. Sign in again to keep legal research and drafts working."
+      ? "Your Lexroom account requires a one-time code (MFA) at every sign-in, which Ada cannot enter. Sign in with a Lexroom account that does not use MFA to keep legal research and drafts working."
       : "Connect your Lexroom account so Ada can run legal research and drafts for you.",
     "Open this link and sign in with Lexroom:",
     url,
