@@ -19,6 +19,11 @@ async function serve(handler: Handler) {
     server.close();
   };
   const server = http.createServer((req, res) => {
+    if (req.url === "/v1/user/modules") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(["Civile"]));
+      return;
+    }
     closed.push(
       new Promise<void>((resolve) => {
         res.on("close", resolve);
@@ -114,7 +119,11 @@ describe("stalled Lexroom streams", () => {
         const { result } = await research(server.baseUrl, recorded.log);
         expect(result).toEqual({ ok: false, error: MESSAGE });
         await server.closed();
-        expect(recorded.events.map((entry) => entry.event)).toEqual([
+        expect(
+          recorded.events
+            .map((entry) => entry.event)
+            .filter((event) => event.startsWith("research.")),
+        ).toEqual([
           "research.start",
           "research.response",
           "research.first_line",
@@ -309,7 +318,7 @@ describe("a transport that ignores the abort signal", () => {
 });
 
 describe("what a live request looks like on the wire", () => {
-  it("sends the web app's request without extra headers and asks for an uncompressed stream", () =>
+  it("sends lexroom-bot's request over a real socket and reads the gzip stream it gets back", () =>
     withServer(
       (req, res) => {
         const gzip = String(req.headers["accept-encoding"] ?? "").includes("gzip");
@@ -326,30 +335,28 @@ describe("what a live request looks like on the wire", () => {
         expect(request?.url).toBe("/v1/ask_me_anything");
         expect(request?.headers.authorization).toBe("Bearer secret-token");
         expect(request?.headers["content-type"]).toBe("application/json");
-        expect(request?.headers["accept-encoding"]).toBe("identity");
-        expect(request?.headers.accept).toContain("text/event-stream");
-        expect(request?.headers["x-client-type"]).toBeUndefined();
+        expect(request?.headers["x-client-type"]).toBe("app_lex");
+        expect(request?.headers.accept).toBe("*/*");
         expect(request?.headers["x-request-id"]).toBeUndefined();
         expect(JSON.parse(request?.body ?? "")).toEqual({
-          query: `${QUERY}\n`,
-          search_on_modules: ["Civile"],
-          documents: [],
-          is_temporary: false,
+          query: QUERY,
           search_on_user_data: false,
+          search_on_modules: ["Civile"],
         });
 
         const logged = JSON.stringify(recorded.events);
         expect(logged).not.toContain("secret-token");
         expect(logged).not.toContain("Rossi");
-        expect(recorded.events[0]).toMatchObject({
+        const events = recorded.events.filter((entry) => entry.event.startsWith("research."));
+        expect(events[0]).toMatchObject({
           event: "research.start",
           fields: { modules: "Civile", queryLength: QUERY.length },
         });
-        expect(recorded.events[1]).toMatchObject({
+        expect(events[1]).toMatchObject({
           event: "research.response",
-          fields: { status: 200, contentType: "text/event-stream", contentEncoding: "none" },
+          fields: { status: 200, contentType: "text/event-stream", contentEncoding: "gzip" },
         });
-        expect(recorded.events.at(-1)).toMatchObject({
+        expect(events.at(-1)).toMatchObject({
           event: "research.done",
           fields: { lines: 1, answerChars: 8 },
         });

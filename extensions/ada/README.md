@@ -26,7 +26,7 @@ Disable the Gateway model heartbeat for this install (`agents.defaults.heartbeat
         config: {
           // optional static fallback; prefer ada_lexroom_connect
           // accessToken: "${LEXROOM_ACCESS_TOKEN}",
-          // modules ada_research searches when the call names none (default ["Civile"])
+          // modules ada_research searches when the call names none (default: every module your Lexroom user may search)
           // researchModules: ["Civile", "Societario"],
           googleClientId: "${ADA_GOOGLE_CLIENT_ID}",
           googleClientSecret: "${ADA_GOOGLE_CLIENT_SECRET}",
@@ -71,9 +71,9 @@ Disable the Gateway model heartbeat for this install (`agents.defaults.heartbeat
 
 ## Lexroom account
 
-Research (`LEXROOM_AMA`) and drafting (`LEXROOM_DRAFTING`) call `https://api.lexroom.ai` with `Authorization: Bearer` (the NextAuth session token) and `Accept-Encoding: identity`, and no other custom headers. Node's fetch hands back a gzip body only when it ends, so a compressing proxy would make a live stream look silent. Research posts `/v1/ask_me_anything`; drafting asks `/v2/ai/drafting/selectors` for modules and then posts `/v2/ai/drafting`. Both answer with NDJSON (one cumulative snapshot per line, lines up to several MB); Ada keeps the last snapshot and stops at `DONE`. One call is abandoned after `idleTimeoutMs` (default 45 seconds) without data from Lexroom, or after `timeoutMs` (default 180 seconds) in total, selectors and stream included. Research is also abandoned when no answer text has appeared after `answerTimeoutMs` (default 60 seconds), even if progress lines keep arriving; once the answer starts that limit is lifted, because a full run takes about 80 seconds. Either way the tool returns `Lexroom non risponde, riprova tra poco` and the connection is closed. A real research run takes about 80 seconds, so the total cap is not the 60 seconds a quick answer would suggest. Every credential write, read and clear is logged as `ada lexroom store.write|read|clear` with the storage key, backend, database path, process id, host, replica and module instance (never the token), and the sign-in page logs `connect.callback.write|confirmed|rejected` with the email as typed and as stored. The Connected page only appears after the credential has been written and read back; otherwise a failure page is shown. The gateway log shows each call as `ada lexroom <event> key=value` lines (`tool.invoked`, `config.resolved`, `research.start`, `.response`, `.first_line`, `.progress`, `.done`, `.failed`, `.timeout`, and `draft.*` and `selectors.*` equivalents) with status, content type, latencies, line counts and durations. Tokens and query text are never logged, only lengths. Research needs at least one module: the call's `modules`, else `researchModules` in config, else `["Civile"]`. Answers come back in WhatsApp formatting with their `[n]` markers, plus only the cited sources as `[n] title - court, date`. The bearer is never logged and is only sent to an https `baseUrl` (or http on localhost). Machine API keys are not accepted by those endpoints yet.
+Research (`LEXROOM_AMA`) and drafting (`LEXROOM_DRAFTING`) call `https://api.lexroom.ai` with `Authorization: Bearer` (the token `POST /v1/login` returns) and `X-Client-Type: app_lex`, plus `Content-Type: application/json` on POSTs, the same headers the lexroom-bot client sends, and with ASCII-only JSON bodies (non-ASCII characters are `\uXXXX`-escaped). Research first reads the modules the user may search from `GET /v1/user/modules` (kept for an hour, with a built-in catalog as fallback when the call fails), then posts `/v1/ask_me_anything`; drafting asks `/v2/ai/drafting/selectors` for modules and then posts `/v2/ai/drafting`. Both answer with NDJSON (one cumulative snapshot per line, lines up to several MB); Ada keeps the last snapshot and stops at `DONE`. One call is abandoned after `idleTimeoutMs` (default 45 seconds) without data from Lexroom, or after `timeoutMs` (default 180 seconds) in total, selectors and stream included. Research is also abandoned when no answer text has appeared after `answerTimeoutMs` (default 60 seconds), even if progress lines keep arriving; once the answer starts that limit is lifted, because a full run takes about 80 seconds. Either way the tool returns `Lexroom non risponde, riprova tra poco` and the connection is closed. A real research run takes about 80 seconds, so the total cap is not the 60 seconds a quick answer would suggest. Every credential write, read and clear is logged as `ada lexroom store.write|read|clear` with the storage key, backend, database path, process id, host, replica and module instance (never the token), and the sign-in page logs `connect.callback.write|confirmed|rejected` with the email as typed and as stored. The Connected page only appears after the credential has been written and read back; otherwise a failure page is shown. The gateway log shows each call as `ada lexroom <event> key=value` lines (`tool.invoked`, `config.resolved`, `research.start`, `.response`, `.first_line`, `.progress`, `.done`, `.failed`, `.timeout`, and `draft.*` and `selectors.*` equivalents) with status, content type, latencies, line counts and durations. Tokens and query text are never logged, only lengths. Research searches the call's `modules`, else `researchModules` in config, limited to the modules the user may search, else all of those modules. Like lexroom-bot, Ada reads snapshots with or without a `research` envelope, keeps the last non-empty answer text (falling back to `answer.html`) when a terminal line repeats the id without a body, and returns the last snapshot with an answer if the stream ends before `DONE`. Answers come back in WhatsApp formatting with their `[n]` markers, plus only the cited sources as `[n] title - court, date`. The bearer is never logged and is only sent to an https `baseUrl` (or http on localhost). Machine API keys are not accepted by those endpoints yet.
 
-The lawyer connects Lexroom the same way as Google: WhatsApp gets one link from `ada_lexroom_connect`, opens `/ada/lexroom/connect`, and signs in with Lexroom email and password (plus a one-time code when Lexroom requires one). Ada saves the email, the password and the access token in `$OPENCLAW_STATE_DIR/vera/lexroom-account.sqlite`, with the password and tokens encrypted (see Token encryption); neither the password nor a token is ever logged or shown. With the saved password Ada signs in again by herself, through the same NextAuth steps the web app uses (csrf, credentials callback, session), when the token is missing or within 60 seconds of expiring, and once more when Lexroom answers 401 (the call is then repeated once). Only a wrong password clears the account and asks the lawyer to reconnect. An account that needs a one-time code at every sign-in cannot be renewed silently, so no password is kept for it: when its token expires, or Lexroom answers 401, `ada_research` / `ada_draft` return `not_connected` with a message saying so, and Ada asks for a new link. A sign-in saved before passwords were kept behaves the same way. Renewals are logged as `ada lexroom relogin.start|ok|failed|skipped` (reason and timing only). A 403 never clears anything and never asks to reconnect: it means the signed-in user lacks a permission (for example `User not authorized to search on the specified modules`), and the tool explains it in Italian with Lexroom's detail and the modules asked for. `ada_lexroom_connect` renews if needed, then checks the token with `GET /v1/credits`; only a 401 there that a renewal cannot fix clears it, while a 403, any other status or a network failure leaves it. `force: true` discards the saved account and always issues a link. Lexroom exposes no refresh-token endpoint Ada can use (`/v1/refresh` and similar answer 404), which is why the password is kept. A static `accessToken` in config remains a fallback only and is never renewed.
+The lawyer connects Lexroom the same way as Google: WhatsApp gets one link from `ada_lexroom_connect`, opens `/ada/lexroom/connect`, and signs in with Lexroom email and password. Accounts that require a one-time code (MFA) are not supported. Ada saves the email, the password and the access token in `$OPENCLAW_STATE_DIR/vera/lexroom-account.sqlite`, with the password and tokens encrypted (see Token encryption); neither the password nor a token is ever logged or shown. With the saved password Ada signs in again by herself, with the same single `POST /v1/login` (`Content-Type: application/json`, `X-Client-Type: app_lex`, JSON email and password) the connect page and lexroom-bot use, with no cookies or web-app session, when the token is missing or within 60 seconds of expiring, and once more when Lexroom answers 401 (the call is then repeated once). Only a wrong password clears the account and asks the lawyer to reconnect. An account that requires a one-time code at every sign-in cannot be renewed: `POST /v1/login` answers `mfa_step_up_required`, and `ada_research` / `ada_draft` return `not_connected` with a message saying so. A sign-in saved without a password behaves the same way when its token expires, and Ada asks for a new link. Renewals are logged as `ada lexroom relogin.start|ok|failed|skipped` (reason and timing only). A 403 never clears anything and never asks to reconnect: it means the signed-in user lacks a permission (for example `User not authorized to search on the specified modules`), and the tool explains it in Italian with Lexroom's detail and the modules asked for. `ada_lexroom_connect` renews if needed, then checks the token with `GET /v1/credits`; only a 401 there that a renewal cannot fix clears it, while a 403, any other status or a network failure leaves it. `force: true` discards the saved account and always issues a link. Lexroom exposes no refresh-token endpoint Ada can use (`/v1/refresh` and similar answer 404), which is why the password is kept. A static `accessToken` in config remains a fallback only and is never renewed.
 
 ## Google account
 
@@ -99,14 +99,14 @@ With `NODE_ENV=production` the account stores refuse to open without `ADA_TOKEN_
 
 ## Environment and config reference
 
-| Name                         | Where         | Purpose                                                                              |
-| ---------------------------- | ------------- | ------------------------------------------------------------------------------------ |
-| `ADA_TOKEN_KEY`             | environment   | AES-256 key for tokens at rest. Required in production. `VERA_TOKEN_KEY` still works. |
-| `googleNotifyAudience`       | plugin config | Audience of the Pub/Sub push OIDC token. Enables JWT verification.                   |
-| `googleNotifyIssuer`         | plugin config | Expected issuer. Defaults to `https://accounts.google.com` or `accounts.google.com`. |
-| `googleNotifyServiceAccount` | plugin config | Required `email` claim (verified) of the push subscription service account.          |
-| `googleNotifyToken`          | plugin config | Static Bearer fallback, 16+ chars.                                                   |
-| `statusToken`                | plugin config | Bearer token (16+ chars) for `GET /ada/status`.                                     |
+| Name                         | Where         | Purpose                                                                               |
+| ---------------------------- | ------------- | ------------------------------------------------------------------------------------- |
+| `ADA_TOKEN_KEY`              | environment   | AES-256 key for tokens at rest. Required in production. `VERA_TOKEN_KEY` still works. |
+| `googleNotifyAudience`       | plugin config | Audience of the Pub/Sub push OIDC token. Enables JWT verification.                    |
+| `googleNotifyIssuer`         | plugin config | Expected issuer. Defaults to `https://accounts.google.com` or `accounts.google.com`.  |
+| `googleNotifyServiceAccount` | plugin config | Required `email` claim (verified) of the push subscription service account.           |
+| `googleNotifyToken`          | plugin config | Static Bearer fallback, 16+ chars.                                                    |
+| `statusToken`                | plugin config | Bearer token (16+ chars) for `GET /ada/status`.                                       |
 
 Plugin config values can reference environment variables, for example `googleNotifyAudience: "${ADA_GOOGLE_NOTIFY_AUDIENCE}"`.
 
@@ -139,7 +139,21 @@ Ada records a lawyer inbound message (which opens the WhatsApp 24-hour window an
 Every collect pass (15-minute poll, 07:40 pass, Pub/Sub notify, and the re-collect after a lawyer text) logs one JSON line:
 
 ```json
-{"event":"ada.collect","at":"2026-10-14T08:55:00.000Z","trigger":"poll","result":"collected","decision":"hold","dispatchReason":"whatsapp_window_closed","delivered":false,"held":true,"urgent":true,"forceMorning":false,"windowOpen":false,"deliverable":true,"durationMs":412}
+{
+  "event": "ada.collect",
+  "at": "2026-10-14T08:55:00.000Z",
+  "trigger": "poll",
+  "result": "collected",
+  "decision": "hold",
+  "dispatchReason": "whatsapp_window_closed",
+  "delivered": false,
+  "held": true,
+  "urgent": true,
+  "forceMorning": false,
+  "windowOpen": false,
+  "deliverable": true,
+  "durationMs": 412
+}
 ```
 
 - `trigger`: `poll`, `morning`, `notify`, or `inbound`.
@@ -212,14 +226,13 @@ Known limits: a cancelled or deleted calendar event does not end an item (reply 
 
 Until the lawyer replies, intake is read-only. It sends no email and does not touch the calendar; email replies keep the existing `ada_send_email` confirmation. The flow is described in `skills/ada-deadline-intake`.
 
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `deadlineIntake.enabled` | `false` | Turn intake, digest lines, reply tools, and reminders on. |
-| `deadlineIntake.reminders` | `["7d", "2d", "morning-of"]` | Reminder cadence for confirmed items. |
-| `deadlineIntake.horizonDays` | `60` | How far ahead the calendar is scanned. |
-| `deadlineIntake.minConfidence` | `0.6` | Drop extractions scored below this. |
+| Option                         | Default                      | Meaning                                                   |
+| ------------------------------ | ---------------------------- | --------------------------------------------------------- |
+| `deadlineIntake.enabled`       | `false`                      | Turn intake, digest lines, reply tools, and reminders on. |
+| `deadlineIntake.reminders`     | `["7d", "2d", "morning-of"]` | Reminder cadence for confirmed items.                     |
+| `deadlineIntake.horizonDays`   | `60`                         | How far ahead the calendar is scanned.                    |
+| `deadlineIntake.minConfidence` | `0.6`                        | Drop extractions scored below this.                       |
 
 ## Renamed from Vera
 
 Ada was called Vera. Existing deployments keep working: `VERA_*` variables are still read, the stores stay in `$OPENCLAW_STATE_DIR/vera/` (table names and token encryption contexts included), and the HTTP routes answer on both `/ada/...` and `/vera/...`. The plugin id is `ada` and the tools are `ada_*`. See `deploy/railway/README.md#renamed-from-vera` for the Railway steps and the variables worth renaming.
-

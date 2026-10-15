@@ -1,8 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { describe, expect, it, vi } from "vitest";
 import type { LexroomAccountStore } from "./lexroom-account-contract.js";
-import { createConnectState } from "./lexroom-connect.js";
 import { handleAdaLexroomConnect } from "./lexroom-connect-http.js";
+import { createConnectState } from "./lexroom-connect.js";
 
 const SECRET = "0123456789abcdef";
 
@@ -62,11 +62,7 @@ function mockRes() {
   };
 }
 
-function mockReq(params: {
-  method: string;
-  url: string;
-  body?: string;
-}): IncomingMessage {
+function mockReq(params: { method: string; url: string; body?: string }): IncomingMessage {
   const chunks = params.body === undefined ? [] : [Buffer.from(params.body)];
   let index = 0;
   return {
@@ -105,7 +101,7 @@ describe("handleAdaLexroomConnect", () => {
     expect(out.body()).toContain(`name="state" value="${issued.state}"`);
   });
 
-  it("redisplays MFA as HTTP 200 with a sealed ticket", async () => {
+  it("explains an account that needs MFA on the form and keeps the link usable", async () => {
     const now = new Date("2026-10-10T12:00:00.000Z");
     const store = createStore();
     const issued = createConnectState(SECRET, now);
@@ -133,16 +129,14 @@ describe("handleAdaLexroomConnect", () => {
         login: async () => ({
           ok: false,
           reason: "mfa_required",
-          mfaTicket: "ticket-1",
-          method: "totp",
-          error: "Lexroom needs a one-time code from your authenticator.",
+          error: "This Lexroom account requires a one-time code (MFA), which Ada cannot enter.",
         }),
       },
     );
     expect(out.res.statusCode).toBe(200);
-    expect(out.body()).toContain('name="mfaTicket" value="ticket-1"');
-    expect(out.body()).toContain('name="otp"');
-    expect(out.body()).toContain("Verify and connect");
+    expect(out.body()).toContain("requires a one-time code (MFA)");
+    expect(out.body()).not.toContain('name="otp"');
+    expect(store.account).toBeNull();
     expect(store.pending.size).toBe(1);
   });
 

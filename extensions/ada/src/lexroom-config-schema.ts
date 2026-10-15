@@ -31,7 +31,7 @@ export const lexroomConfigProperties = {
     Type.Array(Type.String({ minLength: 1 }), {
       minItems: 1,
       description:
-        'Lexroom modules searched by ada_research and deadline briefs when the call names none, for example ["Civile", "Societario"]. Default ["Civile"].',
+        'Lexroom modules searched by ada_research and deadline briefs when the call names none, for example ["Civile", "Societario"], limited to the modules the Lexroom user may search. Default: all of those modules.',
     }),
   ),
 };

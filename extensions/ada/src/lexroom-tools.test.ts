@@ -66,15 +66,19 @@ function useLiveStore(initial: LexroomAccountRecord | null) {
 type Route = (url: URL, init: RequestInit | undefined) => Response | Promise<Response>;
 
 function lexroom(routes: Record<string, Route>) {
-  const calls: Array<{ path: string; method: string; headers: Headers }> = [];
+  const calls: Array<{ path: string; method: string; headers: Headers; body: string }> = [];
   const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(
       typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
     );
+    if (url.pathname === "/v1/user/modules" && !routes[url.pathname]) {
+      return json(["Civile"]);
+    }
     calls.push({
       path: url.pathname,
       method: init?.method ?? "GET",
       headers: new Headers(init?.headers),
+      body: typeof init?.body === "string" ? init.body : "",
     });
     const route = routes[url.pathname];
     if (!route) {
@@ -219,7 +223,7 @@ describe("executeAdaLexroomConnect", () => {
     );
     expect(server.calls[0]?.method).toBe("GET");
     expect(server.calls[0]?.headers.get("Authorization")).toBe("Bearer test-account-token");
-    expect(server.calls[0]?.headers.get("Accept-Encoding")).toBe("identity");
+    expect(server.calls[0]?.headers.get("X-Client-Type")).toBe("app_lex");
   });
 
   it("clears a bearer Lexroom rejects with 401 and issues a new link", async () => {
@@ -525,26 +529,26 @@ describe("silent sign-in with the saved email and password", () => {
       ...overrides,
     });
 
-  function nextAuth(
-    outcome: "ok" | "wrong_password" | "mfa",
+  function lexroomLogin(
+    outcome: "ok" | "wrong_password" | "mfa" | "down",
     seen: { posts: string[] } = { posts: [] },
   ) {
-    const redirect =
-      outcome === "wrong_password"
-        ? "https://app.lexroom.ai/auth/signin?authError=401"
-        : outcome === "mfa"
-          ? "https://app.lexroom.ai/auth/mfa"
-          : "https://app.lexroom.ai/";
     return {
       seen,
       routes: {
-        "/api/auth/csrf": () => json({ csrfToken: "csrf-token" }),
-        "/api/auth/callback/credentials": (_url: URL, init: RequestInit | undefined) => {
+        "/v1/login": (_url: URL, init: RequestInit | undefined) => {
           seen.posts.push(String(init?.body));
-          return json({ url: redirect });
+          if (outcome === "wrong_password") {
+            return json({ detail: "No active account found", code: "authentication_failed" }, 401);
+          }
+          if (outcome === "mfa") {
+            return json({ detail: "mfa_step_up_required" }, 403);
+          }
+          if (outcome === "down") {
+            return json({}, 503);
+          }
+          return json({ access_token: RENEWED });
         },
-        "/api/auth/session": () => json({ user: { accessToken: RENEWED, email: "x@example.com" } }),
-        "/api/auth/mfa/start": () => json({}, 200),
       } satisfies Record<string, Route>,
     };
   }
@@ -562,7 +566,7 @@ describe("silent sign-in with the saved email and password", () => {
         accessExpiresAtMs: Date.now() - 10_000,
       }),
     );
-    const auth = nextAuth("ok");
+    const auth = lexroomLogin("ok");
     const server = lexroom({
       ...auth.routes,
       "/v1/ask_me_anything": (_url, init) => {
@@ -577,13 +581,17 @@ describe("silent sign-in with the saved email and password", () => {
       fetchImpl: server.fetchImpl,
     });
     expect(outcome).toMatchObject({ ok: true, answer: "Ok" });
-    expect(server.calls.map((call) => call.path)).toEqual([
-      "/api/auth/csrf",
-      "/api/auth/callback/credentials",
-      "/api/auth/session",
-      "/v1/ask_me_anything",
-    ]);
-    expect(auth.seen.posts[0]).toContain(`email=expired%40example.com`);
+    expect(server.calls.map((call) => call.path)).toEqual(["/v1/login", "/v1/ask_me_anything"]);
+    const login = server.calls[0];
+    expect(login?.method).toBe("POST");
+    expect(Object.fromEntries(login?.headers ?? [])).toEqual({
+      "content-type": "application/json",
+      "x-client-type": "app_lex",
+    });
+    expect(JSON.parse(login?.body ?? "")).toEqual({
+      email: "expired@example.com",
+      password: PASSWORD,
+    });
     expect(live.store.upsertAccount).toHaveBeenCalledWith(
       expect.objectContaining({ accessToken: RENEWED, password: PASSWORD }),
     );
@@ -597,7 +605,7 @@ describe("silent sign-in with the saved email and password", () => {
 
   it("renews once and retries once when Lexroom answers 401", async () => {
     const live = useLiveStore(saved("rejected@example.com"));
-    const auth = nextAuth("ok");
+    const auth = lexroomLogin("ok");
     let asked = 0;
     const server = lexroom({
       ...auth.routes,
@@ -622,7 +630,7 @@ describe("silent sign-in with the saved email and password", () => {
 
   it("does not loop when a freshly renewed token is rejected too, and keeps the account", async () => {
     const live = useLiveStore(saved("loop@example.com"));
-    const auth = nextAuth("ok");
+    const auth = lexroomLogin("ok");
     let asked = 0;
     const server = lexroom({
       ...auth.routes,
@@ -646,7 +654,7 @@ describe("silent sign-in with the saved email and password", () => {
 
   it("clears the account and asks to reconnect when the saved password is wrong", async () => {
     const live = useLiveStore(saved("wrongpw@example.com"));
-    const auth = nextAuth("wrong_password");
+    const auth = lexroomLogin("wrong_password");
     const server = lexroom({
       ...auth.routes,
       "/v1/ask_me_anything": () => json({ detail: "expired" }, 401),
@@ -667,14 +675,14 @@ describe("silent sign-in with the saved email and password", () => {
     expect(loggedText()).not.toContain(PASSWORD);
   });
 
-  it("falls back to reconnecting, and says why, for an account that needs a one-time code", async () => {
+  it("falls back to reconnecting, and says why, for an account that requires MFA", async () => {
     const live = useLiveStore(
       saved("mfa@example.com", {
         accessToken: "stale-token-bbbbbbbb",
         accessExpiresAtMs: Date.now() - 10_000,
       }),
     );
-    const auth = nextAuth("mfa");
+    const auth = lexroomLogin("mfa");
     const server = lexroom(auth.routes);
     const outcome = await executeAdaResearch({
       args: research,
@@ -685,10 +693,9 @@ describe("silent sign-in with the saved email and password", () => {
     expect(outcome).toMatchObject({
       ok: false,
       reason: "not_connected",
-      error: expect.stringContaining("needs a one-time code at every sign-in"),
+      error: expect.stringContaining("requires a one-time code (MFA)"),
     });
-    expect(server.calls.map((call) => call.path)).not.toContain("/api/auth/mfa/start");
-    expect(server.calls.map((call) => call.path)).not.toContain("/v1/ask_me_anything");
+    expect(server.calls.map((call) => call.path)).toEqual(["/v1/login"]);
 
     const status = await executeAdaLexroomConnect(CONNECT_CONFIG, api, new Date(), {
       fetchImpl: server.fetchImpl,
@@ -696,7 +703,7 @@ describe("silent sign-in with the saved email and password", () => {
     expect(status).toMatchObject({
       ok: true,
       connected: false,
-      ask: { message: expect.stringContaining("one-time code at every sign-in") },
+      ask: { message: expect.stringContaining("does not use MFA") },
     });
     expect(auth.seen.posts).toHaveLength(1);
     expect(live.store.clearAccount).not.toHaveBeenCalled();
@@ -728,7 +735,8 @@ describe("silent sign-in with the saved email and password", () => {
         accessExpiresAtMs: Date.now() - 10_000,
       }),
     );
-    const server = lexroom({ "/api/auth/csrf": () => json({}, 503) });
+    const auth = lexroomLogin("down");
+    const server = lexroom(auth.routes);
     const outcome = await executeAdaResearch({
       args: research,
       config: {},
@@ -747,7 +755,7 @@ describe("silent sign-in with the saved email and password", () => {
         accessExpiresAtMs: Date.now() - 10_000,
       }),
     );
-    const auth = nextAuth("ok");
+    const auth = lexroomLogin("ok");
     const server = lexroom({ ...auth.routes, "/v1/ask_me_anything": () => doneStream() });
     const run = () =>
       executeAdaResearch({ args: research, config: {}, api, fetchImpl: server.fetchImpl });
@@ -764,7 +772,7 @@ describe("silent sign-in with the saved email and password", () => {
         accessExpiresAtMs: Date.now() + 30_000,
       }),
     );
-    const auth = nextAuth("ok");
+    const auth = lexroomLogin("ok");
     const server = lexroom({ ...auth.routes, "/v1/credits": () => json({ credits: 1 }) });
     const status = await executeAdaLexroomConnect(CONNECT_CONFIG, api, new Date(), {
       fetchImpl: server.fetchImpl,
@@ -773,9 +781,29 @@ describe("silent sign-in with the saved email and password", () => {
     expect(auth.seen.posts).toHaveLength(1);
   });
 
+  it("signs in again at the configured Lexroom base URL", async () => {
+    useLiveStore(
+      saved("custom@example.com", {
+        accessToken: "stale-token-ffffffff",
+        accessExpiresAtMs: Date.now() - 10_000,
+      }),
+    );
+    const auth = lexroomLogin("ok");
+    const server = lexroom({ ...auth.routes, "/v1/ask_me_anything": () => doneStream() });
+    const outcome = await executeAdaResearch({
+      args: research,
+      config: { baseUrl: "https://lexroom.example" },
+      api,
+      fetchImpl: server.fetchImpl,
+    });
+    expect(outcome).toMatchObject({ ok: true });
+    const urls = vi.mocked(server.fetchImpl).mock.calls.map(([input]) => String(input));
+    expect(urls[0]).toBe("https://lexroom.example/v1/login");
+  });
+
   it("renews after a 401 from the status check, and clears for a wrong password", async () => {
     const live = useLiveStore(saved("probe@example.com"));
-    const auth = nextAuth("ok");
+    const auth = lexroomLogin("ok");
     const server = lexroom({
       ...auth.routes,
       "/v1/credits": (_url, init) =>
@@ -789,7 +817,7 @@ describe("silent sign-in with the saved email and password", () => {
       }),
     ).toMatchObject({ ok: true, connected: true });
 
-    const bad = nextAuth("wrong_password");
+    const bad = lexroomLogin("wrong_password");
     const second = lexroom({
       ...bad.routes,
       "/v1/credits": () => json({ detail: "expired" }, 401),

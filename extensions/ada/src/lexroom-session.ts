@@ -1,15 +1,7 @@
 import type { LexroomAccountRecord, LexroomAccountStore } from "./lexroom-account-contract.js";
 import type { LexroomLog } from "./lexroom-client.js";
-import { accessTokenExpiresAtMs, isLexroomAccessLive } from "./lexroom-connect.js";
-import {
-  appBaseUrl,
-  authErrorStatus,
-  mfaSetupUrl,
-  mfaStepUpUrl,
-  postNextAuthCredentials,
-  readAppSession,
-  type CookieJar,
-} from "./lexroom-login.js";
+import { isLexroomAccessLive } from "./lexroom-connect.js";
+import { loginLexroomAccount } from "./lexroom-login.js";
 
 /** How long a "needs a one-time code" answer is reused instead of asking Lexroom again. */
 const MFA_RETRY_AFTER_MS = 5 * 60 * 1000;
@@ -18,51 +10,26 @@ type SilentLogin =
   | { ok: true; accessToken: string; accessExpiresAtMs: number | null }
   | { ok: false; reason: "invalid_credentials" | "mfa_required" | "unavailable" };
 
-/**
- * The web app's own sign-in: csrf, then the credentials callback, then the session. It never
- * starts an MFA challenge, so an account that needs a code is reported rather than texted.
- */
+/** The same `POST /v1/login` the lexroom-bot client uses, with the saved email and password. */
 async function signInSilently(params: {
   email: string;
   password: string;
+  baseUrl?: string;
   fetchImpl: typeof fetch;
   signal?: AbortSignal;
 }): Promise<SilentLogin> {
-  const appBase = appBaseUrl(undefined);
-  const jar: CookieJar = new Map();
-  try {
-    const signedIn = await postNextAuthCredentials({
-      fetchImpl: params.fetchImpl,
-      appBase,
-      jar,
-      provider: "credentials",
-      fields: { email: params.email, password: params.password },
-      signal: params.signal,
-    });
-    const errorStatus = authErrorStatus(signedIn.url);
-    if (errorStatus === 401 || errorStatus === 403) {
-      return { ok: false, reason: "invalid_credentials" };
-    }
-    if (mfaSetupUrl(signedIn.url) || mfaStepUpUrl(signedIn.url)) {
-      return { ok: false, reason: "mfa_required" };
-    }
-    const session = await readAppSession({
-      fetchImpl: params.fetchImpl,
-      appBase,
-      jar,
-      signal: params.signal,
-    });
-    if (!session.accessToken) {
-      return { ok: false, reason: "unavailable" };
-    }
+  const result = await loginLexroomAccount(params);
+  if (result.ok) {
     return {
       ok: true,
-      accessToken: session.accessToken,
-      accessExpiresAtMs: accessTokenExpiresAtMs(session.accessToken),
+      accessToken: result.accessToken,
+      accessExpiresAtMs: result.accessExpiresAtMs,
     };
-  } catch {
-    return { ok: false, reason: "unavailable" };
   }
+  return {
+    ok: false,
+    reason: result.reason === "lexroom_error" ? "unavailable" : result.reason,
+  };
 }
 
 export type RenewFailure = {
@@ -75,7 +42,7 @@ const FAILURE_TEXT: Record<RenewFailure["reason"], string> = {
   invalid_credentials:
     "Lexroom no longer accepts the saved email and password. Call ada_lexroom_connect and send that link.",
   mfa_required:
-    "This Lexroom account needs a one-time code at every sign-in, so Ada cannot renew the connection herself. Call ada_lexroom_connect and send that link.",
+    "This Lexroom account requires a one-time code (MFA) at every sign-in, which Ada cannot enter, so she cannot renew the connection. Use a Lexroom account without MFA.",
   no_password: "The Lexroom connection expired. Call ada_lexroom_connect and send that link.",
   unavailable:
     "Ada could not renew the Lexroom sign-in because Lexroom did not answer. Try again shortly.",
@@ -91,6 +58,7 @@ export function needsReconnect(failure: RenewFailure): boolean {
 
 type RenewDeps = {
   store: LexroomAccountStore;
+  baseUrl?: string;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
   log: LexroomLog;
@@ -140,6 +108,7 @@ async function renew(account: LexroomAccountRecord, deps: RenewDeps): Promise<Re
   const login = await signInSilently({
     email: account.email,
     password: account.password,
+    baseUrl: deps.baseUrl,
     fetchImpl: deps.fetchImpl ?? fetch,
     signal: deps.signal,
   });

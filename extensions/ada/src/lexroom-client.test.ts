@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { formatSource } from "./lexroom-citations.js";
 import { runDraft, runResearch } from "./lexroom-client.js";
+import { FALLBACK_MODULES } from "./lexroom-modules.js";
 
 const config = { accessToken: "test-token", baseUrl: "https://api.lexroom.ai" };
 
@@ -55,32 +56,74 @@ function line(research: Record<string, unknown>): string {
   return `${JSON.stringify({ research })}\n`;
 }
 
+const USER_MODULES = ["Civile", "Lavoro", "Societario"];
+
+/** Serves the user's modules, and hands every other request to the test. */
+function lexroomFetch(
+  ask: (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>,
+  modules: unknown = USER_MODULES,
+) {
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+    requestUrl(input).endsWith("/v1/user/modules") ? jsonResponse(modules) : ask(input, init),
+  );
+}
+
+function askCall(fetchImpl: ReturnType<typeof lexroomFetch>) {
+  const call = fetchImpl.mock.calls.find(([input]) =>
+    requestUrl(input).endsWith("/v1/ask_me_anything"),
+  );
+  if (!call) {
+    throw new Error("no research request was sent");
+  }
+  return call;
+}
+
 describe("runResearch", () => {
-  it("posts the captured request shape and sends the bearer", async () => {
-    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
-      streamResponse(askStream),
-    );
+  it("sends the same requests as lexroom-bot: user modules, then the ask with its exact body and headers", async () => {
+    const fetchImpl = lexroomFetch(() => streamResponse(askStream));
     await runResearch({
-      config,
+      config: { ...config, accessToken: "shape-token" },
       matterId: "verdi",
-      query: "Termine per proporre opposizione a decreto ingiuntivo",
+      query: "Termine per proporre opposizione a decreto ingiuntivo, è già scaduto?",
+      parentResearchId: "parent-1",
       fetchImpl,
     });
-    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const [modulesUrl, modulesInit] = fetchImpl.mock.calls[0] ?? [];
+    expect(requestUrl(modulesUrl as RequestInfo)).toBe("https://api.lexroom.ai/v1/user/modules");
+    expect(modulesInit?.method).toBe("GET");
+    expect(Object.fromEntries(new Headers(modulesInit?.headers))).toEqual({
+      authorization: "Bearer shape-token",
+      "x-client-type": "app_lex",
+    });
+    const [url, init] = askCall(fetchImpl);
     expect(requestUrl(url as RequestInfo)).toBe("https://api.lexroom.ai/v1/ask_me_anything");
     expect(init?.method).toBe("POST");
-    const sent = new Headers(init?.headers);
-    expect(sent.get("Authorization")).toBe("Bearer test-token");
-    expect(sent.get("Content-Type")).toBe("application/json");
-    expect(sent.get("X-Client-Type")).toBeNull();
-    expect(sent.get("Accept-Encoding")).toBe("identity");
-    expect(requestBody(init?.body)).toEqual({
-      query: "Termine per proporre opposizione a decreto ingiuntivo\n",
-      search_on_modules: ["Civile"],
-      documents: [],
-      is_temporary: false,
-      search_on_user_data: false,
+    expect(Object.fromEntries(new Headers(init?.headers))).toEqual({
+      authorization: "Bearer shape-token",
+      "content-type": "application/json",
+      "x-client-type": "app_lex",
     });
+    expect([...String(init?.body)].every((char) => char.charCodeAt(0) < 128)).toBe(true);
+    expect(requestBody(init?.body)).toEqual({
+      query: "Termine per proporre opposizione a decreto ingiuntivo, è già scaduto?",
+      search_on_user_data: false,
+      search_on_modules: USER_MODULES,
+      parent_research_id: "parent-1",
+    });
+  });
+
+  it("escapes non-ASCII characters in the body so the backend never sees UTF-8", async () => {
+    const fetchImpl = lexroomFetch(() =>
+      streamResponse(line({ id: "r", status: "DONE", answer: "ok" })),
+    );
+    await runResearch({
+      config: { ...config, accessToken: "ascii-token" },
+      matterId: "m",
+      query: "Può l'erede rinunciare? €100",
+      fetchImpl,
+    });
+    expect(askCall(fetchImpl)[1]?.body).toContain("Pu\\u00f2 l'erede rinunciare? \\u20ac100");
   });
 
   it("reads the last cumulative snapshot and keeps citation numbers", async () => {
@@ -166,25 +209,109 @@ describe("runResearch", () => {
     });
   });
 
-  it("picks modules from the call, then config, then the Civile default", async () => {
-    const seen: unknown[] = [];
-    const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit) => {
-      seen.push((requestBody(init?.body) as { search_on_modules: string[] }).search_on_modules);
-      return streamResponse(line({ id: "r", status: "DONE", answer: { text: "ok" } }));
+  describe("modules", () => {
+    const searched = async (
+      options: { modules?: string[]; researchModules?: string[]; token: string },
+      available: unknown = USER_MODULES,
+    ) => {
+      const fetchImpl = lexroomFetch(
+        () => streamResponse(line({ id: "r", status: "DONE", answer: { text: "ok" } })),
+        available,
+      );
+      await runResearch({
+        config: {
+          ...config,
+          accessToken: options.token,
+          researchModules: options.researchModules,
+        },
+        matterId: "m",
+        query: "Q",
+        modules: options.modules,
+        fetchImpl,
+      });
+      return (requestBody(askCall(fetchImpl)[1]?.body) as { search_on_modules: string[] })
+        .search_on_modules;
     };
-    const base = { matterId: "m", query: "Q", fetchImpl };
-    await runResearch({ ...base, config: { ...config, researchModules: ["Societario"] } });
-    await runResearch({
-      ...base,
-      config: { ...config, researchModules: ["Societario"] },
-      modules: [" Lavoro ", "Lavoro", ""],
+
+    it("searches every module the user may search when none is named", async () => {
+      expect(await searched({ token: "m1" })).toEqual(USER_MODULES);
     });
-    await runResearch({ ...base, config: { ...config, researchModules: [] } });
-    expect(seen).toEqual([["Societario"], ["Lavoro"], ["Civile"]]);
+
+    it("narrows to the call's modules, then the configured ones, within the user's modules", async () => {
+      expect(await searched({ token: "m2", researchModules: ["Societario"] })).toEqual([
+        "Societario",
+      ]);
+      expect(
+        await searched({
+          token: "m3",
+          researchModules: ["Societario"],
+          modules: [" Lavoro ", "Lavoro", ""],
+        }),
+      ).toEqual(["Lavoro"]);
+    });
+
+    it("ignores requested modules the user may not search, and falls back to all of theirs", async () => {
+      expect(await searched({ token: "m4", modules: ["Penale", "Lavoro"] })).toEqual(["Lavoro"]);
+      expect(await searched({ token: "m5", modules: ["Penale"] })).toEqual(USER_MODULES);
+    });
+
+    it("reads the module names from the response shapes lexroom-bot accepts", async () => {
+      expect(
+        await searched(
+          { token: "m6" },
+          { modules: [{ name: "Tributario" }, { slug: "IP" }, " Banking "] },
+        ),
+      ).toEqual(["Tributario", "IP", "Banking"]);
+    });
+
+    it("falls back to the full catalog when the modules call fails or is empty", async () => {
+      const failing = vi.fn(async (input: RequestInfo | URL) =>
+        requestUrl(input).endsWith("/v1/user/modules")
+          ? jsonResponse({ detail: "boom" }, 500)
+          : streamResponse(line({ id: "r", status: "DONE", answer: "ok" })),
+      );
+      await runResearch({
+        config: { ...config, accessToken: "m7" },
+        matterId: "m",
+        query: "Q",
+        fetchImpl: failing,
+      });
+      expect(requestBody(askCall(failing)[1]?.body)).toMatchObject({
+        search_on_modules: [...FALLBACK_MODULES],
+      });
+      expect(await searched({ token: "m8" }, [])).toEqual([...FALLBACK_MODULES]);
+    });
+
+    it("looks the modules up once per token, and again after a 401", async () => {
+      let rejected = false;
+      const fetchImpl = lexroomFetch(() =>
+        rejected
+          ? jsonResponse({ detail: "expired" }, 401)
+          : streamResponse(line({ id: "r", status: "DONE", answer: "ok" })),
+      );
+      const run = () =>
+        runResearch({
+          config: { ...config, accessToken: "m9" },
+          matterId: "m",
+          query: "Q",
+          fetchImpl,
+        });
+      const lookups = () =>
+        fetchImpl.mock.calls.filter(([input]) => requestUrl(input).endsWith("/v1/user/modules"))
+          .length;
+      await run();
+      await run();
+      expect(lookups()).toBe(1);
+      rejected = true;
+      expect(await run()).toMatchObject({ ok: false, reason: "not_connected" });
+      rejected = false;
+      await run();
+      expect(lookups()).toBe(2);
+    });
   });
 
   it("scopes the private library to the named documents", async () => {
-    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    const fetchImpl = lexroomFetch(() =>
       streamResponse(line({ id: "r", status: "DONE", answer: { text: "ok" } })),
     );
     await runResearch({
@@ -194,7 +321,7 @@ describe("runResearch", () => {
       libraryDocumentIds: ["doc-verdi", " "],
       fetchImpl,
     });
-    expect(requestBody(fetchImpl.mock.calls[0]?.[1]?.body)).toMatchObject({
+    expect(requestBody(askCall(fetchImpl)[1]?.body)).toMatchObject({
       search_on_user_data: true,
       library_documents: [{ document_ids: ["doc-verdi"] }],
     });
@@ -211,6 +338,73 @@ describe("runResearch", () => {
         ),
     });
     expect(result).toMatchObject({ ok: true, answer: "Fatto" });
+  });
+
+  describe("response parsing, as in lexroom-bot", () => {
+    const research = (body: string) =>
+      runResearch({
+        config: { ...config, accessToken: "parse-token" },
+        matterId: "m",
+        query: "Q",
+        fetchImpl: lexroomFetch(() => streamResponse(body)),
+      });
+
+    it("reads snapshots with no `research` envelope", async () => {
+      const flat = (value: Record<string, unknown>) => `${JSON.stringify(value)}\n`;
+      const result = await research(
+        flat({ id: "r1", status: "LOADING", answer: { text: "Parziale" } }) +
+          flat({ id: "r1", status: "DONE", answer: { text: "Completa [1]" } }),
+      );
+      expect(result).toMatchObject({ ok: true, researchId: "r1", answer: "Completa [1]" });
+    });
+
+    it("skips lines without an id", async () => {
+      const result = await research(
+        `${JSON.stringify({ research: { status: "DONE", answer: "senza id" } })}\n` +
+          line({ id: "r", status: "DONE", answer: "con id" }),
+      );
+      expect(result).toMatchObject({ ok: true, researchId: "r", answer: "con id" });
+    });
+
+    it("keeps the last answer when the terminal event repeats the id without a body", async () => {
+      const documents = [{ type_id: 3, files: [{ citation_id: 1, title: "Cass. 1/2024" }] }];
+      const result = await research(
+        line({ id: "r", status: "LOADING", answer: { text: "Risposta [1]" }, documents }) +
+          line({ id: "r", status: "DONE" }),
+      );
+      expect(result).toMatchObject({
+        ok: true,
+        answer: "Risposta [1]",
+        sources: [{ id: 1, title: "Cass. 1/2024" }],
+      });
+    });
+
+    it("falls back to the html when the text is empty, and strips </END>", async () => {
+      const result = await research(
+        line({
+          id: "r",
+          status: "DONE",
+          answer: { text: "", html: "<p>Primo&nbsp;punto</p><p>Secondo &amp; ultimo</p></END>" },
+        }),
+      );
+      expect(result).toMatchObject({ ok: true, answer: "Primo punto\nSecondo & ultimo" });
+      const ended = await research(
+        line({ id: "r", status: "DONE", answer: { text: "Fine</END>\n" } }),
+      );
+      expect(ended).toMatchObject({ ok: true, answer: "Fine" });
+    });
+
+    it("returns the last snapshot when the stream ends before DONE but an answer arrived", async () => {
+      const result = await research(
+        line({ id: "r", status: "LOADING", answer: { text: "Risposta parziale" } }),
+      );
+      expect(result).toMatchObject({
+        ok: true,
+        researchId: "r",
+        status: "LOADING",
+        answer: "Risposta parziale",
+      });
+    });
   });
 
   it.each([
@@ -257,9 +451,7 @@ describe("runResearch", () => {
   describe("a 403 from Lexroom", () => {
     const MODULES_DENIED = "User not authorized to search on the specified modules";
     const run = (detail: string, modules?: string[]) => {
-      const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
-        jsonResponse({ detail }, 403),
-      );
+      const fetchImpl = lexroomFetch(() => jsonResponse({ detail }, 403));
       return {
         fetchImpl,
         result: runResearch({ config, matterId: "m", query: "Q", modules, fetchImpl }),
@@ -269,7 +461,9 @@ describe("runResearch", () => {
     it("is a permission answer: one request, no reconnect reason", async () => {
       const { fetchImpl, result } = run(MODULES_DENIED);
       expect(await result).not.toHaveProperty("reason");
-      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(
+        fetchImpl.mock.calls.filter(([input]) => requestUrl(input).endsWith("/v1/ask_me_anything")),
+      ).toHaveLength(1);
     });
 
     it("names the unauthorized modules and Lexroom's detail, and keeps the sign-in", async () => {
@@ -402,7 +596,7 @@ describe("runDraft", () => {
     ]);
   });
 
-  it("falls back to configured modules when selection picks none", async () => {
+  it("falls back to configured modules, then the user's modules, when selection picks none", async () => {
     const bodies: unknown[] = [];
     const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
       if (requestUrl(input).endsWith("/selectors")) {
@@ -419,6 +613,24 @@ describe("runDraft", () => {
       fetchImpl,
     });
     expect(bodies[0]).toMatchObject({ modules: ["Lavoro"] });
+    const own = lexroomFetch(
+      (input, init) => {
+        if (requestUrl(input).endsWith("/selectors")) {
+          return jsonResponse({ modules: [] });
+        }
+        bodies.push(requestBody(init?.body));
+        return streamResponse(draftStream);
+      },
+      ["Tributario"],
+    );
+    await runDraft({
+      config: { ...config, accessToken: "draft-own" },
+      matterId: "m",
+      prompt: "P",
+      confirmed: true,
+      fetchImpl: own,
+    });
+    expect(bodies[1]).toMatchObject({ modules: ["Tributario"] });
   });
 
   it("loads the stored draft when the stream ends without one", async () => {
