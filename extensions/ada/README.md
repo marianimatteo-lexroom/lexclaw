@@ -50,6 +50,7 @@ Disable the Gateway model heartbeat for this install (`agents.defaults.heartbeat
     alsoAllow: [
       "ada_plan_digest",
       "ada_research",
+      "ada_research_status",
       "ada_draft",
       "ada_lexroom_connect",
       "ada_google_connect",

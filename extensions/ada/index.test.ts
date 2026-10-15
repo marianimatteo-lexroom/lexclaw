@@ -7,6 +7,7 @@ import plugin from "./index.js";
 const TOOL_NAMES = [
   "ada_plan_digest",
   "ada_research",
+  "ada_research_status",
   "ada_draft",
   "ada_lexroom_connect",
   "ada_google_connect",

@@ -1,15 +1,15 @@
-export const DEFAULT_IDLE_TIMEOUT_MS = 45_000;
-export const DEFAULT_TOTAL_TIMEOUT_MS = 180_000;
-export const LEXROOM_TIMEOUT_MESSAGE = "Lexroom non risponde, riprova tra poco";
-
-export const DEFAULT_ANSWER_TIMEOUT_MS = 60_000;
+import { lexroomTimeoutMessage } from "./lexroom-timeout.js";
 
 /** `answer`: the stream was alive but never produced answer text within the answer limit. */
 export type TimeoutKind = "idle" | "total" | "answer";
 
 export class LexroomTimeoutError extends Error {
-  constructor(readonly kind: TimeoutKind) {
-    super(LEXROOM_TIMEOUT_MESSAGE);
+  constructor(
+    readonly kind: TimeoutKind,
+    /** The limit that tripped, in milliseconds. */
+    readonly limitMs: number,
+  ) {
+    super(lexroomTimeoutMessage(limitMs));
     this.name = "LexroomTimeoutError";
   }
 }
@@ -56,24 +56,24 @@ export function createGuard(options: {
     controller.abort(reason);
     rejectExpired(reason);
   };
-  const expire = (kind: TimeoutKind) => {
+  const expire = (kind: TimeoutKind, limitMs: number) => {
     if (expiredKind || controller.signal.aborted) {
       return;
     }
     expiredKind = kind;
-    stop(new LexroomTimeoutError(kind));
+    stop(new LexroomTimeoutError(kind, limitMs));
   };
-  const totalTimer = setTimeout(() => expire("total"), options.totalMs);
+  const totalTimer = setTimeout(() => expire("total", options.totalMs), options.totalMs);
   const answerTimer =
     options.answerMs === undefined
       ? undefined
-      : setTimeout(() => expire("answer"), options.answerMs);
+      : setTimeout(() => expire("answer", options.answerMs ?? 0), options.answerMs);
   const touch = () => {
     if (expiredKind || controller.signal.aborted) {
       return;
     }
     clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => expire("idle"), options.idleMs);
+    idleTimer = setTimeout(() => expire("idle", options.idleMs), options.idleMs);
   };
   const callerAborted = () =>
     stop(options.signal?.reason ?? new DOMException("The operation was aborted", "AbortError"));

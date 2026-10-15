@@ -81,6 +81,7 @@ export async function sendKapsoTemplate(params: {
       template: { name: params.template.name, language: { code: params.template.language } },
     },
     timeoutMs: TEMPLATE_TIMEOUT_MS,
+    readJson: true,
     fetchImpl: params.fetchImpl,
     signal: params.signal,
   });
@@ -94,7 +95,7 @@ export async function sendKapsoTemplate(params: {
         posted.kind === "timeout" ? "kapso template timed out" : "kapso template request failed",
     };
   }
-  const body = await posted.response.json().catch(() => undefined);
+  const body = posted.json;
   const messages = readRecord(body)?.messages;
   const messageId = Array.isArray(messages) ? firstString(readRecord(messages[0])?.id) : undefined;
   return messageId ? { ok: true, messageId } : { ok: true };

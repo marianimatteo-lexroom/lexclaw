@@ -66,14 +66,23 @@ function registerAda(pluginConfig: Record<string, unknown> = PLUGIN_CONFIG) {
     }) as OpenClawPluginApi["on"],
   });
   plugin.register?.(api);
+  async function callTool(name: string, params: unknown): Promise<unknown> {
+    const tool = tools.get(name);
+    if (!tool) {
+      throw new Error(`tool ${name} is not registered`);
+    }
+    return (await tool.execute("call-1", params)).details;
+  }
   return {
     api,
-    async callTool(name: string, params: unknown): Promise<unknown> {
-      const tool = tools.get(name);
-      if (!tool) {
-        throw new Error(`tool ${name} is not registered`);
+    callTool,
+    /** ada_research starts a job; this waits for it through ada_research_status. */
+    async research(params: unknown): Promise<unknown> {
+      const started = (await callTool("ada_research", params)) as { jobId?: string };
+      if (!started.jobId) {
+        return started;
       }
-      return (await tool.execute("call-1", params)).details;
+      return await callTool("ada_research_status", { jobId: started.jobId, waitSeconds: 5 });
     },
     hook(name: string): RegisteredHook["handler"] {
       const hook = hooks.get(name);
@@ -359,15 +368,17 @@ describe("ada_research", () => {
         })
       );
     });
-    const { callTool } = registerAda();
+    const { research } = registerAda();
     expect(
-      await callTool("ada_research", {
+      await research({
         matterId: "matter-a",
         query: "Onere della prova",
         libraryDocumentIds: ["doc-1"],
       }),
     ).toEqual({
       ok: true,
+      jobId: expect.stringMatching(/^rj_/u),
+      state: "done",
       matterId: "matter-a",
       researchId: "res-1",
       status: "DONE",
@@ -397,8 +408,8 @@ describe("ada_research", () => {
       async (input) =>
         modulesRoute(input) ?? ndjson({ research: { id: "res-5", status: "DONE", answer: "ok" } }),
     );
-    const { callTool } = registerAda({ ...PLUGIN_CONFIG, researchModules: ["Societario"] });
-    await callTool("ada_research", { matterId: "matter-a", query: "Question" });
+    const { research } = registerAda({ ...PLUGIN_CONFIG, researchModules: ["Societario"] });
+    await research({ matterId: "matter-a", query: "Question" });
     expect(askBody()).toMatchObject({ search_on_modules: ["Societario"] });
   });
 
@@ -408,8 +419,8 @@ describe("ada_research", () => {
       async (input) =>
         modulesRoute(input) ?? ndjson({ research: { id: "res-2", status: "DONE", answer: "ok" } }),
     );
-    const { callTool } = registerAda();
-    await callTool("ada_research", { matterId: "matter-a", query: "Question" });
+    const { research } = registerAda();
+    await research({ matterId: "matter-a", query: "Question" });
     const body = askBody();
     expect(body.search_on_user_data).toBe(false);
     expect(body).not.toHaveProperty("library_documents");
@@ -421,8 +432,8 @@ describe("ada_research", () => {
       async (input) =>
         modulesRoute(input) ?? ndjson({ research: { id: "res-3", status: "DONE", answer: "ok" } }),
     );
-    const { callTool } = registerAda({ ...PLUGIN_CONFIG, accessToken: "test-config-token" });
-    await callTool("ada_research", { matterId: "matter-a", query: "Question" });
+    const { research } = registerAda({ ...PLUGIN_CONFIG, accessToken: "test-config-token" });
+    await research({ matterId: "matter-a", query: "Question" });
     const asked = fetchMock.mock.calls.find(([input]) =>
       urlOf(input).endsWith("/v1/ask_me_anything"),
     );
@@ -431,9 +442,9 @@ describe("ada_research", () => {
 
   it("returns not_connected without a request when no token exists", async () => {
     useLexroomAccount(null);
-    const { callTool } = registerAda();
+    const { research } = registerAda();
     expect(
-      await callTool("ada_research", { matterId: "matter-a", query: "Question" }),
+      await research({ matterId: "matter-a", query: "Question" }),
     ).toMatchObject({ ok: false, reason: "not_connected" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -450,12 +461,14 @@ describe("ada_research", () => {
 
   it("returns an HTTP failure and a stream error as error results", async () => {
     useLexroomAccount(lexroomAccount());
-    const { callTool } = registerAda();
+    const { research } = registerAda();
     fetchMock.mockImplementation(
       async (input) => modulesRoute(input) ?? json({ detail: "boom" }, 500),
     );
-    expect(await callTool("ada_research", { matterId: "matter-a", query: "Q" })).toEqual({
+    expect(await research({ matterId: "matter-a", query: "Q" })).toEqual({
       ok: false,
+      state: "failed",
+      jobId: expect.stringMatching(/^rj_/u),
       error: "Lexroom returned 500: boom",
     });
     fetchMock.mockImplementation(
@@ -463,8 +476,10 @@ describe("ada_research", () => {
         modulesRoute(input) ??
         ndjson({ research: { id: "res-4", status: "RUNNING", error: "model unavailable" } }),
     );
-    expect(await callTool("ada_research", { matterId: "matter-a", query: "Q" })).toEqual({
+    expect(await research({ matterId: "matter-a", query: "Q" })).toEqual({
       ok: false,
+      state: "failed",
+      jobId: expect.stringMatching(/^rj_/u),
       error: "model unavailable",
     });
   });
