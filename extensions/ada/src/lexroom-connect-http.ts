@@ -243,7 +243,7 @@ function renderLoginForm(params: {
     ? params.method === "sms"
       ? "Enter the SMS code Lexroom sent, then connect."
       : "Enter the authenticator code for this Lexroom account, then connect."
-    : "Sign in with the Lexroom account Ada should use for research and drafts. Your password is sent only to Lexroom.";
+    : "Sign in with the Lexroom account Ada should use for research and drafts. Ada keeps the email and password encrypted so she can sign in again when the session expires. They are never shown or sent anywhere except Lexroom.";
   const mfaTicket = params.mfaTicket
     ? `<input type="hidden" name="mfaTicket" value="${escapeHtml(params.mfaTicket)}">`
     : "";
@@ -289,6 +289,7 @@ async function persistAndConfirm(
       return { ...saveFailed, reason: "not_readable_after_write" };
     }
     if (
+      !saved.password &&
       !isLexroomAccessLive({
         accessToken: saved.accessToken,
         accessExpiresAtMs: saved.accessExpiresAtMs,
@@ -491,6 +492,8 @@ export async function handleAdaLexroomConnect(
   const record = {
     email: result.email,
     accessToken: result.accessToken,
+    // A one-time code is needed at every sign-in, so a password could not renew an MFA account.
+    password: otp ? "" : password,
     refreshToken: result.refreshToken,
     accessExpiresAtMs: result.accessExpiresAtMs,
     connectedAtMs: now.getTime(),

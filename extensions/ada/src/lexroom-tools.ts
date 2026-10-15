@@ -3,6 +3,13 @@ import type { LexroomAccountStore } from "./lexroom-account-contract.js";
 import { openAdaLexroomAccountFromApi } from "./lexroom-account.js";
 import { lexroomLogger } from "./lexroom-log.js";
 import {
+  clearAccountIfStill,
+  ensureUsableAccount,
+  needsReconnect,
+  renewLexroomAccount,
+  type RenewFailure,
+} from "./lexroom-session.js";
+import {
   accessTokenExpiresAtMs,
   isLexroomAccessLive,
   lexroomConnectConfigFrom,
@@ -96,52 +103,81 @@ export async function sendLexroomConnectedNotice(params: {
   return { ok: true };
 }
 
-/** Removes the saved account, but only if it still holds the credential that failed. */
-async function clearAccountIfStill(
-  store: LexroomAccountStore,
-  accessToken: string,
-  api: StoreApi,
-  reason: string,
-): Promise<void> {
-  const current = await store.readAccount();
-  if (current && current.accessToken === accessToken) {
-    await store.clearAccount();
-    lexroomLogger(api.logger)("account.cleared", { reason });
-  }
-}
+type Failure = { ok: false; error: string; reason?: "not_connected" };
 
 /**
- * Lexroom rejected a bearer that came from the saved account: drop it so the next status
- * check reports "not connected" and a fresh link can be issued. A static config token
- * has no stored copy to clear.
+ * Runs a Lexroom call with the saved account's token. When Lexroom answers 401, the token is
+ * renewed once from the saved email and password and the call is repeated once. A wrong
+ * password clears the account; an account that needs a one-time code or has no saved password
+ * cannot be renewed, and the token is dead, so it is cleared too. A 403 never reaches here:
+ * the client gives it no reconnect reason. A static config token has nothing to renew.
  */
-async function dropRejectedAccount(params: {
+async function runWithRecovery<T extends { ok: boolean; reason?: string }>(params: {
   api: StoreApi;
   resolved: { source: "account" | "config"; config: LexroomConfig };
-  outcome: { ok: boolean; reason?: string };
-}): Promise<void> {
-  const { api, resolved, outcome } = params;
-  if (outcome.ok || outcome.reason !== "not_connected" || resolved.source !== "account") {
-    return;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+  run: (config: LexroomConfig) => Promise<T>;
+}): Promise<T | Failure> {
+  const { api, resolved } = params;
+  const first = await params.run(resolved.config);
+  if (first.ok || first.reason !== "not_connected" || resolved.source !== "account") {
+    return first;
   }
   const store = await openStore(api);
   if (isStoreFailure(store)) {
-    return;
+    return first;
   }
+  const log = lexroomLogger(api.logger);
   try {
-    await clearAccountIfStill(store, resolved.config.accessToken ?? "", api, "lexroom_rejected");
+    const account = await store.readAccount();
+    if (!account || account.accessToken !== resolved.config.accessToken) {
+      return first;
+    }
+    const renewed = await renewLexroomAccount(account, {
+      store,
+      fetchImpl: params.fetchImpl,
+      signal: params.signal,
+      log,
+      now: new Date(),
+      why: "rejected",
+    });
+    if (!renewed.ok) {
+      if (renewed.reason === "unavailable") {
+        return { ok: false, error: renewed.error };
+      }
+      if (renewed.reason !== "invalid_credentials") {
+        await clearAccountIfStill(store, account.accessToken, log, "lexroom_rejected");
+      }
+      return { ok: false, reason: "not_connected", error: renewed.error };
+    }
+    const second = await params.run({
+      ...resolved.config,
+      accessToken: renewed.account.accessToken,
+    });
+    if (!second.ok && second.reason === "not_connected") {
+      log("relogin.retry_rejected", {});
+      return {
+        ok: false,
+        error:
+          "Lexroom rejected a sign-in Ada had just renewed. Try again shortly; if it keeps happening, call ada_lexroom_connect with force true.",
+      };
+    }
+    return second;
   } catch (error) {
     api.logger.error(
-      `ada lexroom account clear failed: ${error instanceof Error ? error.message : "unknown"}`,
+      `ada lexroom recovery failed: ${error instanceof Error ? error.message : "unknown"}`,
     );
+    return first;
   }
 }
 
 /**
- * Connection status and link issuer. A saved account is checked with a live authenticated
- * Lexroom call; only a 401 proves it dead, so only then is it cleared and replaced by a new
- * link. A 403, an error or silence from Lexroom leaves the sign-in in place. `force` drops
- * whatever is saved and always issues a link.
+ * Connection status and link issuer. A saved sign-in is renewed from the saved email and
+ * password when its token is missing or about to expire, then checked with a live Lexroom
+ * call. A 401 there triggers one renewal; only a wrong password, or a dead token with nothing
+ * to renew it with, clears the account and issues a new link. A 403, an error or silence from
+ * Lexroom leaves the sign-in in place. `force` drops whatever is saved and always issues a link.
  */
 export async function executeAdaLexroomConnect(
   config: LexroomConnectConfig,
@@ -154,32 +190,42 @@ export async function executeAdaLexroomConnect(
     return store;
   }
   const log = lexroomLogger(api.logger);
+  const renewal = { store, fetchImpl: options.fetchImpl, signal: options.signal, log, now };
   try {
     let account = await store.readAccount();
+    let reconnect: RenewFailure | undefined;
     if (account && options.force) {
-      await clearAccountIfStill(store, account.accessToken, api, "forced");
+      await clearAccountIfStill(store, account.accessToken, log, "forced");
       account = null;
     }
-    if (
-      account &&
-      isLexroomAccessLive({
-        accessToken: account.accessToken,
-        accessExpiresAtMs: account.accessExpiresAtMs,
-        now,
-      })
-    ) {
-      const verdict = await checkLexroomAuth({
-        config: {
-          accessToken: account.accessToken,
-          baseUrl: config.baseUrl,
-        },
-        fetchImpl: options.fetchImpl,
-        signal: options.signal,
-        log,
-      });
-      if (verdict === "rejected") {
-        await clearAccountIfStill(store, account.accessToken, api, "status_check_rejected");
+    if (account) {
+      const ensured = await ensureUsableAccount(account, renewal);
+      if (!ensured.ok && !needsReconnect(ensured)) {
+        // Lexroom did not answer: the saved email and password are still the best we have.
+        return { ok: true, connected: true, email: account.email };
+      }
+      if (!ensured.ok) {
+        // Cleared already for a wrong password; otherwise the stale row is replaced on connect.
+        reconnect = ensured;
         account = null;
+      } else {
+        account = ensured.account;
+        const verdict = await checkLexroomAuth({
+          config: { accessToken: account.accessToken, baseUrl: config.baseUrl },
+          fetchImpl: options.fetchImpl,
+          signal: options.signal,
+          log,
+        });
+        if (verdict === "rejected") {
+          const renewed = await renewLexroomAccount(account, { ...renewal, why: "rejected" });
+          if (!renewed.ok && needsReconnect(renewed)) {
+            reconnect = renewed;
+            if (renewed.reason !== "invalid_credentials") {
+              await clearAccountIfStill(store, account.accessToken, log, "status_check_rejected");
+            }
+            account = null;
+          }
+        }
       }
     }
     return await prepareLexroomConnect({
@@ -192,6 +238,7 @@ export async function executeAdaLexroomConnect(
             accessExpiresAtMs: account.accessExpiresAtMs,
           }
         : null,
+      reconnectReason: reconnect?.reason === "mfa_required" ? "mfa" : undefined,
       savePending: (nonce, expiresAtMs) => store.replacePending(nonce, expiresAtMs),
     });
   } catch (error) {
@@ -202,48 +249,49 @@ export async function executeAdaLexroomConnect(
   }
 }
 
-/** Prefer the linked Lexroom account; fall back to a static config token. */
+/** Prefer the linked Lexroom account, renewing its token when needed; else a static config token. */
 export async function resolveLexroomConfig(params: {
   config: LexroomConfig & LexroomConnectConfig;
   api: StoreApi;
   now?: Date;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
 }): Promise<
   | { ok: true; config: LexroomConfig; email?: string; source: "account" | "config" }
-  | { ok: false; reason: "not_connected"; error: string }
+  | { ok: false; reason?: "not_connected"; error: string }
 > {
   const now = params.now ?? new Date();
   const store = await openStore(params.api);
   if (!isStoreFailure(store)) {
     try {
       const account = await store.readAccount();
-      if (
-        account &&
-        isLexroomAccessLive({
-          accessToken: account.accessToken,
-          accessExpiresAtMs: account.accessExpiresAtMs,
+      if (account) {
+        const ensured = await ensureUsableAccount(account, {
+          store,
+          fetchImpl: params.fetchImpl,
+          signal: params.signal,
+          log: lexroomLogger(params.api.logger),
           now,
-        })
-      ) {
+        });
+        if (!ensured.ok) {
+          return {
+            ok: false,
+            ...(needsReconnect(ensured) ? { reason: "not_connected" as const } : {}),
+            error: ensured.error,
+          };
+        }
         return {
           ok: true,
           source: "account",
-          email: account.email,
+          email: ensured.account.email,
           config: {
-            accessToken: account.accessToken,
+            accessToken: ensured.account.accessToken,
             baseUrl: params.config.baseUrl,
             timeoutMs: params.config.timeoutMs,
             idleTimeoutMs: params.config.idleTimeoutMs,
             answerTimeoutMs: params.config.answerTimeoutMs,
             researchModules: params.config.researchModules,
           },
-        };
-      }
-      if (account) {
-        return {
-          ok: false,
-          reason: "not_connected",
-          error:
-            "The Lexroom connection expired. Call ada_lexroom_connect and send that link.",
         };
       }
     } catch (error) {
@@ -287,15 +335,18 @@ export async function resolveLexroomConfigLogged(params: {
   config: LexroomConfig & LexroomConnectConfig;
   api: StoreApi;
   now?: Date;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
 }): ReturnType<typeof resolveLexroomConfig> {
   const log = lexroomLogger(params.api.logger);
   const startedAt = Date.now();
   log("tool.invoked", { tool: params.tool });
-  const resolved = await resolveLexroomConfig(params);
+  const { tool: _tool, ...resolveParams } = params;
+  const resolved = await resolveLexroomConfig(resolveParams);
   log("config.resolved", {
     tool: params.tool,
     ok: resolved.ok,
-    source: resolved.ok ? resolved.source : resolved.reason,
+    source: resolved.ok ? resolved.source : (resolved.reason ?? "unavailable"),
     ...(resolved.ok ? { tokenExpiresInSec: tokenExpiresInSec(resolved.config.accessToken) } : {}),
     ms: Date.now() - startedAt,
   });
@@ -324,7 +375,7 @@ type DraftArgs = {
   parentResearchId?: string;
 };
 
-/** ada_research: resolves the Lexroom credential, runs the call, drops a rejected account. */
+/** ada_research: resolves the Lexroom credential, runs the call, renews it once on a 401. */
 export async function executeAdaResearch(params: {
   args: ResearchArgs;
   config: LexroomConfig & LexroomConnectConfig;
@@ -336,19 +387,26 @@ export async function executeAdaResearch(params: {
     tool: "ada_research",
     config: params.config,
     api: params.api,
+    fetchImpl: params.fetchImpl,
+    signal: params.signal,
   });
   if (!resolved.ok) {
     return resolved;
   }
-  const outcome = await runResearch({
-    config: resolved.config,
-    ...params.args,
-    signal: params.signal,
+  return await runWithRecovery({
+    api: params.api,
+    resolved,
     fetchImpl: params.fetchImpl,
-    log: lexroomLogger(params.api.logger),
+    signal: params.signal,
+    run: (config) =>
+      runResearch({
+        config,
+        ...params.args,
+        signal: params.signal,
+        fetchImpl: params.fetchImpl,
+        log: lexroomLogger(params.api.logger),
+      }),
   });
-  await dropRejectedAccount({ api: params.api, resolved, outcome });
-  return outcome;
 }
 
 /** ada_draft: nothing is resolved or sent until the lawyer has confirmed. */
@@ -366,19 +424,26 @@ export async function executeAdaDraft(params: {
     tool: "ada_draft",
     config: params.config,
     api: params.api,
+    fetchImpl: params.fetchImpl,
+    signal: params.signal,
   });
   if (!resolved.ok) {
     return resolved;
   }
-  const outcome = await runDraft({
-    config: resolved.config,
-    ...params.args,
-    signal: params.signal,
+  return await runWithRecovery({
+    api: params.api,
+    resolved,
     fetchImpl: params.fetchImpl,
-    log: lexroomLogger(params.api.logger),
+    signal: params.signal,
+    run: (config) =>
+      runDraft({
+        config,
+        ...params.args,
+        signal: params.signal,
+        fetchImpl: params.fetchImpl,
+        log: lexroomLogger(params.api.logger),
+      }),
   });
-  await dropRejectedAccount({ api: params.api, resolved, outcome });
-  return outcome;
 }
 
 export { lexroomConnectConfigFrom };
@@ -428,23 +493,31 @@ export async function runDeadlineResearch(params: {
     config: params.config,
     api: params.api,
     now: params.now,
+    fetchImpl: params.fetchImpl,
+    signal: params.signal,
   });
   if (!resolved.ok) {
     return resolved;
   }
-  const outcome = await runResearch({
-    config: resolved.config,
-    matterId: params.item.matterId,
-    query: buildDeadlineResearchQuery({
-      item: params.item,
-      matterLabel: params.matterLabel,
-      language: params.language,
-    }),
-    signal: params.signal,
+  const outcome = await runWithRecovery({
+    api: params.api,
+    resolved,
     fetchImpl: params.fetchImpl,
-    log: lexroomLogger(params.api.logger),
+    signal: params.signal,
+    run: (config) =>
+      runResearch({
+        config,
+        matterId: params.item.matterId,
+        query: buildDeadlineResearchQuery({
+          item: params.item,
+          matterLabel: params.matterLabel,
+          language: params.language,
+        }),
+        signal: params.signal,
+        fetchImpl: params.fetchImpl,
+        log: lexroomLogger(params.api.logger),
+      }),
   });
-  await dropRejectedAccount({ api: params.api, resolved, outcome });
   if (!outcome.ok) {
     return outcome;
   }

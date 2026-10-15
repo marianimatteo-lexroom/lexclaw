@@ -13,7 +13,7 @@ Follow this skill before research or draft when Lexroom is not connected, when t
 
 Call `ada_lexroom_connect`. Do not invent a URL. Do not ask for the Lexroom password in WhatsApp.
 
-`ada_lexroom_connect` checks the saved sign-in with a live Lexroom call, so `connected: true` means Lexroom has not rejected it. Only a 401 from Lexroom removes a saved sign-in; the tool then returns a new `ask`. If the lawyer says a link did not help or research keeps reporting a rejected sign-in, call it again with `force: true` to discard the saved sign-in and get a fresh link.
+Ada keeps the lawyer's Lexroom email and password (encrypted) and signs in again by herself when the session expires, so a `connected: true` result is normally all that is needed and the lawyer is not asked again. Only when the saved password is wrong, or the account needs a one-time code at every sign-in, does `ada_research` or `ada_draft` return `reason: "not_connected"`, and `ada_lexroom_connect` then returns an `ask`. When its text says the account needs a one-time code, keep that explanation in your message. If the lawyer says a link did not help, call `ada_lexroom_connect` again with `force: true` to discard the saved sign-in and get a fresh link. Never ask for the Lexroom password in WhatsApp; it is entered only on the Ada-hosted page.
 
 When `ada_research` or `ada_draft` returns an error without `reason` (for example that the user is not authorized for a research module, or lacks a plan or credits, and "non serve ricollegare"), the sign-in is fine. Relay that message in the lawyer's language, with Lexroom's detail, and do not send a connect link.
 

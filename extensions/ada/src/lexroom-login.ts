@@ -36,7 +36,7 @@ export type LexroomLoginFailure =
 
 export type LexroomLoginResult = LexroomLoginSuccess | LexroomLoginFailure;
 
-type CookieJar = Map<string, string>;
+export type CookieJar = Map<string, string>;
 
 type MfaTicketPayload = {
   v: 2;
@@ -52,7 +52,7 @@ function apiBaseUrl(value: string | undefined): string {
   return (value?.trim() || DEFAULT_LEXROOM_BASE_URL).replace(/\/+$/u, "");
 }
 
-function appBaseUrl(value: string | undefined): string {
+export function appBaseUrl(value: string | undefined): string {
   return (value?.trim() || DEFAULT_LEXROOM_APP_BASE_URL).replace(/\/+$/u, "");
 }
 
@@ -279,7 +279,7 @@ async function fetchFollow(
   throw new Error("redirect");
 }
 
-async function postNextAuthCredentials(params: {
+export async function postNextAuthCredentials(params: {
   fetchImpl: FetchLike;
   appBase: string;
   jar: CookieJar;
@@ -343,7 +343,7 @@ async function postAppJson(params: {
   return { status: response.status, json: await readJson(response) };
 }
 
-async function readAppSession(params: {
+export async function readAppSession(params: {
   fetchImpl: FetchLike;
   appBase: string;
   jar: CookieJar;
@@ -372,7 +372,7 @@ async function readAppSession(params: {
   };
 }
 
-function mfaSetupUrl(url: string): boolean {
+export function mfaSetupUrl(url: string): boolean {
   try {
     const path = new URL(url, DEFAULT_LEXROOM_APP_BASE_URL).pathname;
     return path === "/auth/mfa/setup" || path.startsWith("/auth/mfa/setup/");
@@ -381,7 +381,7 @@ function mfaSetupUrl(url: string): boolean {
   }
 }
 
-function mfaStepUpUrl(url: string): boolean {
+export function mfaStepUpUrl(url: string): boolean {
   try {
     const path = new URL(url, DEFAULT_LEXROOM_APP_BASE_URL).pathname;
     return path === "/auth/mfa";
@@ -393,7 +393,7 @@ function mfaStepUpUrl(url: string): boolean {
 const MFA_SETUP_ERROR =
   "This Lexroom account still needs MFA setup in Lexroom. Open app.lexroom.ai, finish authenticator setup, then try this Ada link again.";
 
-function authErrorStatus(url: string): number | null {
+export function authErrorStatus(url: string): number | null {
   try {
     const value = new URL(url, DEFAULT_LEXROOM_APP_BASE_URL).searchParams.get("authError");
     if (!value) {

@@ -107,6 +107,8 @@ CREATE TABLE IF NOT EXISTS vera_lexroom_account (
 ) STRICT;
 `;
 
+const PASSWORD_COLUMN_SQL = "ALTER TABLE vera_lexroom_account ADD COLUMN password TEXT NOT NULL DEFAULT ''";
+
 type AdaLexroomDatabase = {
   vera_lexroom_pending: { nonce: string; expires_at_ms: number };
   vera_lexroom_account: {
@@ -114,6 +116,7 @@ type AdaLexroomDatabase = {
     email: string;
     access_token: string;
     refresh_token: string;
+    password: string;
     access_expires_at_ms: number | null;
     connected_at_ms: number;
   };
@@ -121,6 +124,7 @@ type AdaLexroomDatabase = {
 
 const ACCESS_TOKEN_CONTEXT = "vera_lexroom_account.access_token";
 const REFRESH_TOKEN_CONTEXT = "vera_lexroom_account.refresh_token";
+const PASSWORD_CONTEXT = "vera_lexroom_account.password";
 
 const NONCE = /^[A-Za-z0-9_-]{16,128}$/u;
 const EMAIL = /^[^\s@]+@[^\s@]+$/u;
@@ -151,6 +155,9 @@ function assertAccount(account: LexroomAccountRecord): void {
   if (account.refreshToken.length > 8192) {
     throw new Error("Ada Lexroom refresh token is invalid");
   }
+  if (account.password.length > 1024) {
+    throw new Error("Ada Lexroom password is invalid");
+  }
   if (!Number.isFinite(account.connectedAtMs)) {
     throw new Error("Ada Lexroom connected time is invalid");
   }
@@ -179,7 +186,7 @@ class AdaLexroomDatabaseStore {
           this.db,
           this.query
             .selectFrom("vera_lexroom_account")
-            .select(["access_token", "refresh_token"])
+            .select(["access_token", "refresh_token", "password"])
             .where("id", "=", ADA_LEXROOM_ACCOUNT_ID),
         );
         if (!row) {
@@ -187,7 +194,8 @@ class AdaLexroomDatabaseStore {
         }
         const access = this.cipher.open(row.access_token, ACCESS_TOKEN_CONTEXT);
         const refresh = this.cipher.open(row.refresh_token, REFRESH_TOKEN_CONTEXT);
-        if (!access.legacy && !refresh.legacy) {
+        const password = this.cipher.open(row.password, PASSWORD_CONTEXT);
+        if (!access.legacy && !refresh.legacy && !password.legacy) {
           return;
         }
         executeSqliteQuerySync(
@@ -197,6 +205,7 @@ class AdaLexroomDatabaseStore {
             .set({
               access_token: this.cipher.seal(access.value, ACCESS_TOKEN_CONTEXT),
               refresh_token: this.cipher.seal(refresh.value, REFRESH_TOKEN_CONTEXT),
+              password: this.cipher.seal(password.value, PASSWORD_CONTEXT),
             })
             .where("id", "=", ADA_LEXROOM_ACCOUNT_ID),
         );
@@ -295,6 +304,7 @@ class AdaLexroomDatabaseStore {
             email: account.email,
             access_token: this.cipher.seal(account.accessToken, ACCESS_TOKEN_CONTEXT),
             refresh_token: this.cipher.seal(account.refreshToken, REFRESH_TOKEN_CONTEXT),
+            password: this.cipher.seal(account.password, PASSWORD_CONTEXT),
             access_expires_at_ms: account.accessExpiresAtMs,
             connected_at_ms: account.connectedAtMs,
           }),
@@ -318,6 +328,7 @@ class AdaLexroomDatabaseStore {
           "email",
           "access_token",
           "refresh_token",
+          "password",
           "access_expires_at_ms",
           "connected_at_ms",
         ])
@@ -330,6 +341,7 @@ class AdaLexroomDatabaseStore {
       email: row.email,
       accessToken: this.cipher.open(row.access_token, ACCESS_TOKEN_CONTEXT).value,
       refreshToken: this.cipher.open(row.refresh_token, REFRESH_TOKEN_CONTEXT).value,
+      password: this.cipher.open(row.password, PASSWORD_CONTEXT).value,
       accessExpiresAtMs: row.access_expires_at_ms,
       connectedAtMs: row.connected_at_ms,
     };
@@ -372,6 +384,12 @@ function openAdaLexroomDatabase(dbPath: string): AdaLexroomDatabaseStore {
       synchronous: "NORMAL",
     });
     db.exec(SCHEMA_SQL);
+    const hasPassword = db
+      .prepare("SELECT 1 FROM pragma_table_info('vera_lexroom_account') WHERE name = 'password'")
+      .get();
+    if (hasPassword === undefined) {
+      db.exec(PASSWORD_COLUMN_SQL);
+    }
     for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`]) {
       chmodIfExists(file);
     }

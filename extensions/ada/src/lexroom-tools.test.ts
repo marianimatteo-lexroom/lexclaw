@@ -27,6 +27,7 @@ function account(overrides: Partial<LexroomAccountRecord> = {}): LexroomAccountR
   return {
     email: "lawyer@example.com",
     accessToken: "test-account-token",
+    password: "",
     refreshToken: "",
     accessExpiresAtMs: NOW.getTime() + 3_600_000,
     connectedAtMs: 1,
@@ -507,5 +508,297 @@ describe("a rejected Lexroom sign-in", () => {
     });
     expect(outcome).toMatchObject({ ok: true, answer: "Ok" });
     expect(store.clearAccount).not.toHaveBeenCalled();
+  });
+});
+
+describe("silent sign-in with the saved email and password", () => {
+  const PASSWORD = "correct horse battery staple 9";
+  const research = { matterId: "m", query: "Termini" };
+  const RENEWED = "renewed-access-token-0001";
+
+  /** An account whose password is saved; the tool entry points read the real clock. */
+  const saved = (email: string, overrides: Partial<LexroomAccountRecord> = {}) =>
+    account({
+      email,
+      password: PASSWORD,
+      accessExpiresAtMs: Date.now() + 3_600_000,
+      ...overrides,
+    });
+
+  function nextAuth(
+    outcome: "ok" | "wrong_password" | "mfa",
+    seen: { posts: string[] } = { posts: [] },
+  ) {
+    const redirect =
+      outcome === "wrong_password"
+        ? "https://app.lexroom.ai/auth/signin?authError=401"
+        : outcome === "mfa"
+          ? "https://app.lexroom.ai/auth/mfa"
+          : "https://app.lexroom.ai/";
+    return {
+      seen,
+      routes: {
+        "/api/auth/csrf": () => json({ csrfToken: "csrf-token" }),
+        "/api/auth/callback/credentials": (_url: URL, init: RequestInit | undefined) => {
+          seen.posts.push(String(init?.body));
+          return json({ url: redirect });
+        },
+        "/api/auth/session": () => json({ user: { accessToken: RENEWED, email: "x@example.com" } }),
+        "/api/auth/mfa/start": () => json({}, 200),
+      } satisfies Record<string, Route>,
+    };
+  }
+
+  function loggedText(): string {
+    return [logger.info, logger.warn, logger.error, logger.debug]
+      .flatMap((fn) => fn.mock.calls.map((call) => String(call[0])))
+      .join("\n");
+  }
+
+  it("renews an expired token before the call, saves it, and never logs the password", async () => {
+    const live = useLiveStore(
+      saved("expired@example.com", {
+        accessToken: "stale-token-aaaaaaaa",
+        accessExpiresAtMs: Date.now() - 10_000,
+      }),
+    );
+    const auth = nextAuth("ok");
+    const server = lexroom({
+      ...auth.routes,
+      "/v1/ask_me_anything": (_url, init) => {
+        expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${RENEWED}`);
+        return doneStream();
+      },
+    });
+    const outcome = await executeAdaResearch({
+      args: research,
+      config: {},
+      api,
+      fetchImpl: server.fetchImpl,
+    });
+    expect(outcome).toMatchObject({ ok: true, answer: "Ok" });
+    expect(server.calls.map((call) => call.path)).toEqual([
+      "/api/auth/csrf",
+      "/api/auth/callback/credentials",
+      "/api/auth/session",
+      "/v1/ask_me_anything",
+    ]);
+    expect(auth.seen.posts[0]).toContain(`email=expired%40example.com`);
+    expect(live.store.upsertAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ accessToken: RENEWED, password: PASSWORD }),
+    );
+    expect(live.store.clearAccount).not.toHaveBeenCalled();
+    const logged = loggedText();
+    expect(logged).toContain("ada lexroom relogin.start why=expired");
+    expect(logged).toContain("ada lexroom relogin.ok");
+    expect(logged).not.toContain(PASSWORD);
+    expect(logged).not.toContain(RENEWED);
+  });
+
+  it("renews once and retries once when Lexroom answers 401", async () => {
+    const live = useLiveStore(saved("rejected@example.com"));
+    const auth = nextAuth("ok");
+    let asked = 0;
+    const server = lexroom({
+      ...auth.routes,
+      "/v1/ask_me_anything": (_url, init) => {
+        asked += 1;
+        const bearer = new Headers(init?.headers).get("Authorization");
+        return bearer === `Bearer ${RENEWED}` ? doneStream() : json({ detail: "expired" }, 401);
+      },
+    });
+    const outcome = await executeAdaResearch({
+      args: research,
+      config: {},
+      api,
+      fetchImpl: server.fetchImpl,
+    });
+    expect(outcome).toMatchObject({ ok: true, answer: "Ok" });
+    expect(asked).toBe(2);
+    expect(auth.seen.posts).toHaveLength(1);
+    expect(live.store.clearAccount).not.toHaveBeenCalled();
+    expect(loggedText()).toContain("relogin.start why=rejected");
+  });
+
+  it("does not loop when a freshly renewed token is rejected too, and keeps the account", async () => {
+    const live = useLiveStore(saved("loop@example.com"));
+    const auth = nextAuth("ok");
+    let asked = 0;
+    const server = lexroom({
+      ...auth.routes,
+      "/v1/ask_me_anything": () => {
+        asked += 1;
+        return json({ detail: "expired" }, 401);
+      },
+    });
+    const outcome = await executeAdaResearch({
+      args: research,
+      config: {},
+      api,
+      fetchImpl: server.fetchImpl,
+    });
+    expect(asked).toBe(2);
+    expect(auth.seen.posts).toHaveLength(1);
+    expect(outcome).toMatchObject({ ok: false, error: expect.stringContaining("just renewed") });
+    expect(outcome).not.toHaveProperty("reason");
+    expect(live.store.clearAccount).not.toHaveBeenCalled();
+  });
+
+  it("clears the account and asks to reconnect when the saved password is wrong", async () => {
+    const live = useLiveStore(saved("wrongpw@example.com"));
+    const auth = nextAuth("wrong_password");
+    const server = lexroom({
+      ...auth.routes,
+      "/v1/ask_me_anything": () => json({ detail: "expired" }, 401),
+    });
+    const outcome = await executeAdaResearch({
+      args: research,
+      config: {},
+      api,
+      fetchImpl: server.fetchImpl,
+    });
+    expect(outcome).toMatchObject({
+      ok: false,
+      reason: "not_connected",
+      error: expect.stringContaining("no longer accepts the saved email and password"),
+    });
+    expect(live.store.clearAccount).toHaveBeenCalledTimes(1);
+    expect(loggedText()).toContain("relogin.failed why=rejected reason=invalid_credentials");
+    expect(loggedText()).not.toContain(PASSWORD);
+  });
+
+  it("falls back to reconnecting, and says why, for an account that needs a one-time code", async () => {
+    const live = useLiveStore(
+      saved("mfa@example.com", {
+        accessToken: "stale-token-bbbbbbbb",
+        accessExpiresAtMs: Date.now() - 10_000,
+      }),
+    );
+    const auth = nextAuth("mfa");
+    const server = lexroom(auth.routes);
+    const outcome = await executeAdaResearch({
+      args: research,
+      config: {},
+      api,
+      fetchImpl: server.fetchImpl,
+    });
+    expect(outcome).toMatchObject({
+      ok: false,
+      reason: "not_connected",
+      error: expect.stringContaining("needs a one-time code at every sign-in"),
+    });
+    expect(server.calls.map((call) => call.path)).not.toContain("/api/auth/mfa/start");
+    expect(server.calls.map((call) => call.path)).not.toContain("/v1/ask_me_anything");
+
+    const status = await executeAdaLexroomConnect(CONNECT_CONFIG, api, new Date(), {
+      fetchImpl: server.fetchImpl,
+    });
+    expect(status).toMatchObject({
+      ok: true,
+      connected: false,
+      ask: { message: expect.stringContaining("one-time code at every sign-in") },
+    });
+    expect(auth.seen.posts).toHaveLength(1);
+    expect(live.store.clearAccount).not.toHaveBeenCalled();
+  });
+
+  it("asks to reconnect, without a sign-in attempt, when no password was saved", async () => {
+    useLiveStore(
+      saved("nopw@example.com", { password: "", accessExpiresAtMs: Date.now() - 10_000 }),
+    );
+    const server = lexroom({});
+    const outcome = await executeAdaResearch({
+      args: research,
+      config: {},
+      api,
+      fetchImpl: server.fetchImpl,
+    });
+    expect(outcome).toMatchObject({
+      ok: false,
+      reason: "not_connected",
+      error: "The Lexroom connection expired. Call ada_lexroom_connect and send that link.",
+    });
+    expect(server.fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("does not clear anything when Lexroom cannot be reached to renew", async () => {
+    const live = useLiveStore(
+      saved("down@example.com", {
+        accessToken: "stale-token-cccccccc",
+        accessExpiresAtMs: Date.now() - 10_000,
+      }),
+    );
+    const server = lexroom({ "/api/auth/csrf": () => json({}, 503) });
+    const outcome = await executeAdaResearch({
+      args: research,
+      config: {},
+      api,
+      fetchImpl: server.fetchImpl,
+    });
+    expect(outcome).toMatchObject({ ok: false, error: expect.stringContaining("did not answer") });
+    expect(outcome).not.toHaveProperty("reason");
+    expect(live.store.clearAccount).not.toHaveBeenCalled();
+  });
+
+  it("shares one sign-in between calls that start with the same stale token", async () => {
+    useLiveStore(
+      saved("shared@example.com", {
+        accessToken: "stale-token-dddddddd",
+        accessExpiresAtMs: Date.now() - 10_000,
+      }),
+    );
+    const auth = nextAuth("ok");
+    const server = lexroom({ ...auth.routes, "/v1/ask_me_anything": () => doneStream() });
+    const run = () =>
+      executeAdaResearch({ args: research, config: {}, api, fetchImpl: server.fetchImpl });
+    const [first, second] = await Promise.all([run(), run()]);
+    expect(first).toMatchObject({ ok: true });
+    expect(second).toMatchObject({ ok: true });
+    expect(auth.seen.posts).toHaveLength(1);
+  });
+
+  it("renews inside the status check when the token is about to expire", async () => {
+    useLiveStore(
+      saved("status@example.com", {
+        accessToken: "stale-token-eeeeeeee",
+        accessExpiresAtMs: Date.now() + 30_000,
+      }),
+    );
+    const auth = nextAuth("ok");
+    const server = lexroom({ ...auth.routes, "/v1/credits": () => json({ credits: 1 }) });
+    const status = await executeAdaLexroomConnect(CONNECT_CONFIG, api, new Date(), {
+      fetchImpl: server.fetchImpl,
+    });
+    expect(status).toEqual({ ok: true, connected: true, email: "status@example.com" });
+    expect(auth.seen.posts).toHaveLength(1);
+  });
+
+  it("renews after a 401 from the status check, and clears for a wrong password", async () => {
+    const live = useLiveStore(saved("probe@example.com"));
+    const auth = nextAuth("ok");
+    const server = lexroom({
+      ...auth.routes,
+      "/v1/credits": (_url, init) =>
+        new Headers(init?.headers).get("Authorization") === `Bearer ${RENEWED}`
+          ? json({})
+          : json({ detail: "expired" }, 401),
+    });
+    expect(
+      await executeAdaLexroomConnect(CONNECT_CONFIG, api, new Date(), {
+        fetchImpl: server.fetchImpl,
+      }),
+    ).toMatchObject({ ok: true, connected: true });
+
+    const bad = nextAuth("wrong_password");
+    const second = lexroom({
+      ...bad.routes,
+      "/v1/credits": () => json({ detail: "expired" }, 401),
+    });
+    expect(
+      await executeAdaLexroomConnect(CONNECT_CONFIG, api, new Date(), {
+        fetchImpl: second.fetchImpl,
+      }),
+    ).toMatchObject({ ok: true, connected: false });
+    expect(live.store.clearAccount).toHaveBeenCalledTimes(1);
   });
 });

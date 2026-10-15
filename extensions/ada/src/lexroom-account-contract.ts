@@ -4,6 +4,12 @@ export const ADA_LEXROOM_ACCOUNT_ID = "lawyer";
 export type LexroomAccountRecord = {
   email: string;
   accessToken: string;
+  /**
+   * The lawyer's Lexroom password, encrypted at rest, so Ada can sign in again when the token
+   * expires. Empty for MFA accounts (a one-time code is needed every time) and for sign-ins
+   * saved before passwords were kept.
+   */
+  password: string;
   /** Empty when Lexroom login did not return a refresh token. */
   refreshToken: string;
   accessExpiresAtMs: number | null;

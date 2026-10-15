@@ -180,9 +180,11 @@ export function buildLexroomConnectUrl(params: { connectUri: string; state: stri
   return url.toString();
 }
 
-export function lexroomConnectMessage(url: string): string {
+export function lexroomConnectMessage(url: string, reason?: "mfa"): string {
   return [
-    "Connect your Lexroom account so Ada can run legal research and drafts for you.",
+    reason === "mfa"
+      ? "Your Lexroom account needs a one-time code at every sign-in, so Ada cannot renew the connection herself. Sign in again to keep legal research and drafts working."
+      : "Connect your Lexroom account so Ada can run legal research and drafts for you.",
     "Open this link and sign in with Lexroom:",
     url,
   ].join("\n");
@@ -224,6 +226,8 @@ export async function prepareLexroomConnect(params: {
   config: LexroomConnectConfig;
   now: Date;
   account: { email: string; accessToken: string; accessExpiresAtMs: number | null } | null;
+  /** Why the saved sign-in could not be kept, so the ask can say so. */
+  reconnectReason?: "mfa";
   savePending: (nonce: string, expiresAtMs: number) => Promise<void>;
 }): Promise<LexroomConnectResult> {
   if (
@@ -251,7 +255,7 @@ export async function prepareLexroomConnect(params: {
     connected: false,
     ask: {
       url,
-      message: lexroomConnectMessage(url),
+      message: lexroomConnectMessage(url, params.reconnectReason),
     },
   };
 }

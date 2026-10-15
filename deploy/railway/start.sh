@@ -298,7 +298,11 @@ else
 fi
 
 if [ -z "${ADA_TOKEN_KEY:-}" ]; then
-  log "WARNING: ADA_TOKEN_KEY is unset; NODE_ENV=production makes Ada refuse to open its Google and Lexroom account stores (generate one with: openssl rand -base64 32)"
+  if [ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+    log "WARNING: ADA_TOKEN_KEY is unset; Ada derives the key for saved Lexroom and Google credentials from OPENCLAW_GATEWAY_TOKEN, and rotating that token makes them unreadable (set ADA_TOKEN_KEY before connecting: openssl rand -base64 32)"
+  else
+    log "WARNING: ADA_TOKEN_KEY is unset; NODE_ENV=production makes Ada refuse to open its Google and Lexroom account stores (generate one with: openssl rand -base64 32)"
+  fi
 fi
 
 if [ -z "${ADA_STATUS_TOKEN:-}" ]; then
