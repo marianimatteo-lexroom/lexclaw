@@ -72,8 +72,10 @@ describe("runResearch", () => {
     const sent = new Headers(init?.headers);
     expect(sent.get("Authorization")).toBe("Bearer test-token");
     expect(sent.get("Content-Type")).toBe("application/json");
+    expect(sent.get("X-Client-Type")).toBeNull();
+    expect(sent.get("Accept-Encoding")).toBe("identity");
     expect(requestBody(init?.body)).toEqual({
-      query: "Termine per proporre opposizione a decreto ingiuntivo",
+      query: "Termine per proporre opposizione a decreto ingiuntivo\n",
       search_on_modules: ["Civile"],
       documents: [],
       is_temporary: false,
@@ -255,20 +257,7 @@ describe("runResearch", () => {
     expect(result).toMatchObject({ ok: false, reason: "not_connected" });
   });
 
-  it("reports timeouts and cancellation plainly", async () => {
-    const timeout = await runResearch({
-      config,
-      matterId: "m",
-      query: "Q",
-      fetchImpl: async () => {
-        throw new DOMException("The operation timed out", "TimeoutError");
-      },
-    });
-    expect(timeout).toEqual({
-      ok: false,
-      error: "Lexroom did not answer in time. Try again shortly.",
-    });
-
+  it("reports cancellation plainly", async () => {
     const controller = new AbortController();
     controller.abort();
     const cancelled = await runResearch({

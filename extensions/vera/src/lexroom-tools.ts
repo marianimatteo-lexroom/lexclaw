@@ -8,7 +8,12 @@ import {
   type LexroomConnectConfig,
   type LexroomConnectResult,
 } from "./lexroom-connect.js";
-import { runResearch, type CitedSource, type LexroomConfig } from "./lexroom-client.js";
+import {
+  runResearch,
+  type CitedSource,
+  type LexroomConfig,
+  type LexroomLog,
+} from "./lexroom-client.js";
 import {
   readVeraWhatsAppTarget,
   VERA_WHATSAPP_CHANNEL,
@@ -17,6 +22,21 @@ import {
 import type { DeadlineItem } from "./memory-contract.js";
 
 type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger">;
+
+/** Writes Lexroom call diagnostics to the gateway log as `vera lexroom <event> key=value ...`. */
+export function lexroomLogger(logger: Pick<StoreApi["logger"], "info" | "warn">): LexroomLog {
+  return (event, fields) => {
+    const pairs = Object.entries(fields)
+      .map(([key, value]) => `${key}=${value}`)
+      .join(" ");
+    const line = `vera lexroom ${event}${pairs ? ` ${pairs}` : ""}`;
+    if (/\.(failed|timeout)$/u.test(event)) {
+      logger.warn(line);
+    } else {
+      logger.info(line);
+    }
+  };
+}
 
 type ToolFailure = {
   ok: false;
@@ -149,6 +169,7 @@ export async function resolveLexroomConfig(params: {
             accessToken: account.accessToken,
             baseUrl: params.config.baseUrl,
             timeoutMs: params.config.timeoutMs,
+            idleTimeoutMs: params.config.idleTimeoutMs,
             researchModules: params.config.researchModules,
           },
         };
@@ -183,6 +204,7 @@ export async function resolveLexroomConfig(params: {
         accessToken: fallback,
         baseUrl: params.config.baseUrl,
         timeoutMs: params.config.timeoutMs,
+        idleTimeoutMs: params.config.idleTimeoutMs,
         researchModules: params.config.researchModules,
       },
     };
@@ -192,6 +214,26 @@ export async function resolveLexroomConfig(params: {
     reason: "not_connected",
     error: "Lexroom is not connected. Call vera_lexroom_connect and send that link.",
   };
+}
+
+/** Same as resolveLexroomConfig, with the tool call and the account lookup time in the log. */
+export async function resolveLexroomConfigLogged(params: {
+  tool: string;
+  config: LexroomConfig & LexroomConnectConfig;
+  api: StoreApi;
+  now?: Date;
+}): ReturnType<typeof resolveLexroomConfig> {
+  const log = lexroomLogger(params.api.logger);
+  const startedAt = Date.now();
+  log("tool.invoked", { tool: params.tool });
+  const resolved = await resolveLexroomConfig(params);
+  log("config.resolved", {
+    tool: params.tool,
+    ok: resolved.ok,
+    source: resolved.ok ? resolved.source : resolved.reason,
+    ms: Date.now() - startedAt,
+  });
+  return resolved;
 }
 
 export { lexroomConnectConfigFrom };
@@ -236,7 +278,8 @@ export async function runDeadlineResearch(params: {
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
 }): Promise<DeadlineResearchResult> {
-  const resolved = await resolveLexroomConfig({
+  const resolved = await resolveLexroomConfigLogged({
+    tool: "deadline_research",
     config: params.config,
     api: params.api,
     now: params.now,
@@ -254,6 +297,7 @@ export async function runDeadlineResearch(params: {
     }),
     signal: params.signal,
     fetchImpl: params.fetchImpl,
+    log: lexroomLogger(params.api.logger),
   });
   if (!outcome.ok) {
     return outcome;

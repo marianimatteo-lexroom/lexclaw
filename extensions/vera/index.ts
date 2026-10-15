@@ -26,10 +26,12 @@ import {
 import { openVeraLexroomAccountFromApi } from "./src/lexroom-account.js";
 import { runDraft, runResearch, type LexroomConfig } from "./src/lexroom-client.js";
 import { handleVeraLexroomConnect } from "./src/lexroom-connect-http.js";
+import { lexroomConfigProperties } from "./src/lexroom-config-schema.js";
 import {
   executeVeraLexroomConnect,
   lexroomConnectConfigFrom,
-  resolveLexroomConfig,
+  lexroomLogger,
+  resolveLexroomConfigLogged,
   sendLexroomConnectedNotice,
 } from "./src/lexroom-tools.js";
 import { MEMORY_FOLDERS } from "./src/memory-contract.js";
@@ -83,24 +85,7 @@ const tools = defineToolPlugin({
   description: "Lawyer WhatsApp digest with Instinct-shaped matter memory and event-driven wakes.",
   configSchema: Type.Object(
     {
-      accessToken: Type.Optional(
-        Type.String({ description: "Lexroom bearer token for this lawyer. Do not commit it." }),
-      ),
-      baseUrl: Type.Optional(Type.String({ description: "Lexroom API base URL." })),
-      timeoutMs: Type.Optional(
-        Type.Integer({
-          minimum: 1000,
-          description:
-            "Timeout in milliseconds for each Lexroom request, including the research and draft streams. Default 120000.",
-        }),
-      ),
-      researchModules: Type.Optional(
-        Type.Array(Type.String({ minLength: 1 }), {
-          minItems: 1,
-          description:
-            'Lexroom modules searched by vera_research and deadline briefs when the call names none, for example ["Civile", "Societario"]. Default ["Civile"].',
-        }),
-      ),
+      ...lexroomConfigProperties,
       googleClientId: Type.Optional(
         Type.String({ description: "Google OAuth client id for Gmail and Calendar." }),
       ),
@@ -267,7 +252,11 @@ const tools = defineToolPlugin({
       ),
       optional: true,
       async execute(params, config: LexroomConfig, context) {
-        const resolved = await resolveLexroomConfig({ config, api: context.api });
+        const resolved = await resolveLexroomConfigLogged({
+          tool: "vera_research",
+          config,
+          api: context.api,
+        });
         if (!resolved.ok) {
           return resolved;
         }
@@ -279,6 +268,7 @@ const tools = defineToolPlugin({
           modules: params.modules,
           parentResearchId: params.parentResearchId,
           signal: context.signal,
+          log: lexroomLogger(context.api.logger),
         });
       },
     }),
@@ -310,7 +300,11 @@ const tools = defineToolPlugin({
             signal: context.signal,
           });
         }
-        const resolved = await resolveLexroomConfig({ config, api: context.api });
+        const resolved = await resolveLexroomConfigLogged({
+          tool: "vera_draft",
+          config,
+          api: context.api,
+        });
         if (!resolved.ok) {
           return resolved;
         }
@@ -322,6 +316,7 @@ const tools = defineToolPlugin({
           modules: params.modules,
           parentResearchId: params.parentResearchId,
           signal: context.signal,
+          log: lexroomLogger(context.api.logger),
         });
       },
     }),
