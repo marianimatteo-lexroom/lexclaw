@@ -51,6 +51,8 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+const DENIED_BODY = { detail: "You do not have permission to perform this action." };
+
 function line(research: Record<string, unknown>): string {
   return `${JSON.stringify({ research })}\n`;
 }
@@ -255,6 +257,54 @@ describe("runResearch", () => {
       fetchImpl: async () => jsonResponse(body, status),
     });
     expect(result).toMatchObject({ ok: false, reason: "not_connected" });
+  });
+
+  describe("a 403 from Lexroom", () => {
+    const run = (detail: string, probe: Response) => {
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) =>
+        requestUrl(input).endsWith("/v1/credits") ? probe : jsonResponse({ detail }, 403),
+      );
+      return {
+        fetchImpl,
+        result: runResearch({ config, matterId: "m", query: "Q", fetchImpl }),
+      };
+    };
+
+    it("asks the web app's credits endpoint with the same bearer before blaming the sign-in", async () => {
+      const { fetchImpl, result } = run(
+        "You do not have permission to perform this action.",
+        jsonResponse({}),
+      );
+      await result;
+      const [url, init] = fetchImpl.mock.calls[1] ?? [];
+      expect(requestUrl(url as RequestInfo)).toBe("https://api.lexroom.ai/v1/credits");
+      expect(init?.method).toBe("GET");
+      expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer test-token");
+    });
+
+    it.each([
+      ["Module Civile is not enabled", "modulo richiesto non è abilitato"],
+      ["Not enough credits", "crediti o piano non sufficienti"],
+      ["You do not have permission to perform this action.", "non ha i permessi"],
+    ])("explains %s in Italian without asking to reconnect", async (detail, expected) => {
+      const result = await run(detail, jsonResponse({})).result;
+      expect(result).toMatchObject({ ok: false, error: expect.stringContaining(expected) });
+      expect(result).toMatchObject({ error: expect.stringContaining("non serve ricollegare") });
+      expect(result).not.toHaveProperty("reason");
+    });
+
+    it("does not blame the sign-in or the account when the check itself fails", async () => {
+      const result = await run("denied", jsonResponse({}, 503)).result;
+      expect(result).toEqual({
+        ok: false,
+        error: "Lexroom ha risposto 403 e non riesco a verificare l'accesso ora. Riprova tra poco.",
+      });
+    });
+
+    it("means reconnect when the credits endpoint rejects the bearer too", async () => {
+      const result = await run("denied", jsonResponse(DENIED_BODY, 403)).result;
+      expect(result).toMatchObject({ ok: false, reason: "not_connected" });
+    });
   });
 
   it("reports cancellation plainly", async () => {

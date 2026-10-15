@@ -24,14 +24,14 @@ import {
   executeVeraSendEmail,
 } from "./src/google-tools.js";
 import { openVeraLexroomAccountFromApi } from "./src/lexroom-account.js";
-import { runDraft, runResearch, type LexroomConfig } from "./src/lexroom-client.js";
-import { handleVeraLexroomConnect } from "./src/lexroom-connect-http.js";
+import type { LexroomConfig } from "./src/lexroom-client.js";
 import { lexroomConfigProperties } from "./src/lexroom-config-schema.js";
+import { handleVeraLexroomConnect } from "./src/lexroom-connect-http.js";
 import {
   executeVeraLexroomConnect,
   lexroomConnectConfigFrom,
-  lexroomLogger,
-  resolveLexroomConfigLogged,
+  executeVeraDraft,
+  executeVeraResearch,
   sendLexroomConnectedNotice,
 } from "./src/lexroom-tools.js";
 import { MEMORY_FOLDERS } from "./src/memory-contract.js";
@@ -252,23 +252,11 @@ const tools = defineToolPlugin({
       ),
       optional: true,
       async execute(params, config: LexroomConfig, context) {
-        const resolved = await resolveLexroomConfigLogged({
-          tool: "vera_research",
+        return await executeVeraResearch({
+          args: params,
           config,
           api: context.api,
-        });
-        if (!resolved.ok) {
-          return resolved;
-        }
-        return await runResearch({
-          config: resolved.config,
-          matterId: params.matterId,
-          query: params.query,
-          libraryDocumentIds: params.libraryDocumentIds,
-          modules: params.modules,
-          parentResearchId: params.parentResearchId,
           signal: context.signal,
-          log: lexroomLogger(context.api.logger),
         });
       },
     }),
@@ -289,34 +277,11 @@ const tools = defineToolPlugin({
       ),
       optional: true,
       async execute(params, config: LexroomConfig, context) {
-        if (!params.confirmed) {
-          return await runDraft({
-            config,
-            matterId: params.matterId,
-            prompt: params.prompt,
-            confirmed: false,
-            modules: params.modules,
-            parentResearchId: params.parentResearchId,
-            signal: context.signal,
-          });
-        }
-        const resolved = await resolveLexroomConfigLogged({
-          tool: "vera_draft",
+        return await executeVeraDraft({
+          args: params,
           config,
           api: context.api,
-        });
-        if (!resolved.ok) {
-          return resolved;
-        }
-        return await runDraft({
-          config: resolved.config,
-          matterId: params.matterId,
-          prompt: params.prompt,
-          confirmed: true,
-          modules: params.modules,
-          parentResearchId: params.parentResearchId,
           signal: context.signal,
-          log: lexroomLogger(context.api.logger),
         });
       },
     }),
@@ -324,11 +289,19 @@ const tools = defineToolPlugin({
       name: "vera_lexroom_connect",
       label: "Connect Lexroom",
       description:
-        "Check whether this lawyer connected Lexroom for research and drafts. When they have not, or the saved bearer expired, return one WhatsApp ask and a single Vera-hosted Lexroom sign-in link. Does not send the message.",
-      parameters: Type.Object({}, { additionalProperties: false }),
+        "Check whether this lawyer connected Lexroom for research and drafts. The saved sign-in is verified with a live Lexroom call; when there is none, it expired, or Lexroom rejects it, it is removed and one WhatsApp ask with a single Vera-hosted Lexroom sign-in link is returned. Set force true to discard the saved sign-in and always get a new link, for example when research reports the sign-in was rejected. Does not send the message.",
+      parameters: Type.Object(
+        { force: Type.Optional(Type.Boolean()) },
+        { additionalProperties: false },
+      ),
       optional: true,
-      async execute(_params, config, context) {
-        return await executeVeraLexroomConnect(lexroomConnectConfigFrom(config), context.api);
+      async execute(params, config, context) {
+        return await executeVeraLexroomConnect(
+          lexroomConnectConfigFrom(config),
+          context.api,
+          new Date(),
+          { force: params.force === true, signal: context.signal },
+        );
       },
     }),
     tool({
