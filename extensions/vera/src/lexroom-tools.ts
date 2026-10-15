@@ -2,6 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { LexroomAccountStore } from "./lexroom-account-contract.js";
 import { openVeraLexroomAccountFromApi } from "./lexroom-account.js";
 import {
+  accessTokenExpiresAtMs,
   isLexroomAccessLive,
   lexroomConnectConfigFrom,
   prepareLexroomConnect,
@@ -9,6 +10,8 @@ import {
   type LexroomConnectResult,
 } from "./lexroom-connect.js";
 import {
+  checkLexroomAuth,
+  runDraft,
   runResearch,
   type CitedSource,
   type LexroomConfig,
@@ -41,7 +44,7 @@ export function lexroomLogger(logger: Pick<StoreApi["logger"], "info" | "warn">)
 type ToolFailure = {
   ok: false;
   error: string;
-  reason?: "not_connected";
+  reason?: "not_connected" | "unverified";
 };
 
 function isStoreFailure(store: LexroomAccountStore | ToolFailure): store is ToolFailure {
@@ -108,17 +111,97 @@ export async function sendLexroomConnectedNotice(params: {
   return { ok: true };
 }
 
+/** Removes the saved account, but only if it still holds the credential that failed. */
+async function clearAccountIfStill(
+  store: LexroomAccountStore,
+  accessToken: string,
+  api: StoreApi,
+  reason: string,
+): Promise<void> {
+  const current = await store.readAccount();
+  if (current && current.accessToken === accessToken) {
+    await store.clearAccount();
+    lexroomLogger(api.logger)("account.cleared", { reason });
+  }
+}
+
+/**
+ * Lexroom rejected a bearer that came from the saved account: drop it so the next status
+ * check reports "not connected" and a fresh link can be issued. A static config token
+ * has no stored copy to clear.
+ */
+async function dropRejectedAccount(params: {
+  api: StoreApi;
+  resolved: { source: "account" | "config"; config: LexroomConfig };
+  outcome: { ok: boolean; reason?: string };
+}): Promise<void> {
+  const { api, resolved, outcome } = params;
+  if (outcome.ok || outcome.reason !== "not_connected" || resolved.source !== "account") {
+    return;
+  }
+  const store = await openStore(api);
+  if (isStoreFailure(store)) {
+    return;
+  }
+  try {
+    await clearAccountIfStill(store, resolved.config.accessToken ?? "", api, "lexroom_rejected");
+  } catch (error) {
+    api.logger.error(
+      `vera lexroom account clear failed: ${error instanceof Error ? error.message : "unknown"}`,
+    );
+  }
+}
+
+const CONNECT_UNVERIFIED =
+  "Non riesco a verificare ora il collegamento con Lexroom (Lexroom non risponde). Riprova tra poco, oppure richiama vera_lexroom_connect con force true per ottenere subito un nuovo link.";
+
+/**
+ * Connection status and link issuer. A saved account counts as connected only after a live
+ * authenticated Lexroom call accepts it; a rejected one is cleared and replaced by a new
+ * link. `force` drops whatever is saved and always issues a link.
+ */
 export async function executeVeraLexroomConnect(
   config: LexroomConnectConfig,
   api: StoreApi,
   now = new Date(),
+  options: { force?: boolean; fetchImpl?: typeof fetch; signal?: AbortSignal } = {},
 ): Promise<LexroomConnectResult | ToolFailure> {
   const store = await openStore(api);
   if (isStoreFailure(store)) {
     return store;
   }
+  const log = lexroomLogger(api.logger);
   try {
-    const account = await store.readAccount();
+    let account = await store.readAccount();
+    if (account && options.force) {
+      await clearAccountIfStill(store, account.accessToken, api, "forced");
+      account = null;
+    }
+    if (
+      account &&
+      isLexroomAccessLive({
+        accessToken: account.accessToken,
+        accessExpiresAtMs: account.accessExpiresAtMs,
+        now,
+      })
+    ) {
+      const verdict = await checkLexroomAuth({
+        config: {
+          accessToken: account.accessToken,
+          baseUrl: config.baseUrl,
+        },
+        fetchImpl: options.fetchImpl,
+        signal: options.signal,
+        log,
+      });
+      if (verdict === "unknown") {
+        return { ok: false, reason: "unverified", error: CONNECT_UNVERIFIED };
+      }
+      if (verdict === "rejected") {
+        await clearAccountIfStill(store, account.accessToken, api, "status_check_rejected");
+        account = null;
+      }
+    }
     return await prepareLexroomConnect({
       config,
       now,
@@ -231,9 +314,89 @@ export async function resolveLexroomConfigLogged(params: {
     tool: params.tool,
     ok: resolved.ok,
     source: resolved.ok ? resolved.source : resolved.reason,
+    ...(resolved.ok ? { tokenExpiresInSec: tokenExpiresInSec(resolved.config.accessToken) } : {}),
     ms: Date.now() - startedAt,
   });
   return resolved;
+}
+
+/** Seconds of life left in a JWT bearer; -1 when the token is opaque and carries no expiry. */
+function tokenExpiresInSec(accessToken: string | undefined): number {
+  const expiresAtMs = accessToken ? accessTokenExpiresAtMs(accessToken) : null;
+  return expiresAtMs === null ? -1 : Math.round((expiresAtMs - Date.now()) / 1000);
+}
+
+type ResearchArgs = {
+  matterId: string;
+  query: string;
+  libraryDocumentIds?: string[];
+  modules?: string[];
+  parentResearchId?: string;
+};
+
+type DraftArgs = {
+  matterId: string;
+  prompt: string;
+  confirmed: boolean;
+  modules?: string[];
+  parentResearchId?: string;
+};
+
+/** vera_research: resolves the Lexroom credential, runs the call, drops a rejected account. */
+export async function executeVeraResearch(params: {
+  args: ResearchArgs;
+  config: LexroomConfig & LexroomConnectConfig;
+  api: StoreApi;
+  signal?: AbortSignal;
+  fetchImpl?: typeof fetch;
+}) {
+  const resolved = await resolveLexroomConfigLogged({
+    tool: "vera_research",
+    config: params.config,
+    api: params.api,
+  });
+  if (!resolved.ok) {
+    return resolved;
+  }
+  const outcome = await runResearch({
+    config: resolved.config,
+    ...params.args,
+    signal: params.signal,
+    fetchImpl: params.fetchImpl,
+    log: lexroomLogger(params.api.logger),
+  });
+  await dropRejectedAccount({ api: params.api, resolved, outcome });
+  return outcome;
+}
+
+/** vera_draft: nothing is resolved or sent until the lawyer has confirmed. */
+export async function executeVeraDraft(params: {
+  args: DraftArgs;
+  config: LexroomConfig & LexroomConnectConfig;
+  api: StoreApi;
+  signal?: AbortSignal;
+  fetchImpl?: typeof fetch;
+}) {
+  if (!params.args.confirmed) {
+    return await runDraft({ config: params.config, ...params.args, signal: params.signal });
+  }
+  const resolved = await resolveLexroomConfigLogged({
+    tool: "vera_draft",
+    config: params.config,
+    api: params.api,
+  });
+  if (!resolved.ok) {
+    return resolved;
+  }
+  const outcome = await runDraft({
+    config: resolved.config,
+    ...params.args,
+    signal: params.signal,
+    fetchImpl: params.fetchImpl,
+    log: lexroomLogger(params.api.logger),
+  });
+  await dropRejectedAccount({ api: params.api, resolved, outcome });
+  return outcome;
 }
 
 export { lexroomConnectConfigFrom };
@@ -299,6 +462,7 @@ export async function runDeadlineResearch(params: {
     fetchImpl: params.fetchImpl,
     log: lexroomLogger(params.api.logger),
   });
+  await dropRejectedAccount({ api: params.api, resolved, outcome });
   if (!outcome.ok) {
     return outcome;
   }

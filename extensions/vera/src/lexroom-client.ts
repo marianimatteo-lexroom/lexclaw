@@ -20,6 +20,8 @@ const PROGRESS_LOG_EVERY_LINES = 10;
 const MAX_ANSWER_CHARS = 24_000;
 const MAX_DRAFT_CHARS = 100_000;
 const FAILED_STATUSES = new Set(["FAILED", "ERROR", "CANCELED", "CANCELLED"]);
+const AUTH_PROBE_PATH = "/v1/credits";
+const AUTH_PROBE_TIMEOUT_MS = 15_000;
 const PERMISSION_DENIED = "You do not have permission to perform this action.";
 
 export type LexroomConfig = {
@@ -94,6 +96,8 @@ class LexroomError extends Error {
   constructor(
     message: string,
     readonly reason?: "not_connected",
+    /** HTTP status and sanitized `detail` of the response that caused this, for the log. */
+    readonly http?: { status: number; detail: string },
   ) {
     super(message);
   }
@@ -163,34 +167,159 @@ function modulesFor(explicit: readonly string[] | undefined, config: LexroomConf
   return configured.length > 0 ? configured : [...DEFAULT_RESEARCH_MODULES];
 }
 
-async function errorMessage(response: Response, guard: LexroomGuard): Promise<LexroomError> {
-  const status = response.status;
-  let detail = "";
+/** Keeps a server-supplied `detail` loggable: no token, no control characters, bounded. */
+function safeDetail(detail: string, accessToken: string): string {
+  const withoutToken = accessToken ? detail.replaceAll(accessToken, "[redacted]") : detail;
+  return withoutToken
+    .replace(/\s+/gu, " ")
+    .replace(/[A-Za-z0-9_.-]{24,}/gu, "[redacted]")
+    .trim()
+    .slice(0, 160);
+}
+
+export type LexroomAuthVerdict = "valid" | "rejected" | "unknown";
+
+/**
+ * One cheap authenticated GET the web app also makes, to learn whether Lexroom still
+ * accepts the bearer. Costs no research credits.
+ */
+async function probeAuth(
+  fetchImpl: FetchLike,
+  config: LexroomConfig,
+  guard: LexroomGuard,
+  trace: Trace,
+  step: string,
+): Promise<LexroomAuthVerdict> {
+  let verdict: LexroomAuthVerdict = "unknown";
+  let status = 0;
   try {
-    const body = (await guard.race(response.json())) as { detail?: unknown };
-    if (typeof body.detail === "string") {
-      detail = body.detail.slice(0, 200);
+    guard.touch();
+    const response = await guard.race(
+      fetchImpl(`${baseUrl(config)}${AUTH_PROBE_PATH}`, {
+        method: "GET",
+        headers: headers(token(config), JSON_ACCEPT),
+        signal: guard.signal,
+      }),
+    );
+    status = response.status;
+    void response.body?.cancel().catch(() => undefined);
+    if (response.ok) {
+      verdict = "valid";
+    } else if (status === 401 || status === 403) {
+      verdict = "rejected";
     }
   } catch (error) {
     if (guard.timedOut() || (error instanceof Error && error.name === "AbortError")) {
       throw error;
     }
-    detail = "";
   }
+  trace(`${step}.auth_probe`, { verdict, status, ms: guard.elapsedMs() });
+  return verdict;
+}
+
+/** Asks Lexroom, with the same base URL and headers as research, whether the bearer works. */
+export async function checkLexroomAuth(input: {
+  config: LexroomConfig;
+  fetchImpl?: FetchLike;
+  signal?: AbortSignal;
+  log?: LexroomLog;
+}): Promise<LexroomAuthVerdict> {
+  const guard = createGuard({
+    idleMs: AUTH_PROBE_TIMEOUT_MS,
+    totalMs: AUTH_PROBE_TIMEOUT_MS,
+    signal: input.signal,
+  });
+  try {
+    return await probeAuth(
+      input.fetchImpl ?? fetch,
+      input.config,
+      guard,
+      createTrace(input.log),
+      "status",
+    );
+  } catch {
+    return "unknown";
+  } finally {
+    guard.dispose();
+  }
+}
+
+function deniedMessage(detail: string): string {
+  const text = detail.toLowerCase();
+  const kept = "Il collegamento Lexroom è valido, non serve ricollegare.";
+  if (/credit|quota|plan|piano|subscription|abbonament/u.test(text)) {
+    return `Lexroom ha rifiutato la richiesta: crediti o piano non sufficienti per questa funzione. ${kept}`;
+  }
+  if (/modul/u.test(text)) {
+    return `Lexroom ha rifiutato la richiesta: il modulo richiesto non è abilitato per questo account. ${kept}`;
+  }
+  const shown = detail && detail !== PERMISSION_DENIED ? `: ${detail}` : "";
+  return `Lexroom ha rifiutato la richiesta (403${shown}): l'account è collegato ma non ha i permessi per questa funzione, ad esempio modulo o piano. ${kept}`;
+}
+
+/**
+ * Turns an error response into the failure to report. A 401 is a rejected bearer. A 403
+ * reads the same whether the bearer is bad or the account lacks a module or plan, so it
+ * is settled by a live authenticated call: only a rejected probe means "reconnect".
+ */
+async function errorMessage(
+  response: Response,
+  call: {
+    guard: LexroomGuard;
+    trace: Trace;
+    step: string;
+    fetchImpl: FetchLike;
+    config: LexroomConfig;
+  },
+): Promise<LexroomError> {
+  const { guard, config } = call;
+  const status = response.status;
+  let rawDetail = "";
+  try {
+    const body = (await guard.race(response.json())) as { detail?: unknown };
+    if (typeof body.detail === "string") {
+      rawDetail = body.detail;
+    }
+  } catch (error) {
+    if (guard.timedOut() || (error instanceof Error && error.name === "AbortError")) {
+      throw error;
+    }
+  }
+  const detail = safeDetail(rawDetail, config.accessToken ?? "");
+  const http = { status, detail };
   if (detail === "mfa_step_up_required") {
     return new LexroomError(
       "Lexroom requires a verified sign-in. Complete MFA, then refresh the Vera access token.",
+      undefined,
+      http,
     );
   }
-  // A missing or revoked bearer is a 403 with this detail on the Lexroom API, not always a 401.
-  if (status === 401 || (status === 403 && (!detail || detail === PERMISSION_DENIED))) {
+  const rejected = new LexroomError(
+    "Lexroom rejected the saved sign-in. Call vera_lexroom_connect and send that link.",
+    "not_connected",
+    http,
+  );
+  if (status === 401) {
+    return rejected;
+  }
+  if (status === 403) {
+    const verdict = await probeAuth(call.fetchImpl, config, guard, call.trace, call.step);
+    if (verdict === "rejected") {
+      return rejected;
+    }
+    if (verdict === "valid") {
+      return new LexroomError(deniedMessage(detail), undefined, http);
+    }
     return new LexroomError(
-      "Lexroom rejected the saved sign-in. Call vera_lexroom_connect and send that link.",
-      "not_connected",
+      "Lexroom ha risposto 403 e non riesco a verificare l'accesso ora. Riprova tra poco.",
+      undefined,
+      http,
     );
   }
   return new LexroomError(
     detail ? `Lexroom returned ${status}: ${detail}` : `Lexroom returned ${status}`,
+    undefined,
+    http,
   );
 }
 
@@ -237,7 +366,7 @@ async function request(
     headersMs: guard.elapsedMs(),
   });
   if (!response.ok) {
-    throw await errorMessage(response, guard);
+    throw await errorMessage(response, { guard, trace, step, fetchImpl, config });
   }
   guard.touch();
   return response;
@@ -371,8 +500,11 @@ function failed(params: {
   const { guard, trace, step, stats } = params;
   const result = failure(params.error, params.fallback, params.config.accessToken);
   const kind = guard.timedOut();
+  const http = params.error instanceof LexroomError ? params.error.http : undefined;
   trace(kind ? `${step}.timeout` : `${step}.failed`, {
     ...(kind ? { kind } : { error: result.error.slice(0, 160) }),
+    ...(http ? { httpStatus: http.status, detail: http.detail } : {}),
+    ...(result.ok === false && result.reason ? { reason: result.reason } : {}),
     durationMs: guard.elapsedMs(),
     lines: stats.lines,
     lastStatus: stats.status ?? "",

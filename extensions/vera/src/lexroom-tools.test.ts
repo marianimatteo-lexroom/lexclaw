@@ -6,7 +6,9 @@ const openVeraLexroomAccountFromApi = vi.hoisted(() => vi.fn());
 vi.mock("./lexroom-account.js", () => ({ openVeraLexroomAccountFromApi }));
 
 import {
+  executeVeraDraft,
   executeVeraLexroomConnect,
+  executeVeraResearch,
   lexroomConnectedText,
   resolveLexroomConfig,
   sendLexroomConnectedNotice,
@@ -44,6 +46,51 @@ function useStore(readAccount: LexroomAccountStore["readAccount"]) {
   openVeraLexroomAccountFromApi.mockResolvedValue(store);
   return store;
 }
+
+/** A store whose account really disappears on clearAccount, so status can be re-read. */
+function useLiveStore(initial: LexroomAccountRecord | null) {
+  let current = initial;
+  const store = useStore(async () => current);
+  vi.mocked(store.clearAccount).mockImplementation(async () => {
+    current = null;
+  });
+  return {
+    store,
+    replaceAccount(next: LexroomAccountRecord) {
+      current = next;
+    },
+  };
+}
+
+type Route = (url: URL, init: RequestInit | undefined) => Response | Promise<Response>;
+
+function lexroom(routes: Record<string, Route>) {
+  const calls: Array<{ path: string; method: string; headers: Headers }> = [];
+  const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+    );
+    calls.push({
+      path: url.pathname,
+      method: init?.method ?? "GET",
+      headers: new Headers(init?.headers),
+    });
+    const route = routes[url.pathname];
+    if (!route) {
+      throw new Error(`unexpected request ${url.pathname}`);
+    }
+    return await route(url, init);
+  }) as unknown as typeof fetch;
+  return { fetchImpl, calls };
+}
+
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const DENIED = { detail: "You do not have permission to perform this action." };
+const doneStream = () =>
+  new Response(
+    `${JSON.stringify({ research: { id: "r1", status: "DONE", answer: { text: "Ok" } } })}\n`,
+  );
 
 function expiredJwt(): string {
   const payload = Buffer.from(JSON.stringify({ exp: Math.floor(NOW.getTime() / 1000) - 10 }));
@@ -154,11 +201,76 @@ describe("resolveLexroomConfig", () => {
 });
 
 describe("executeVeraLexroomConnect", () => {
-  it("reports connected without issuing a link when the saved bearer is live", async () => {
+  it("reports connected only after a live authenticated call accepts the saved bearer", async () => {
     const store = useStore(async () => account());
-    const result = await executeVeraLexroomConnect(CONNECT_CONFIG, api, NOW);
+    const server = lexroom({ "/v1/credits": () => json({ credits: 3 }) });
+    const result = await executeVeraLexroomConnect(
+      { ...CONNECT_CONFIG, baseUrl: "https://lexroom.example" },
+      api,
+      NOW,
+      { fetchImpl: server.fetchImpl },
+    );
     expect(result).toEqual({ ok: true, connected: true, email: "lawyer@example.com" });
     expect(store.replacePending).not.toHaveBeenCalled();
+    expect(store.clearAccount).not.toHaveBeenCalled();
+    expect(vi.mocked(server.fetchImpl).mock.calls[0]?.[0]).toBe(
+      "https://lexroom.example/v1/credits",
+    );
+    expect(server.calls[0]?.method).toBe("GET");
+    expect(server.calls[0]?.headers.get("Authorization")).toBe("Bearer test-account-token");
+    expect(server.calls[0]?.headers.get("Accept-Encoding")).toBe("identity");
+  });
+
+  it.each([401, 403])(
+    "clears a bearer Lexroom rejects with %i and issues a new link",
+    async (status) => {
+      const { store } = useLiveStore(account());
+      const server = lexroom({ "/v1/credits": () => json(DENIED, status) });
+      const result = await executeVeraLexroomConnect(CONNECT_CONFIG, api, NOW, {
+        fetchImpl: server.fetchImpl,
+      });
+      expect(result).toMatchObject({ ok: true, connected: false });
+      expect(store.clearAccount).toHaveBeenCalledTimes(1);
+      expect(store.replacePending).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("neither claims connected nor clears when Lexroom cannot be reached", async () => {
+    const store = useStore(async () => account());
+    const server = lexroom({ "/v1/credits": () => json({}, 503) });
+    const result = await executeVeraLexroomConnect(CONNECT_CONFIG, api, NOW, {
+      fetchImpl: server.fetchImpl,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "unverified",
+      error: expect.stringContaining("force true"),
+    });
+    expect(store.clearAccount).not.toHaveBeenCalled();
+    expect(store.replacePending).not.toHaveBeenCalled();
+  });
+
+  it("force drops a saved sign-in without asking Lexroom and always issues a link", async () => {
+    const { store } = useLiveStore(account());
+    const server = lexroom({});
+    const result = await executeVeraLexroomConnect(CONNECT_CONFIG, api, NOW, {
+      force: true,
+      fetchImpl: server.fetchImpl,
+    });
+    expect(result).toMatchObject({ ok: true, connected: false });
+    expect(server.fetchImpl).not.toHaveBeenCalled();
+    expect(store.clearAccount).toHaveBeenCalledTimes(1);
+    expect(store.replacePending).toHaveBeenCalledTimes(1);
+  });
+
+  it("issues a link for an expired bearer without a live call", async () => {
+    useStore(async () => account({ accessToken: expiredJwt(), accessExpiresAtMs: null }));
+    const server = lexroom({});
+    const result = await executeVeraLexroomConnect(CONNECT_CONFIG, api, NOW, {
+      fetchImpl: server.fetchImpl,
+    });
+    expect(result).toMatchObject({ ok: true, connected: false });
+    expect(server.fetchImpl).not.toHaveBeenCalled();
   });
 
   it("saves a pending nonce and returns a signed link when not connected", async () => {
@@ -272,5 +384,121 @@ describe("sendLexroomConnectedNotice", () => {
         }),
       }),
     ).toEqual({ ok: false, error: "send rejected" });
+  });
+});
+
+describe("a rejected Lexroom sign-in", () => {
+  /** The tool entry points read the real clock, so the fixture bearer must outlive it. */
+  const liveAccount = (overrides: Partial<LexroomAccountRecord> = {}) =>
+    account({ accessExpiresAtMs: Date.now() + 3_600_000, ...overrides });
+  const research = { matterId: "m", query: "Termini" };
+
+  it("is cleared, so status reports not connected and a new link is issued", async () => {
+    const { store } = useLiveStore(liveAccount());
+    const server = lexroom({
+      "/v1/ask_me_anything": () => json(DENIED, 403),
+      "/v1/credits": () => json(DENIED, 403),
+    });
+    const outcome = await executeVeraResearch({
+      args: research,
+      config: {},
+      api,
+      fetchImpl: server.fetchImpl,
+    });
+    expect(outcome).toMatchObject({ ok: false, reason: "not_connected" });
+    expect(store.clearAccount).toHaveBeenCalledTimes(1);
+
+    const status = await executeVeraLexroomConnect(CONNECT_CONFIG, api, NOW, {
+      fetchImpl: server.fetchImpl,
+    });
+    expect(status).toMatchObject({ ok: true, connected: false });
+    expect(store.replacePending).toHaveBeenCalledTimes(1);
+    expect(server.calls.map((call) => call.path)).toEqual(["/v1/ask_me_anything", "/v1/credits"]);
+  });
+
+  it("is cleared by a rejected drafting call too", async () => {
+    const { store } = useLiveStore(liveAccount());
+    const server = lexroom({ "/v2/ai/drafting/selectors": () => json({ detail: "expired" }, 401) });
+    const outcome = await executeVeraDraft({
+      args: { matterId: "m", prompt: "Diffida", confirmed: true },
+      config: {},
+      api,
+      fetchImpl: server.fetchImpl,
+    });
+    expect(outcome).toMatchObject({ ok: false, reason: "not_connected" });
+    expect(store.clearAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a sign-in that was replaced while the call was running", async () => {
+    const live = useLiveStore(liveAccount());
+    const server = lexroom({
+      "/v1/ask_me_anything": () => {
+        live.replaceAccount(liveAccount({ accessToken: "newer-token" }));
+        return json({ detail: "expired" }, 401);
+      },
+    });
+    await executeVeraResearch({ args: research, config: {}, api, fetchImpl: server.fetchImpl });
+    expect(live.store.clearAccount).not.toHaveBeenCalled();
+  });
+
+  it("does not clear anything for a static config token", async () => {
+    const { store } = useLiveStore(null);
+    const server = lexroom({ "/v1/ask_me_anything": () => json({ detail: "expired" }, 401) });
+    const outcome = await executeVeraResearch({
+      args: research,
+      config: { accessToken: "static-config-token" },
+      api,
+      fetchImpl: server.fetchImpl,
+    });
+    expect(outcome).toMatchObject({ ok: false, reason: "not_connected" });
+    expect(store.clearAccount).not.toHaveBeenCalled();
+  });
+
+  it("is not cleared for a 403 that the live check shows is not about the sign-in", async () => {
+    const { store } = useLiveStore(liveAccount());
+    const server = lexroom({
+      "/v1/ask_me_anything": () => json(DENIED, 403),
+      "/v1/credits": () => json({ credits: 0 }),
+    });
+    const outcome = await executeVeraResearch({
+      args: research,
+      config: {},
+      api,
+      fetchImpl: server.fetchImpl,
+    });
+    expect(outcome).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("non serve ricollegare"),
+    });
+    expect(outcome).not.toHaveProperty("reason");
+    expect(store.clearAccount).not.toHaveBeenCalled();
+  });
+
+  it("logs the failed call's HTTP status and sanitized detail, never the token", async () => {
+    useLiveStore(liveAccount({ accessToken: "test-account-token-0123456789abcdef" }));
+    const server = lexroom({
+      "/v1/ask_me_anything": () =>
+        json({ detail: "Module Civile denied for test-account-token-0123456789abcdef" }, 403),
+      "/v1/credits": () => json({ credits: 1 }),
+    });
+    await executeVeraResearch({ args: research, config: {}, api, fetchImpl: server.fetchImpl });
+    const warned = logger.warn.mock.calls.map((call) => String(call[0])).join("\n");
+    expect(warned).toContain("vera lexroom research.failed");
+    expect(warned).toContain("httpStatus=403");
+    expect(warned).toContain("detail=Module Civile denied for [redacted]");
+    expect(warned).not.toContain("test-account-token");
+  });
+
+  it("still succeeds and keeps the account when the call works", async () => {
+    const { store } = useLiveStore(liveAccount());
+    const server = lexroom({ "/v1/ask_me_anything": () => doneStream() });
+    const outcome = await executeVeraResearch({
+      args: research,
+      config: {},
+      api,
+      fetchImpl: server.fetchImpl,
+    });
+    expect(outcome).toMatchObject({ ok: true, answer: "Ok" });
+    expect(store.clearAccount).not.toHaveBeenCalled();
   });
 });
