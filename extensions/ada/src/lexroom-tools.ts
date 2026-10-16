@@ -2,7 +2,6 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import {
   readAdaWhatsAppTarget,
   ADA_WHATSAPP_CHANNEL,
-  isConfiguredLawyerSender,
   type GoogleConnectedNotice,
 } from "./google-notify.js";
 import type { LexroomAccountStore } from "./lexroom-account-contract.js";
@@ -42,6 +41,7 @@ import {
   livePushDeps,
   pushResearchResult,
   sendResearchAck,
+  senderNumber,
   type PushDeps,
 } from "./research-push.js";
 
@@ -446,7 +446,12 @@ export async function executeAdaResearch(params: {
 }
 
 /** Who asked, from the host's trusted tool context. */
-export type ResearchRequester = { senderId?: string; channel?: string };
+export type ResearchRequester = {
+  senderId?: string;
+  channel?: string;
+  /** The platform's id of the conversation, which tells a group from a one-to-one chat. */
+  conversationId?: string;
+};
 
 type PushApi = Parameters<typeof livePushDeps>[0];
 
@@ -455,10 +460,11 @@ type PushApi = Parameters<typeof livePushDeps>[0];
  * its handle at once. The job gets its own abort signal, because the tool call's ends when the
  * tool returns.
  *
- * When the configured lawyer asked, code also tells them on WhatsApp that the research is
- * running and sends the result when it ends, so the model neither polls nor has to remember to
- * say anything. For anyone else the result is not sent to the lawyer's number, and the model
- * reads it through ada_research_status as before.
+ * When a WhatsApp number asked in a chat of its own, code also tells that number that the
+ * research is running and sends it the result when it ends, so the model neither polls nor has
+ * to remember to say anything. Messages go only to the requesting number. When the sender is
+ * unknown, not a phone number, or in a group, nothing is sent and the model reads the result
+ * through ada_research_status.
  */
 export async function startAdaResearch(params: {
   args: ResearchArgs;
@@ -466,8 +472,8 @@ export async function startAdaResearch(params: {
   api: StoreApi & PushApi;
   requester?: ResearchRequester;
   fetchImpl?: typeof fetch;
-  /** Test seam: the sender, window check and nudge. Defaults to the live ones. */
-  pushDeps?: PushDeps;
+  /** Test seam: the sender, window check and nudge for one recipient. Defaults to the live ones. */
+  pushDepsFor?: (recipient: string) => PushDeps;
 }) {
   const matterId = params.args.matterId.trim();
   if (!matterId) {
@@ -477,14 +483,18 @@ export async function startAdaResearch(params: {
     return { ok: false as const, error: "query is required" };
   }
   const log = lexroomLogger(params.api.logger);
-  const channel = params.requester?.channel;
-  const fromLawyer =
-    (channel === undefined || channel === ADA_WHATSAPP_CHANNEL) &&
-    isConfiguredLawyerSender(params.api.config, params.requester?.senderId);
-  const push = fromLawyer ? (params.pushDeps ?? livePushDeps(params.api, log)) : undefined;
+  const { channel, conversationId } = params.requester ?? {};
+  const onKapso = channel === undefined || channel === ADA_WHATSAPP_CHANNEL;
+  const recipient = onKapso ? senderNumber(params.requester?.senderId) : null;
+  const inGroup = conversationId !== undefined && /@g\.us$/iu.test(conversationId.trim());
+  const owner = recipient ?? undefined;
+  const push =
+    recipient && !inGroup
+      ? (params.pushDepsFor ?? ((to) => livePushDeps(params.api, log, to)))(recipient)
+      : undefined;
   if (!push) {
     log("ack.skipped", {
-      reason: "requester_is_not_the_lawyer",
+      reason: !onKapso ? "other_channel" : inGroup ? "group_chat" : "sender_unknown",
       senderKnown: params.requester?.senderId !== undefined,
     });
   }
@@ -494,6 +504,7 @@ export async function startAdaResearch(params: {
       : defaultTotalTimeoutMs();
   const started = startResearchJob({
     matterId,
+    owner,
     // The call's own total cap, plus room for the sign-in and module lookups before it.
     deadlineMs: total + 3 * lexroomTimeoutMs(),
     log,
@@ -518,10 +529,10 @@ export async function startAdaResearch(params: {
   const notified = await sendResearchAck({ jobId: started.jobId, query: params.args.query }, push);
   return {
     ...started,
-    lawyerNotified: notified,
+    requesterNotified: notified,
     message: notified
-      ? "Research started in the background. Ada already told the lawyer on WhatsApp that it is running and will send the answer herself when it is ready. Do not call ada_research_status and do not message the lawyer about it; end this turn with exactly NO_REPLY."
-      : "Research started in the background. Ada could not message the lawyer, so tell them in one short line that it is running; Ada will still send the answer herself when it is ready. Do not call ada_research_status.",
+      ? "Research started in the background. Ada already told the requester on WhatsApp that it is running and will send the answer herself when it is ready. Do not call ada_research_status and do not message them about it; end this turn with exactly NO_REPLY."
+      : "Research started in the background. Ada could not message the requester, so tell them in one short line that it is running; Ada will still send the answer herself when it is ready. Do not call ada_research_status.",
   };
 }
 

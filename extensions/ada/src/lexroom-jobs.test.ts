@@ -359,4 +359,26 @@ describe("research jobs", () => {
       expect(deliver).toHaveBeenCalledTimes(1);
     });
   });
+
+  it("lets only the number that started a job read it, and anyone read a job with no owner", async () => {
+    const started = startResearchJob({
+      matterId: "m",
+      owner: "390000000001",
+      deadlineMs: 10_000,
+      run: async () => outcome,
+      log,
+    });
+    if (!started.ok) {
+      throw new Error(started.message);
+    }
+    const read = (requester?: string) =>
+      readResearchJob({ jobId: started.jobId, requester, waitSeconds: 1 });
+    expect(await read("390000000002")).toMatchObject({ ok: false, reason: "unknown_job" });
+    expect(await read(undefined)).toMatchObject({ ok: false, reason: "unknown_job" });
+    expect(await read("390000000001")).toMatchObject({ ok: true, state: "done" });
+    const open = start(async () => outcome);
+    await expect(
+      readResearchJob({ jobId: open.jobId, requester: "390000000002", waitSeconds: 1 }),
+    ).resolves.toMatchObject({ ok: true, state: "done" });
+  });
 });

@@ -3,11 +3,15 @@ import type { LexroomFailure, ResearchOutcome } from "./lexroom-client.js";
 import {
   chunkMessage,
   clearHeldResearch,
+  livePushDeps,
+  onSenderInbound,
   pushResearchResult,
+  recordSenderInbound,
   releaseHeldResearch,
   researchAckText,
   researchMessages,
   sendResearchAck,
+  senderNumber,
   type PushDeps,
 } from "./research-push.js";
 
@@ -34,6 +38,7 @@ function makeDeps(overrides: Partial<PushDeps> = {}) {
   const sent: string[] = [];
   const log = vi.fn();
   const deps: PushDeps = {
+    recipient: "390000000001",
     send: vi.fn(async (text: string) => {
       sent.push(text);
       return { ok: true as const };
@@ -262,8 +267,12 @@ describe("pushResearchResult", () => {
 });
 
 describe("releaseHeldResearch", () => {
-  const hold = async (jobId: string, result: ResearchOutcome = outcome()) => {
-    const closed = makeDeps({ windowOpen: async () => false });
+  const hold = async (
+    jobId: string,
+    result: ResearchOutcome = outcome(),
+    recipient = "390000000001",
+  ) => {
+    const closed = makeDeps({ windowOpen: async () => false, recipient });
     await pushResearchResult({ jobId, startedAtMs: 0, result }, closed.deps);
   };
 
@@ -322,5 +331,141 @@ describe("releaseHeldResearch", () => {
       await hold(`rj_${n}`);
     }
     expect(await releaseHeldResearch(makeDeps().deps)).toBe(5);
+  });
+});
+
+describe("one queue and one window per number", () => {
+  const A = "390000000001";
+  const B = "390000000002";
+
+  it("releases a number's held results to that number only", async () => {
+    await pushResearchResult(
+      { jobId: "rj_a", startedAtMs: 0, result: outcome({ answer: `${ITALIAN} per A` }) },
+      makeDeps({ windowOpen: async () => false, recipient: A }).deps,
+    );
+    await pushResearchResult(
+      { jobId: "rj_b", startedAtMs: 0, result: outcome({ answer: `${ITALIAN} per B` }) },
+      makeDeps({ windowOpen: async () => false, recipient: B }).deps,
+    );
+
+    const toB = makeDeps({ recipient: B });
+    expect(await releaseHeldResearch(toB.deps)).toBe(1);
+    expect(toB.sent).toHaveLength(1);
+    expect(toB.sent[0]).toContain("per B");
+    expect(toB.sent.join("")).not.toContain("per A");
+
+    const toA = makeDeps({ recipient: A });
+    expect(await releaseHeldResearch(toA.deps)).toBe(1);
+    expect(toA.sent[0]).toContain("per A");
+    expect(toA.sent.join("")).not.toContain("per B");
+    expect(await releaseHeldResearch(toA.deps)).toBe(0);
+  });
+
+  it("holds at most five per number without crowding out another number", async () => {
+    const holdFor = (jobId: string, recipient: string) =>
+      pushResearchResult(
+        { jobId, startedAtMs: 0, result: outcome() },
+        makeDeps({ windowOpen: async () => false, recipient }).deps,
+      );
+    for (let n = 0; n < 7; n += 1) {
+      await holdFor(`rj_a${n}`, A);
+    }
+    await holdFor("rj_b", B);
+    expect(await releaseHeldResearch(makeDeps({ recipient: A }).deps)).toBe(5);
+    expect(await releaseHeldResearch(makeDeps({ recipient: B }).deps)).toBe(1);
+  });
+
+  it("nudges the number whose result is held", async () => {
+    const a = makeDeps({ windowOpen: async () => false, recipient: A });
+    const b = makeDeps({ windowOpen: async () => false, recipient: B });
+    await pushResearchResult({ jobId: "rj_a", startedAtMs: 0, result: outcome() }, a.deps);
+    expect(a.deps.nudge).toHaveBeenCalledTimes(1);
+    expect(b.deps.nudge).not.toHaveBeenCalled();
+  });
+
+  it("reads a sender's number from a Kapso sender id, and nothing from a group or a name", () => {
+    expect(senderNumber("+39 000 000 0001")).toBe(A);
+    expect(senderNumber("whatsapp:+390000000001")).toBe(A);
+    expect(senderNumber("390000000001@s.whatsapp.net")).toBe(A);
+    expect(senderNumber("120363025@g.us", "Mario Rossi", undefined)).toBeNull();
+    expect(senderNumber("group", "+39 000 000 0002")).toBe(B);
+    expect(senderNumber(undefined)).toBeNull();
+  });
+});
+
+describe("the live window check", () => {
+  const A = "390000000001";
+  const B = "390000000002";
+  const api = {
+    config: { channels: { "kapso-whatsapp": { defaultTo: "+390000000009" } } },
+    runtime: {
+      channel: { outbound: { loadAdapter: async () => ({ sendText: async () => undefined }) } },
+    },
+    runtimeSource: "/fake/index.ts",
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+    pluginConfig: {},
+  } as unknown as Parameters<typeof livePushDeps>[0];
+
+  it("is tracked per number from its own last inbound message", async () => {
+    const now = Date.now();
+    recordSenderInbound(A, now - 60_000);
+    recordSenderInbound(B, now - 25 * 3600_000);
+    expect(await livePushDeps(api, vi.fn(), A).windowOpen()).toBe(true);
+    expect(await livePushDeps(api, vi.fn(), B).windowOpen()).toBe(false);
+  });
+
+  it("is unknown for a number Ada has not heard from, so the send is tried", async () => {
+    expect(await livePushDeps(api, vi.fn(), "390000000077").windowOpen()).toBeNull();
+  });
+
+  it("goes to the number that asked, as a plus number", async () => {
+    const sendText = vi.fn(async () => undefined);
+    const live = livePushDeps(
+      {
+        ...api,
+        runtime: { channel: { outbound: { loadAdapter: async () => ({ sendText }) } } },
+      } as unknown as Parameters<typeof livePushDeps>[0],
+      vi.fn(),
+      A,
+    );
+    await live.send("ciao");
+    expect(sendText).toHaveBeenCalledWith(expect.objectContaining({ to: `+${A}`, text: "ciao" }));
+  });
+
+  it("records an inbound from any Kapso sender, and not from another channel or a group", async () => {
+    const atMs = Date.now();
+    onSenderInbound({ api, channelId: "kapso-whatsapp", senders: ["+39 000 000 0042"], atMs });
+    expect(await livePushDeps(api, vi.fn(), "390000000042").windowOpen()).toBe(true);
+    onSenderInbound({ api, channelId: "telegram", senders: ["+39 000 000 0043"], atMs });
+    onSenderInbound({ api, channelId: "kapso-whatsapp", senders: ["120363025@g.us"], atMs });
+    expect(await livePushDeps(api, vi.fn(), "390000000043").windowOpen()).toBeNull();
+  });
+
+  it("releases the held results of the sender who wrote, and only theirs", async () => {
+    const sendText = vi.fn(async (_params: { to: string; text: string }) => undefined);
+    const live = {
+      ...api,
+      runtime: { channel: { outbound: { loadAdapter: async () => ({ sendText }) } } },
+    } as unknown as Parameters<typeof livePushDeps>[0];
+    for (const recipient of [A, B]) {
+      await pushResearchResult(
+        {
+          jobId: `rj_${recipient}`,
+          startedAtMs: 0,
+          result: outcome({ answer: `${ITALIAN} ${recipient}` }),
+        },
+        makeDeps({ windowOpen: async () => false, recipient, now: Date.now }).deps,
+      );
+    }
+    onSenderInbound({
+      api: live,
+      channelId: "kapso-whatsapp",
+      senders: ["+39 000 000 0002"],
+      atMs: Date.now(),
+    });
+    await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
+    expect(sendText.mock.calls[0]?.[0]).toMatchObject({ to: `+${B}` });
+    expect(sendText.mock.calls[0]?.[0].text).toContain(B);
+    expect(sendText.mock.calls[0]?.[0].text).not.toContain(A);
   });
 });

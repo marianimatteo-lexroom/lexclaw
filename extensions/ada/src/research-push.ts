@@ -3,6 +3,7 @@ import { whatsappWindowOpen } from "./collector.js";
 import {
   ADA_WHATSAPP_CHANNEL,
   isConfiguredLawyerSender,
+  normalizeWhatsAppNumber,
   sendAdaWhatsAppText,
 } from "./google-notify.js";
 import { formatSources } from "./lexroom-citations.js";
@@ -18,10 +19,11 @@ import { readDigestReadyTemplate, sendDigestReadyNotice } from "./whatsapp-templ
  * sends the answer as a new WhatsApp message, with the sources and the link to the Lexroom app.
  * Nothing here depends on the model remembering to do either.
  *
- * A free-text message only reaches the lawyer inside WhatsApp's 24-hour window. When the window
- * is known to be closed, or a send fails twice, the result is held in this process, the
- * pre-approved template (the same one that releases a held digest) asks the lawyer to write, and
- * their next message releases it.
+ * Every message goes to the WhatsApp number that asked, and to no one else. A free-text message
+ * only reaches someone inside WhatsApp's 24-hour window, which is tracked per number from their
+ * last inbound message. When their window is known to be closed, or a send fails twice, the
+ * result is held in this process under their number, the pre-approved template asks them to
+ * write, and their next message releases it.
  */
 const MAX_MESSAGE_CHARS = 3500;
 const RETRY_DELAY_MS = 2000;
@@ -32,10 +34,12 @@ const MAX_FAILURE_CHARS = 300;
 type SendResult = { ok: true } | { ok: false; error: string };
 
 export type PushDeps = {
+  /** The digits of the number every message goes to. */
+  recipient: string;
   send: (text: string) => Promise<SendResult>;
-  /** Whether the 24-hour window is open; null when Ada has no inbound message on record. */
+  /** Whether the recipient's 24-hour window is open; null when Ada has no inbound from them. */
   windowOpen: () => Promise<boolean | null>;
-  /** The ready-template nudge that asks the lawyer to write, or why it was not sent. */
+  /** The ready-template nudge that asks the recipient to write, or why it was not sent. */
   nudge: () => Promise<"sent" | "unset" | "failed">;
   readProfileLanguage?: () => Promise<string | undefined>;
   log: LexroomLog;
@@ -151,19 +155,39 @@ export async function researchMessages(
 
 type Held = { jobId: string; messages: string[]; heldAtMs: number };
 
-const held: Held[] = [];
+/** Held results by recipient number, oldest first. */
+const held = new Map<string, Held[]>();
+
+const MAX_RECIPIENTS = 200;
+const MAX_TRACKED_INBOUND = 1000;
+
+/** When each number last wrote to Ada. In memory: after a restart a window is simply unknown. */
+const lastInboundAtMs = new Map<string, number>();
+
+/** A number wrote, so its 24-hour window is open from `atMs`. */
+export function recordSenderInbound(recipient: string, atMs: number): void {
+  lastInboundAtMs.delete(recipient);
+  lastInboundAtMs.set(recipient, atMs);
+  if (lastInboundAtMs.size > MAX_TRACKED_INBOUND) {
+    lastInboundAtMs.delete(lastInboundAtMs.keys().next().value ?? recipient);
+  }
+}
 
 function pruneHeld(nowMs: number): void {
-  for (let index = held.length - 1; index >= 0; index -= 1) {
-    if (nowMs - (held[index]?.heldAtMs ?? 0) > HELD_TTL_MS) {
-      held.splice(index, 1);
+  for (const [recipient, list] of held) {
+    const fresh = list.filter((entry) => nowMs - entry.heldAtMs <= HELD_TTL_MS);
+    if (fresh.length === 0) {
+      held.delete(recipient);
+    } else if (fresh.length !== list.length) {
+      held.set(recipient, fresh);
     }
   }
 }
 
-/** Drops every held result. For tests: the queue is shared by the whole process. */
+/** Forgets every held result and window. For tests: this state is shared by the whole process. */
 export function clearHeldResearch(): void {
-  held.length = 0;
+  held.clear();
+  lastInboundAtMs.clear();
 }
 
 const sleep = (ms: number) =>
@@ -243,9 +267,15 @@ export async function pushResearchResult(
     messages.splice(0, sent.sent);
   }
   pruneHeld(now());
-  held.push({ jobId: params.jobId, messages, heldAtMs: now() });
-  while (held.length > MAX_HELD) {
-    held.shift();
+  const queue = held.get(deps.recipient) ?? [];
+  queue.push({ jobId: params.jobId, messages, heldAtMs: now() });
+  while (queue.length > MAX_HELD) {
+    queue.shift();
+  }
+  held.delete(deps.recipient);
+  held.set(deps.recipient, queue);
+  while (held.size > MAX_RECIPIENTS) {
+    held.delete(held.keys().next().value ?? deps.recipient);
   }
   const nudge = await deps.nudge().catch(() => "failed" as const);
   deps.log("result.held", { job: params.jobId, reason, outcome, nudge });
@@ -253,15 +283,16 @@ export async function pushResearchResult(
 }
 
 /**
- * Sends every held result. Called when the lawyer writes, which reopens the window. A result
- * that still cannot be sent stays held for the next message.
+ * Sends the results held for `deps.recipient`. Called when that number writes, which reopens
+ * their window. A result that still cannot be sent stays held for their next message.
  */
 export async function releaseHeldResearch(deps: PushDeps): Promise<number> {
   const now = deps.now ?? Date.now;
   pruneHeld(now());
+  const queue = held.get(deps.recipient) ?? [];
   let released = 0;
-  while (held.length > 0) {
-    const next = held[0];
+  while (queue.length > 0) {
+    const next = queue[0];
     if (!next) {
       break;
     }
@@ -275,7 +306,7 @@ export async function releaseHeldResearch(deps: PushDeps): Promise<number> {
       });
       break;
     }
-    held.shift();
+    queue.shift();
     released += 1;
     deps.log("result.pushed", {
       job: next.jobId,
@@ -284,55 +315,80 @@ export async function releaseHeldResearch(deps: PushDeps): Promise<number> {
       heldMs: now() - next.heldAtMs,
     });
   }
+  if (queue.length === 0) {
+    held.delete(deps.recipient);
+  }
   return released;
 }
 
-/** The sender, window check and nudge of a running Ada, built from its plugin API. */
+/**
+ * The sender, window check and nudge of a running Ada for one WhatsApp number. The profile
+ * language is the configured lawyer's, so it is only used for the lawyer.
+ */
 export function livePushDeps(
   api: Pick<OpenClawPluginApi, "config" | "runtime" | "runtimeSource" | "logger" | "pluginConfig">,
   log: LexroomLog,
+  recipient: string,
 ): PushDeps {
   const memory = () => openAdaMemoryFromApi(api);
+  const to = `+${recipient}`;
+  const isLawyer = isConfiguredLawyerSender(api.config, recipient);
   return {
-    send: (text) => sendAdaWhatsAppText({ api, text }),
+    recipient,
+    send: (text) => sendAdaWhatsAppText({ api, to, text }),
     windowOpen: async () => {
-      const { lastLawyerInboundAtMs } = await (await memory()).readWake();
-      return lastLawyerInboundAtMs === null
-        ? null
-        : whatsappWindowOpen(lastLawyerInboundAtMs, Date.now());
+      const seen =
+        lastInboundAtMs.get(recipient) ??
+        (isLawyer ? (await (await memory()).readWake()).lastLawyerInboundAtMs : null);
+      return seen === null ? null : whatsappWindowOpen(seen, Date.now());
     },
     nudge: async () => {
       const template = readDigestReadyTemplate(api.pluginConfig);
       if (!template) {
         return "unset";
       }
-      const result = await sendDigestReadyNotice({ api, template });
+      const result = await sendDigestReadyNotice({ api, template, to });
       return result.ok ? "sent" : "failed";
     },
-    readProfileLanguage: async () => (await (await memory()).readProfile())?.language,
+    ...(isLawyer
+      ? { readProfileLanguage: async () => (await (await memory()).readProfile())?.language }
+      : {}),
     log,
   };
 }
 
+/** The WhatsApp number a Kapso sender id stands for, or null when it is not a phone number. */
+export function senderNumber(...senders: unknown[]): string | null {
+  for (const sender of senders) {
+    const number = normalizeWhatsAppNumber(sender);
+    if (number) {
+      return number;
+    }
+  }
+  return null;
+}
+
 /**
- * Called for every inbound message: when it is the configured lawyer's, the 24-hour window is
- * open again and any research held back is sent. Runs in the background and never throws.
+ * Called for every inbound Kapso message: the sender's 24-hour window is open from now, so any
+ * research held back for that number is sent. Runs in the background and never throws.
  */
-export function releaseHeldResearchForInbound(params: {
+export function onSenderInbound(params: {
   api: Parameters<typeof livePushDeps>[0];
   channelId: string | undefined;
   senders: unknown[];
+  atMs: number;
 }): void {
   const { api } = params;
-  if (
-    (params.channelId !== undefined && params.channelId !== ADA_WHATSAPP_CHANNEL) ||
-    !isConfiguredLawyerSender(api.config, ...params.senders)
-  ) {
+  const recipient = senderNumber(...params.senders);
+  if ((params.channelId !== undefined && params.channelId !== ADA_WHATSAPP_CHANNEL) || !recipient) {
     return;
   }
-  releaseHeldResearch(livePushDeps(api, lexroomLogger(api.logger))).catch((error: unknown) => {
-    api.logger.error(
-      `ada held research release failed: ${error instanceof Error ? error.message : "unknown"}`,
-    );
-  });
+  recordSenderInbound(recipient, params.atMs);
+  releaseHeldResearch(livePushDeps(api, lexroomLogger(api.logger), recipient)).catch(
+    (error: unknown) => {
+      api.logger.error(
+        `ada held research release failed: ${error instanceof Error ? error.message : "unknown"}`,
+      );
+    },
+  );
 }

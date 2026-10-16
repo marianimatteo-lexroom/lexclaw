@@ -109,15 +109,16 @@ export async function sendGoogleConnectedNotice(params: {
 const WHATSAPP_SEND_TIMEOUT_MS = 20_000;
 
 /**
- * One text to the configured lawyer through the Kapso channel. Never throws and never waits
- * longer than the limit: a send that hangs is reported as a failure.
+ * One text through the Kapso channel to `to`, or to the configured lawyer when none is given.
+ * Never throws and never waits longer than the limit: a send that hangs is reported as a failure.
  */
 export async function sendAdaWhatsAppText(params: {
   api: Pick<OpenClawPluginApi, "config" | "runtime">;
   text: string;
+  to?: string;
   timeoutMs?: number;
 }): Promise<GoogleConnectedNotice> {
-  const to = readAdaWhatsAppTarget(params.api.config);
+  const to = params.to ?? readAdaWhatsAppTarget(params.api.config);
   if (!to) {
     return { ok: false, error: "kapso-whatsapp defaultTo is not set" };
   }

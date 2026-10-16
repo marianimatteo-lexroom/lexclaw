@@ -28,6 +28,8 @@ type Settled = ResearchOutcome | LexroomFailure;
 type Job = {
   id: string;
   matterId: string;
+  /** The WhatsApp number that started it; only that number may read it. Unset when unknown. */
+  owner?: string;
   startedAtMs: number;
   finishedAtMs?: number;
   controller: AbortController;
@@ -37,7 +39,7 @@ type Job = {
   settle: (result: Settled) => void;
   result?: Settled;
   /**
-   * What became of the result when code pushes it to the lawyer. While it is set, the lawyer has
+   * What became of the result when code pushes it to the requester. While it is set, they have
    * the result or is about to, so `ada_research_status` must not hand the model the answer to say
    * a second time.
    */
@@ -102,10 +104,12 @@ export function abortResearchJobs(): void {
  */
 export function startResearchJob(params: {
   matterId: string;
+  /** The WhatsApp number that asked, when known. */
+  owner?: string;
   deadlineMs: number;
   run: (signal: AbortSignal) => Promise<Settled>;
   log: LexroomLog;
-  /** Pushes the result to the lawyer when the job ends, however it ends. */
+  /** Pushes the result to the requester when the job ends, however it ends. */
   deliver?: (result: Settled, job: { id: string; startedAtMs: number }) => Promise<"sent" | "held">;
   now?: () => number;
 }) {
@@ -125,6 +129,7 @@ export function startResearchJob(params: {
   const job: Job = {
     id,
     matterId: params.matterId,
+    ...(params.owner ? { owner: params.owner } : {}),
     startedAtMs,
     controller,
     settled: new Promise<void>((resolve) => {
@@ -178,9 +183,9 @@ export function startResearchJob(params: {
 }
 
 const DELIVERY_NOTE: Record<NonNullable<Job["delivery"]>, string> = {
-  sending: "Ada is sending the lawyer this research result on WhatsApp right now.",
-  sent: "Ada already sent the lawyer this research result on WhatsApp.",
-  held: "Ada will send the lawyer this research result on WhatsApp when they next write, because the 24-hour window is closed.",
+  sending: "Ada is sending the requester this research result on WhatsApp right now.",
+  sent: "Ada already sent the requester this research result on WhatsApp.",
+  held: "Ada will send the requester this research result on WhatsApp when they next write, because the 24-hour window is closed.",
 };
 
 function snapshot(job: Job, nowMs: number) {
@@ -220,12 +225,15 @@ function snapshot(job: Job, nowMs: number) {
  */
 export async function readResearchJob(params: {
   jobId: string;
+  /** The WhatsApp number reading, when known; a job with an owner is read by its owner only. */
+  requester?: string;
   waitSeconds?: number;
   now?: () => number;
   log?: LexroomLog;
 }) {
   const now = params.now ?? Date.now;
-  const job = jobs.get(params.jobId.trim());
+  const found = jobs.get(params.jobId.trim());
+  const job = found && (!found.owner || found.owner === params.requester) ? found : undefined;
   if (!job) {
     params.log?.("job.read", { state: "unknown" });
     return failure(
