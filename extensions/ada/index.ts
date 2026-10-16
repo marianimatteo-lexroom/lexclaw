@@ -28,8 +28,6 @@ import { openAdaLexroomAccountFromApi } from "./src/lexroom-account.js";
 import type { LexroomConfig } from "./src/lexroom-client.js";
 import { lexroomConfigProperties } from "./src/lexroom-config-schema.js";
 import { handleAdaLexroomConnect } from "./src/lexroom-connect-http.js";
-import { readResearchJob } from "./src/lexroom-jobs.js";
-import { lexroomLogger } from "./src/lexroom-log.js";
 import {
   executeAdaLexroomConnect,
   lexroomConnectConfigFrom,
@@ -47,8 +45,13 @@ import {
 } from "./src/memory-tools.js";
 import { openAdaMemoryFromApi } from "./src/memory.js";
 import { registerResearchLinkHooks } from "./src/research-link-outbound.js";
-import { releaseHeldResearchForInbound } from "./src/research-push.js";
-import { createResearchTool, researchToolDefinition } from "./src/research-tool.js";
+import { onSenderInbound } from "./src/research-push.js";
+import {
+  createResearchStatusTool,
+  createResearchTool,
+  researchStatusToolDefinition,
+  researchToolDefinition,
+} from "./src/research-tool.js";
 import { recordLawyerInbound, registerAdaService } from "./src/service.js";
 import { registerStatusReactionHooks } from "./src/status-reactions.js";
 import { handleAdaStatus } from "./src/status.js";
@@ -246,25 +249,9 @@ const tools = defineToolPlugin({
       factory: ({ api, config, toolContext }) => createResearchTool({ api, config, toolContext }),
     }),
     tool({
-      name: "ada_research_status",
-      label: "Lexroom research status",
-      description:
-        "Read a research started with ada_research, only when its result said Ada would not send it herself, or when the lawyer asks about it. Once Ada has sent the answer to the lawyer, state is delivered and the result carries no answer: do not repeat it. state is running (call again), done (the answer and sources are in the result; Ada adds the link to this research in the Lexroom app after your last line, so do not write one yourself) or failed (the result says why; reason timeout means Lexroom did not respond). waitSeconds waits up to that long, at most 30, for it to finish; it defaults to 15.",
-      parameters: Type.Object(
-        {
-          jobId: Type.String({ minLength: 1 }),
-          waitSeconds: Type.Optional(Type.Integer({ minimum: 0, maximum: 30 })),
-        },
-        { additionalProperties: false },
-      ),
+      ...researchStatusToolDefinition,
       optional: true,
-      async execute(params, _config, context) {
-        return await readResearchJob({
-          jobId: params.jobId,
-          waitSeconds: params.waitSeconds,
-          log: lexroomLogger(context.api.logger),
-        });
-      },
+      factory: ({ api, toolContext }) => createResearchStatusTool({ api, toolContext }),
     }),
     tool({
       name: "ada_draft",
@@ -546,10 +533,11 @@ const entry = definePluginEntry({
           channelId,
           senders: [event.from, ctx.senderId],
         });
-        releaseHeldResearchForInbound({
+        onSenderInbound({
           api,
           channelId,
           senders: [event.from, ctx.senderId],
+          atMs: Date.now(),
         });
       } catch (error) {
         api.logger.error(

@@ -118,9 +118,11 @@ export function warnDigestReadyTemplateUnset(api: Pick<OpenClawPluginApi, "logge
 export async function sendDigestReadyNotice(params: {
   api: Pick<OpenClawPluginApi, "config" | "logger">;
   template: KapsoTemplate;
+  /** Whom to nudge; the configured lawyer when omitted. */
+  to?: string;
   fetchImpl?: typeof fetch;
 }): Promise<KapsoTemplateResult> {
-  const to = readAdaWhatsAppTarget(params.api.config);
+  const to = params.to ?? readAdaWhatsAppTarget(params.api.config);
   const result: KapsoTemplateResult = to
     ? await sendKapsoTemplate({
         config: params.api.config,
