@@ -38,7 +38,7 @@ export function takeResearchLinks(text: string, nowMs = Date.now()): string[] {
   return missing;
 }
 
-type Language = "it" | "en" | "es" | "fr" | "de";
+export type Language = "it" | "en" | "es" | "fr" | "de";
 
 const LABELS: Record<Language, string> = {
   it: "Continua su Lexroom:",
@@ -99,9 +99,32 @@ function languageFromProfile(value: string | undefined): Language | undefined {
   return undefined;
 }
 
+/** `<label> <url>` in `language`, the line the lawyer taps to keep reading in the Lexroom app. */
+export function researchLinkLine(language: Language, url: string): string {
+  return `${LABELS[language]} ${url}`;
+}
+
 /**
- * `text` with one link line per missing research link, in the language of the reply (the
- * lawyer's profile language when the reply is too short to tell, then Italian). The text is
+ * The language of a message: its own words when there are enough of them, else the lawyer's
+ * profile language, else Italian. A failed profile read never fails the caller.
+ */
+export async function resolveLanguage(
+  text: string,
+  readProfileLanguage?: () => Promise<string | undefined>,
+): Promise<Language> {
+  const detected = detectLanguage(text);
+  if (detected) {
+    return detected;
+  }
+  try {
+    return languageFromProfile(await readProfileLanguage?.()) ?? "it";
+  } catch {
+    return "it";
+  }
+}
+
+/**
+ * `text` with one link line per missing research link, in the language of the reply. The text is
  * returned unchanged when there is nothing to add.
  */
 export async function withResearchLinks(
@@ -112,16 +135,8 @@ export async function withResearchLinks(
   if (urls.length === 0) {
     return text;
   }
-  let language = detectLanguage(text);
-  if (!language) {
-    try {
-      language = languageFromProfile(await options.readProfileLanguage?.());
-    } catch {
-      // The profile only picks the label; a failed read must not cost the lawyer the link.
-    }
-  }
-  const label = LABELS[language ?? "it"];
-  return `${text.trimEnd()}\n\n${urls.map((url) => `${label} ${url}`).join("\n")}`;
+  const language = await resolveLanguage(text, options.readProfileLanguage);
+  return `${text.trimEnd()}\n\n${urls.map((url) => researchLinkLine(language, url)).join("\n")}`;
 }
 
 /**

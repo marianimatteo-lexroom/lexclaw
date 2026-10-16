@@ -1,4 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { withDeadline } from "./lexroom-timeout.js";
 
 export const ADA_WHATSAPP_CHANNEL = "kapso-whatsapp";
 
@@ -103,4 +104,41 @@ export async function sendGoogleConnectedNotice(params: {
     };
   }
   return { ok: true };
+}
+
+const WHATSAPP_SEND_TIMEOUT_MS = 20_000;
+
+/**
+ * One text to the configured lawyer through the Kapso channel. Never throws and never waits
+ * longer than the limit: a send that hangs is reported as a failure.
+ */
+export async function sendAdaWhatsAppText(params: {
+  api: Pick<OpenClawPluginApi, "config" | "runtime">;
+  text: string;
+  timeoutMs?: number;
+}): Promise<GoogleConnectedNotice> {
+  const to = readAdaWhatsAppTarget(params.api.config);
+  if (!to) {
+    return { ok: false, error: "kapso-whatsapp defaultTo is not set" };
+  }
+  const limitMs = params.timeoutMs ?? WHATSAPP_SEND_TIMEOUT_MS;
+  try {
+    return await withDeadline(
+      (async (): Promise<GoogleConnectedNotice> => {
+        const adapter = await params.api.runtime.channel.outbound.loadAdapter(ADA_WHATSAPP_CHANNEL);
+        if (!adapter?.sendText) {
+          return { ok: false, error: "kapso-whatsapp outbound is unavailable" };
+        }
+        await adapter.sendText({ cfg: params.api.config, to, text: params.text });
+        return { ok: true };
+      })(),
+      limitMs,
+      (): GoogleConnectedNotice => ({
+        ok: false,
+        error: `whatsapp send did not finish within ${Math.round(limitMs / 1000)}s`,
+      }),
+    );
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "whatsapp send failed" };
+  }
 }

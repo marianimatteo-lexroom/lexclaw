@@ -239,4 +239,124 @@ describe("research jobs", () => {
     await readResearchJob({ jobId: "rj_missing", waitSeconds: 0, log: reads });
     expect(reads).toHaveBeenCalledWith("job.read", { state: "unknown" });
   });
+
+  describe("when code pushes the result to the lawyer", () => {
+    const withLink: ResearchOutcome = {
+      ...outcome,
+      researchUrl: "https://app.lexroom.ai/research/r1",
+    };
+    const startDelivered = (
+      run: () => Promise<ResearchOutcome | LexroomFailure>,
+      deliver: () => Promise<"sent" | "held">,
+    ) => {
+      const started = startResearchJob({ matterId: "m", deadlineMs: 10_000, run, deliver, log });
+      if (!started.ok) {
+        throw new Error(started.message);
+      }
+      return started;
+    };
+
+    it("hands the model no answer to repeat, only that the lawyer has it", async () => {
+      takeResearchLinks("");
+      const started = startDelivered(
+        async () => withLink,
+        async () => "sent",
+      );
+      const read = await readResearchJob({ jobId: started.jobId, waitSeconds: 1 });
+      expect(read).toMatchObject({
+        ok: true,
+        state: "delivered",
+        outcome: "done",
+        delivery: "sent",
+        researchId: "r1",
+        jobId: started.jobId,
+      });
+      expect(read).not.toHaveProperty("answer");
+      expect(read).not.toHaveProperty("sources");
+      expect(read).not.toHaveProperty("researchUrl");
+      expect(JSON.stringify(read)).not.toContain("Risposta");
+      expect(takeResearchLinks("")).toEqual([]);
+    });
+
+    it("already treats it as delivered while the push is still being sent", async () => {
+      const sending = deferred<"sent" | "held">();
+      const started = startDelivered(
+        async () => withLink,
+        () => sending.promise,
+      );
+      await expect(
+        readResearchJob({ jobId: started.jobId, waitSeconds: 1 }),
+      ).resolves.toMatchObject({
+        state: "delivered",
+        delivery: "sending",
+      });
+      sending.resolve("held");
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(
+        readResearchJob({ jobId: started.jobId, waitSeconds: 0 }),
+      ).resolves.toMatchObject({
+        state: "delivered",
+        delivery: "held",
+        message: expect.stringContaining("when they next write"),
+      });
+    });
+
+    it("says a failed research was delivered too", async () => {
+      const started = startDelivered(
+        async () => ({ ok: false, error: "no" }),
+        async () => "sent",
+      );
+      await expect(
+        readResearchJob({ jobId: started.jobId, waitSeconds: 1 }),
+      ).resolves.toMatchObject({
+        ok: true,
+        state: "delivered",
+        outcome: "failed",
+      });
+    });
+
+    it("hands over the full result when the push itself broke, so nobody is left without it", async () => {
+      takeResearchLinks("");
+      const started = startDelivered(
+        async () => withLink,
+        async () => {
+          throw new Error("push exploded");
+        },
+      );
+      await readResearchJob({ jobId: started.jobId, waitSeconds: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(
+        readResearchJob({ jobId: started.jobId, waitSeconds: 0 }),
+      ).resolves.toMatchObject({
+        ok: true,
+        state: "done",
+        answer: "Risposta [1]",
+      });
+      expect(takeResearchLinks("")).toEqual(["https://app.lexroom.ai/research/r1"]);
+    });
+
+    it("pushes a job that timed out, with the structured failure", async () => {
+      const deliver = vi.fn(async () => "sent" as const);
+      startDelivered(
+        () =>
+          new Promise(() => {
+            // Never settles.
+          }),
+        deliver,
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(deliver).toHaveBeenCalledWith(
+        expect.objectContaining({ ok: false, reason: "timeout" }),
+        expect.objectContaining({ id: expect.stringMatching(/^rj_/u) }),
+      );
+    });
+
+    it("pushes once, even when the service stops a job that already finished", async () => {
+      const deliver = vi.fn(async () => "sent" as const);
+      startDelivered(async () => withLink, deliver);
+      await vi.advanceTimersByTimeAsync(0);
+      abortResearchJobs();
+      expect(deliver).toHaveBeenCalledTimes(1);
+    });
+  });
 });

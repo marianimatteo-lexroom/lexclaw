@@ -36,6 +36,12 @@ type Job = {
   /** Records the result. Only the first call counts. */
   settle: (result: Settled) => void;
   result?: Settled;
+  /**
+   * What became of the result when code pushes it to the lawyer. While it is set, the lawyer has
+   * the result or is about to, so `ada_research_status` must not hand the model the answer to say
+   * a second time.
+   */
+  delivery?: "sending" | "sent" | "held";
 };
 
 const jobs = new Map<string, Job>();
@@ -99,6 +105,8 @@ export function startResearchJob(params: {
   deadlineMs: number;
   run: (signal: AbortSignal) => Promise<Settled>;
   log: LexroomLog;
+  /** Pushes the result to the lawyer when the job ends, however it ends. */
+  deliver?: (result: Settled, job: { id: string; startedAtMs: number }) => Promise<"sent" | "held">;
   now?: () => number;
 }) {
   const now = params.now ?? Date.now;
@@ -128,6 +136,18 @@ export function startResearchJob(params: {
       }
       job.result = result;
       job.finishedAtMs = now();
+      if (params.deliver) {
+        job.delivery = "sending";
+        params
+          .deliver(result, { id, startedAtMs })
+          .then((delivery) => {
+            job.delivery = delivery;
+          })
+          .catch(() => {
+            // The push itself broke, so nobody has the result: let a status read hand it over.
+            job.delivery = undefined;
+          });
+      }
       log("job.finished", {
         job: id,
         ok: result.ok,
@@ -157,6 +177,12 @@ export function startResearchJob(params: {
   };
 }
 
+const DELIVERY_NOTE: Record<NonNullable<Job["delivery"]>, string> = {
+  sending: "Ada is sending the lawyer this research result on WhatsApp right now.",
+  sent: "Ada already sent the lawyer this research result on WhatsApp.",
+  held: "Ada will send the lawyer this research result on WhatsApp when they next write, because the 24-hour window is closed.",
+};
+
 function snapshot(job: Job, nowMs: number) {
   if (job.result === undefined) {
     const elapsedSec = Math.round((nowMs - job.startedAtMs) / 1000);
@@ -167,6 +193,18 @@ function snapshot(job: Job, nowMs: number) {
       matterId: job.matterId,
       elapsedSec,
       message: `Research is still running (${elapsedSec}s). Call ada_research_status again with this jobId.`,
+    };
+  }
+  if (job.delivery) {
+    return {
+      ok: true as const,
+      state: "delivered" as const,
+      jobId: job.id,
+      matterId: job.matterId,
+      outcome: job.result.ok ? ("done" as const) : ("failed" as const),
+      delivery: job.delivery,
+      ...(job.result.ok && job.result.researchId ? { researchId: job.result.researchId } : {}),
+      message: `${DELIVERY_NOTE[job.delivery]} Do not repeat the answer or its sources. For a follow-up question call ada_research with parentResearchId set to researchId.`,
     };
   }
   return {
