@@ -12,6 +12,7 @@ import type { LexroomConnectConfig } from "./lexroom-connect.js";
 import { runDeadlineResearch } from "./lexroom-tools.js";
 import type { DeadlineItem, DeadlineStatus } from "./memory-contract.js";
 import { openAdaMemoryFromApi, type MemoryStore } from "./memory.js";
+import { markResearchLinkReady } from "./research-link-outbound.js";
 
 type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger">;
 
@@ -245,6 +246,9 @@ export async function executeAdaDeadlineReply(
     },
     nowMs,
   );
+  if (research.researchUrl) {
+    markResearchLinkReady(research.researchUrl);
+  }
   return {
     ok: true as const,
     item: view(done ?? tracked, label, settings, nowMs),

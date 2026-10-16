@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LexroomFailure, ResearchOutcome } from "./lexroom-client.js";
 import { abortResearchJobs, readResearchJob, startResearchJob } from "./lexroom-jobs.js";
+import { takeResearchLinks } from "./research-link-outbound.js";
 
 const outcome: ResearchOutcome = {
   ok: true,
@@ -207,5 +208,35 @@ describe("research jobs", () => {
     await readResearchJob({ jobId: started.jobId, waitSeconds: 1 });
     expect(log.mock.calls.map(([event]) => event)).toEqual(["job.started", "job.finished"]);
     expect(JSON.stringify(log.mock.calls)).not.toContain("Risposta");
+  });
+
+  it("makes the link ready only when a finished research is read, and logs each read", async () => {
+    takeResearchLinks("");
+    const withLink: ResearchOutcome = {
+      ...outcome,
+      researchUrl: "https://app.lexroom.ai/research/r1",
+    };
+    const running = deferred<ResearchOutcome>();
+    const started = start(() => running.promise);
+    const reads = vi.fn();
+    await readResearchJob({ jobId: started.jobId, waitSeconds: 0, log: reads });
+    expect(takeResearchLinks("")).toEqual([]);
+    running.resolve(withLink);
+    await readResearchJob({ jobId: started.jobId, waitSeconds: 1, log: reads });
+    expect(reads.mock.calls).toEqual([
+      ["job.read", { job: started.jobId, state: "running", researchUrl: "absent" }],
+      ["job.read", { job: started.jobId, state: "done", researchUrl: "present" }],
+    ]);
+    expect(takeResearchLinks("")).toEqual(["https://app.lexroom.ai/research/r1"]);
+
+    const failed = start(async () => ({ ok: false, error: "no" }));
+    await readResearchJob({ jobId: failed.jobId, waitSeconds: 1 });
+    expect(takeResearchLinks("")).toEqual([]);
+  });
+
+  it("logs a read of a job that does not exist", async () => {
+    const reads = vi.fn();
+    await readResearchJob({ jobId: "rj_missing", waitSeconds: 0, log: reads });
+    expect(reads).toHaveBeenCalledWith("job.read", { state: "unknown" });
   });
 });

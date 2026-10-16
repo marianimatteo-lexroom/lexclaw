@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { LexroomFailure, LexroomLog, ResearchOutcome } from "./lexroom-client.js";
 import { timeoutFailure, withDeadline } from "./lexroom-timeout.js";
+import { markResearchLinkReady } from "./research-link-outbound.js";
 
 /**
  * A Lexroom research run takes about 80 seconds and can take minutes, longer than a chat turn
@@ -183,10 +184,12 @@ export async function readResearchJob(params: {
   jobId: string;
   waitSeconds?: number;
   now?: () => number;
+  log?: LexroomLog;
 }) {
   const now = params.now ?? Date.now;
   const job = jobs.get(params.jobId.trim());
   if (!job) {
+    params.log?.("job.read", { state: "unknown" });
     return failure(
       "unknown_job",
       "No research job has this id. It may have expired or Ada restarted; start the research again with ada_research.",
@@ -204,5 +207,16 @@ export async function readResearchJob(params: {
     ]);
     clearTimeout(timer);
   }
-  return snapshot(job, now());
+  const view = snapshot(job, now());
+  const url = "researchUrl" in view ? view.researchUrl : undefined;
+  if (url) {
+    // The model now holds this research, so the next final reply must end with its link.
+    markResearchLinkReady(url, now());
+  }
+  params.log?.("job.read", {
+    job: job.id,
+    state: view.state,
+    researchUrl: url ? "present" : "absent",
+  });
+  return view;
 }

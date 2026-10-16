@@ -197,6 +197,28 @@ describe("runResearch", () => {
       });
     });
 
+    it("is logged on research.done as present or absent, never as the id", async () => {
+      for (const [baseUrl, expected] of [
+        ["https://api.lexroom.ai/", "present"],
+        ["https://lexroom.example", "absent"],
+      ] as const) {
+        const events: Array<{ event: string; fields: Record<string, string | number | boolean> }> =
+          [];
+        await runResearch({
+          config: { accessToken: `log-url-${expected}`, baseUrl },
+          matterId: "m",
+          query: "Q",
+          fetchImpl: lexroomFetch(() =>
+            streamResponse(line({ id: "res-secret-id", status: "DONE", answer: "ok" })),
+          ),
+          log: (event, fields) => events.push({ event, fields }),
+        });
+        const done = events.find((entry) => entry.event === "research.done");
+        expect(done?.fields.researchUrl).toBe(expected);
+        expect(JSON.stringify(events)).not.toContain("res-secret-id");
+      }
+    });
+
     it("is left out for a non-production API", async () => {
       expect(await run({ baseUrl: "https://lexroom.example" })).not.toHaveProperty("researchUrl");
     });

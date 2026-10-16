@@ -38,6 +38,28 @@ describe("lexroomResearchUrl", () => {
     ).toBeUndefined();
   });
 
+  it.each([
+    "https://api.lexroom.ai/",
+    "https://api.lexroom.ai/v1",
+    "https://API.Lexroom.ai:443",
+    "https://api-eu.lexroom.ai",
+    "https://eu.api.lexroom.ai/",
+    "https://lexroom.ai",
+  ])("treats %s as production", (apiBaseUrl) => {
+    expect(lexroomResearchUrl({ researchId: "r9", apiBaseUrl })).toBe(
+      "https://app.lexroom.ai/research/r9",
+    );
+  });
+
+  it.each([
+    "https://api.lexroom.ai.evil.example",
+    "https://notlexroom.ai",
+    "https://lexroom.example",
+    "http://localhost:8080",
+  ])("does not treat %s as production", (apiBaseUrl) => {
+    expect(lexroomResearchUrl({ researchId: "r9", apiBaseUrl })).toBeUndefined();
+  });
+
   it("keeps an id that could change the path out of it", () => {
     expect(lexroomResearchUrl({ researchId: "a/b?c", apiBaseUrl: API })).toBe(
       "https://app.lexroom.ai/research/a%2Fb%3Fc",

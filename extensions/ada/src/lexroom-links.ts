@@ -5,15 +5,19 @@
  * the thread. A thread's page is therefore its root's.
  */
 export const LEXROOM_WEB_APP_URL = "https://app.lexroom.ai";
-const LEXROOM_API_HOST = "api.lexroom.ai";
 
 const MAX_TRACKED = 500;
 
 /** Research id to the root of its thread. The stream names a parent but never the root. */
 const roots = new Map<string, string>();
 
+/** `lexroom.ai` and its subdomains (`api.`, a regional `api-eu.`, ...); never a staging host. */
+function isProductionHost(hostname: string): boolean {
+  return hostname === "lexroom.ai" || hostname.endsWith(".lexroom.ai");
+}
+
 /**
- * The web app page for one research, or undefined when it has no id or the API is not the
+ * The web app page for one research, or undefined when it has no id or the API is not a
  * production one (a staging API has a web app Ada does not know). A follow-up links to the root
  * of its thread, found through the research ids this process has seen; when the parent is not
  * one of them the parent itself is the best root available.
@@ -24,7 +28,7 @@ export function lexroomResearchUrl(params: {
   apiBaseUrl: string;
 }): string | undefined {
   const id = params.researchId?.trim();
-  if (!id || new URL(params.apiBaseUrl).hostname !== LEXROOM_API_HOST) {
+  if (!id || !isProductionHost(new URL(params.apiBaseUrl).hostname)) {
     return undefined;
   }
   const parent = params.parentResearchId?.trim();

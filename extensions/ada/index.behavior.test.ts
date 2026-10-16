@@ -16,6 +16,7 @@ vi.mock("./src/service.js", async (importOriginal) => ({
 }));
 
 import plugin from "./index.js";
+import { takeResearchLinks } from "./src/research-link-outbound.js";
 
 const GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send";
 const KAPSO_URL = "https://api.kapso.ai/meta/whatsapp/v23.0/100000000000000/messages";
@@ -165,6 +166,7 @@ function useGoogleAccount(account: ReturnType<typeof googleAccount> | null) {
 }
 
 beforeEach(() => {
+  takeResearchLinks("");
   vi.clearAllMocks();
   fetchMock.mockReset();
   vi.stubGlobal("fetch", fetchMock);
@@ -415,6 +417,72 @@ describe("ada_research", () => {
       state: "done",
       researchId: "res-link",
       researchUrl: "https://app.lexroom.ai/research/res-link",
+    });
+  });
+
+  describe("the final reply", () => {
+    const ITALIAN =
+      "Il termine per proporre opposizione a decreto ingiuntivo è di quaranta giorni dalla notifica, come previsto dalla legge, e non può essere prorogato.";
+
+    async function researchWith(config: Record<string, unknown>, token: string, id: string) {
+      useLexroomAccount(lexroomAccount({ accessToken: token }));
+      fetchMock.mockImplementation(
+        async (input) =>
+          modulesRoute(input) ?? ndjson({ research: { id, status: "DONE", answer: "ok" } }),
+      );
+      const ada = registerAda(config);
+      await ada.research({ matterId: "matter-a", query: "Question", parentResearchId: undefined });
+      return ada;
+    }
+
+    const finalReply = async (ada: ReturnType<typeof registerAda>, text: string) =>
+      (await ada.hook("reply_payload_sending")(
+        { kind: "final", channel: "kapso-whatsapp", payload: { text } },
+        { channelId: "kapso-whatsapp" },
+      )) as { payload?: { text?: string } } | undefined;
+
+    it("ends with the research link even though the model never wrote one", async () => {
+      const ada = await researchWith(
+        { ...PLUGIN_CONFIG, baseUrl: undefined },
+        "final-link-1",
+        "res-final-1",
+      );
+      expect((await finalReply(ada, ITALIAN))?.payload?.text).toBe(
+        `${ITALIAN}\n\nContinua su Lexroom: https://app.lexroom.ai/research/res-final-1`,
+      );
+      expect(await finalReply(ada, ITALIAN)).toBeUndefined();
+    });
+
+    it("does not repeat a link the model did write", async () => {
+      const ada = await researchWith(
+        { ...PLUGIN_CONFIG, baseUrl: undefined },
+        "final-link-2",
+        "res-final-2",
+      );
+      const written = `${ITALIAN}\nhttps://app.lexroom.ai/research/res-final-2`;
+      expect(await finalReply(ada, written)).toBeUndefined();
+    });
+
+    it("adds nothing when no research result reached the model", async () => {
+      const ada = registerAda({ ...PLUGIN_CONFIG, baseUrl: undefined });
+      expect(await finalReply(ada, ITALIAN)).toBeUndefined();
+    });
+
+    it("links a follow-up to the page of the thread it continues", async () => {
+      useLexroomAccount(lexroomAccount({ accessToken: "final-link-3" }));
+      let n = 0;
+      fetchMock.mockImplementation(
+        async (input) =>
+          modulesRoute(input) ??
+          ndjson({ research: { id: `thread-${(n += 1)}`, status: "DONE", answer: "ok" } }),
+      );
+      const ada = registerAda({ ...PLUGIN_CONFIG, baseUrl: undefined });
+      await ada.research({ matterId: "matter-a", query: "First" });
+      await finalReply(ada, ITALIAN);
+      await ada.research({ matterId: "matter-a", query: "Second", parentResearchId: "thread-1" });
+      expect((await finalReply(ada, ITALIAN))?.payload?.text).toContain(
+        "https://app.lexroom.ai/research/thread-1",
+      );
     });
   });
 

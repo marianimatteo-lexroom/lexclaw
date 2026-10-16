@@ -29,6 +29,7 @@ import type { LexroomConfig } from "./src/lexroom-client.js";
 import { lexroomConfigProperties } from "./src/lexroom-config-schema.js";
 import { handleAdaLexroomConnect } from "./src/lexroom-connect-http.js";
 import { readResearchJob } from "./src/lexroom-jobs.js";
+import { lexroomLogger } from "./src/lexroom-log.js";
 import {
   executeAdaLexroomConnect,
   lexroomConnectConfigFrom,
@@ -46,6 +47,7 @@ import {
   executeAdaTodoList,
 } from "./src/memory-tools.js";
 import { openAdaMemoryFromApi } from "./src/memory.js";
+import { registerResearchLinkHooks } from "./src/research-link-outbound.js";
 import { recordLawyerInbound, registerAdaService } from "./src/service.js";
 import { registerStatusReactionHooks } from "./src/status-reactions.js";
 import { handleAdaStatus } from "./src/status.js";
@@ -241,7 +243,7 @@ const tools = defineToolPlugin({
       name: "ada_research",
       label: "Lexroom research",
       description:
-        "Start Lexroom research for one matter. Returns a jobId at once; the research runs in the background and takes one to three minutes. Tell the lawyer it is running, then call ada_research_status with the jobId to read the WhatsApp-formatted answer, whose [n] markers match the numbered sources. End the message to the lawyer with the result's researchUrl, the link to this research in the Lexroom app. Pass modules (for example Civile) to pick what is searched; otherwise every module the Lexroom user may search is used. Pass libraryDocumentIds only for documents that belong to that matter. The private library is not searched unless those ids are present.",
+        "Start Lexroom research for one matter. Returns a jobId at once; the research runs in the background and takes one to three minutes. Tell the lawyer it is running, then call ada_research_status with the jobId to read the WhatsApp-formatted answer, whose [n] markers match the numbered sources. Ada adds the link to this research in the Lexroom app after your last line; do not write one yourself. Pass modules (for example Civile) to pick what is searched; otherwise every module the Lexroom user may search is used. Pass libraryDocumentIds only for documents that belong to that matter. The private library is not searched unless those ids are present.",
       parameters: Type.Object(
         {
           matterId: Type.String({ minLength: 1 }),
@@ -261,7 +263,7 @@ const tools = defineToolPlugin({
       name: "ada_research_status",
       label: "Lexroom research status",
       description:
-        "Read a research started with ada_research. state is running (call again), done (the answer, the sources and researchUrl, the link to open this research in the Lexroom app, are in the result; end the message to the lawyer with it) or failed (the result says why; reason timeout means Lexroom did not respond). waitSeconds waits up to that long, at most 30, for it to finish; it defaults to 15.",
+        "Read a research started with ada_research. state is running (call again), done (the answer and sources are in the result; Ada adds the link to this research in the Lexroom app after your last line, so do not write one yourself) or failed (the result says why; reason timeout means Lexroom did not respond). waitSeconds waits up to that long, at most 30, for it to finish; it defaults to 15.",
       parameters: Type.Object(
         {
           jobId: Type.String({ minLength: 1 }),
@@ -270,8 +272,12 @@ const tools = defineToolPlugin({
         { additionalProperties: false },
       ),
       optional: true,
-      async execute(params) {
-        return await readResearchJob({ jobId: params.jobId, waitSeconds: params.waitSeconds });
+      async execute(params, _config, context) {
+        return await readResearchJob({
+          jobId: params.jobId,
+          waitSeconds: params.waitSeconds,
+          log: lexroomLogger(context.api.logger),
+        });
       },
     }),
     tool({
@@ -521,6 +527,10 @@ const entry = definePluginEntry({
     registerAdaService({ api });
 
     const statusReactions = registerStatusReactionHooks(api);
+    registerResearchLinkHooks(
+      api,
+      async () => (await (await openAdaMemoryFromApi(api)).readProfile())?.language,
+    );
 
     api.on("message_received", async (event, ctx) => {
       const channelId = readInboundChannelId(event, ctx);

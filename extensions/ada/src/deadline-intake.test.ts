@@ -15,6 +15,7 @@ import type { CalendarEvent } from "./google-api.js";
 import { buildDeadlineResearchQuery } from "./lexroom-tools.js";
 import type { DeadlineItem } from "./memory-contract.js";
 import type { MemoryStore } from "./memory.js";
+import { takeResearchLinks } from "./research-link-outbound.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -487,6 +488,7 @@ describe("replying to a digest line", () => {
           researchUrl: "https://app.lexroom.ai/research/res-1",
         },
       });
+      expect(takeResearchLinks("")).toEqual(["https://app.lexroom.ai/research/res-1"]);
       const query = (lexroom.bodies[0] as { query: string; search_on_user_data: boolean }).query;
       expect(query).toContain('matter "Rossi c. Bianchi"');
       expect(query).toContain("hearing on 2026-11-12 09:30 (Europe/Rome)");
