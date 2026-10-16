@@ -631,16 +631,17 @@ export async function runResearch(input: {
       throw new LexroomError("Lexroom research stream ended before DONE");
     }
     const sources = citedSources(snapshot.documents, answer);
+    const researchUrl = lexroomResearchUrl({
+      researchId: snapshot.id,
+      parentResearchId: input.parentResearchId,
+      apiBaseUrl: baseUrl(input.config),
+    });
     trace(`${step}.done`, {
       durationMs: guard.elapsedMs(),
       lines: stats.lines,
       answerChars: answer.length,
       sources: sources.length,
-    });
-    const researchUrl = lexroomResearchUrl({
-      researchId: snapshot.id,
-      parentResearchId: input.parentResearchId,
-      apiBaseUrl: baseUrl(input.config),
+      researchUrl: researchUrl ? "present" : "absent",
     });
     return {
       ok: true,
