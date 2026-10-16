@@ -2,6 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import {
   readAdaWhatsAppTarget,
   ADA_WHATSAPP_CHANNEL,
+  isConfiguredLawyerSender,
   type GoogleConnectedNotice,
 } from "./google-notify.js";
 import type { LexroomAccountStore } from "./lexroom-account-contract.js";
@@ -37,6 +38,12 @@ import {
   MIN_LEXROOM_TIMEOUT_MS,
 } from "./lexroom-timeout.js";
 import type { DeadlineItem } from "./memory-contract.js";
+import {
+  livePushDeps,
+  pushResearchResult,
+  sendResearchAck,
+  type PushDeps,
+} from "./research-push.js";
 
 type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger">;
 
@@ -438,16 +445,29 @@ export async function executeAdaResearch(params: {
   });
 }
 
+/** Who asked, from the host's trusted tool context. */
+export type ResearchRequester = { senderId?: string; channel?: string };
+
+type PushApi = Parameters<typeof livePushDeps>[0];
+
 /**
  * ada_research: checks the arguments, then runs the research as a background job and returns
  * its handle at once. The job gets its own abort signal, because the tool call's ends when the
  * tool returns.
+ *
+ * When the configured lawyer asked, code also tells them on WhatsApp that the research is
+ * running and sends the result when it ends, so the model neither polls nor has to remember to
+ * say anything. For anyone else the result is not sent to the lawyer's number, and the model
+ * reads it through ada_research_status as before.
  */
-export function startAdaResearch(params: {
+export async function startAdaResearch(params: {
   args: ResearchArgs;
   config: LexroomConfig & LexroomConnectConfig;
-  api: StoreApi;
+  api: StoreApi & PushApi;
+  requester?: ResearchRequester;
   fetchImpl?: typeof fetch;
+  /** Test seam: the sender, window check and nudge. Defaults to the live ones. */
+  pushDeps?: PushDeps;
 }) {
   const matterId = params.args.matterId.trim();
   if (!matterId) {
@@ -456,15 +476,33 @@ export function startAdaResearch(params: {
   if (!params.args.query.trim()) {
     return { ok: false as const, error: "query is required" };
   }
+  const log = lexroomLogger(params.api.logger);
+  const channel = params.requester?.channel;
+  const fromLawyer =
+    (channel === undefined || channel === ADA_WHATSAPP_CHANNEL) &&
+    isConfiguredLawyerSender(params.api.config, params.requester?.senderId);
+  const push = fromLawyer ? (params.pushDeps ?? livePushDeps(params.api, log)) : undefined;
+  if (!push) {
+    log("ack.skipped", {
+      reason: "requester_is_not_the_lawyer",
+      senderKnown: params.requester?.senderId !== undefined,
+    });
+  }
   const total =
     params.config.timeoutMs && params.config.timeoutMs >= MIN_LEXROOM_TIMEOUT_MS
       ? params.config.timeoutMs
       : defaultTotalTimeoutMs();
-  return startResearchJob({
+  const started = startResearchJob({
     matterId,
     // The call's own total cap, plus room for the sign-in and module lookups before it.
     deadlineMs: total + 3 * lexroomTimeoutMs(),
-    log: lexroomLogger(params.api.logger),
+    log,
+    ...(push
+      ? {
+          deliver: (result, job) =>
+            pushResearchResult({ jobId: job.id, startedAtMs: job.startedAtMs, result }, push),
+        }
+      : {}),
     run: (signal) =>
       executeAdaResearch({
         args: params.args,
@@ -474,6 +512,17 @@ export function startAdaResearch(params: {
         signal,
       }),
   });
+  if (!started.ok || !push) {
+    return started;
+  }
+  const notified = await sendResearchAck({ jobId: started.jobId, query: params.args.query }, push);
+  return {
+    ...started,
+    lawyerNotified: notified,
+    message: notified
+      ? "Research started in the background. Ada already told the lawyer on WhatsApp that it is running and will send the answer herself when it is ready. Do not call ada_research_status and do not message the lawyer about it; end this turn with exactly NO_REPLY."
+      : "Research started in the background. Ada could not message the lawyer, so tell them in one short line that it is running; Ada will still send the answer herself when it is ready. Do not call ada_research_status.",
+  };
 }
 
 /** ada_draft: nothing is resolved or sent until the lawyer has confirmed. */

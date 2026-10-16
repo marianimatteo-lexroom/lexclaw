@@ -48,7 +48,13 @@ type RegisteredHook = {
 
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 
-function registerAda(pluginConfig: Record<string, unknown> = PLUGIN_CONFIG) {
+/** What the host knows about who is asking; by default nobody known, so not the lawyer. */
+type ToolContext = { requesterSenderId?: string; messageChannel?: string };
+
+function registerAda(
+  pluginConfig: Record<string, unknown> = PLUGIN_CONFIG,
+  toolContext: ToolContext = {},
+) {
   const tools = new Map<string, RegisteredTool>();
   const hooks = new Map<string, RegisteredHook>();
   const api = createTestPluginApi({
@@ -58,7 +64,14 @@ function registerAda(pluginConfig: Record<string, unknown> = PLUGIN_CONFIG) {
     pluginConfig,
     runtimeSource: "/fake/ada/index.ts",
     registerTool(tool) {
-      if (typeof tool !== "function" && "name" in tool) {
+      if (typeof tool === "function") {
+        const built = tool(toolContext as never);
+        for (const one of Array.isArray(built) ? built : [built]) {
+          if (one && "name" in one) {
+            tools.set(one.name, one as unknown as RegisteredTool);
+          }
+        }
+      } else if ("name" in tool) {
         tools.set(tool.name, tool as unknown as RegisteredTool);
       }
     },

@@ -929,7 +929,7 @@ describe("a Lexroom that goes silent", () => {
   it("lets ada_research acknowledge at once, then reports the timeout through the job", async () => {
     useLiveStore(saved({ accessToken: "job-silent" }));
     const server = lexroom({ "/v1/ask_me_anything": never });
-    const started = startAdaResearch({
+    const started = await startAdaResearch({
       args: research,
       config: {},
       api,
@@ -950,12 +950,16 @@ describe("a Lexroom that goes silent", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("rejects a blank matter or query before starting anything", () => {
-    expect(startAdaResearch({ args: { matterId: " ", query: "Q" }, config: {}, api })).toEqual({
+  it("rejects a blank matter or query before starting anything", async () => {
+    expect(
+      await startAdaResearch({ args: { matterId: " ", query: "Q" }, config: {}, api }),
+    ).toEqual({
       ok: false,
       error: "matterId is required",
     });
-    expect(startAdaResearch({ args: { matterId: "m", query: " " }, config: {}, api })).toEqual({
+    expect(
+      await startAdaResearch({ args: { matterId: "m", query: " " }, config: {}, api }),
+    ).toEqual({
       ok: false,
       error: "query is required",
     });
