@@ -250,4 +250,4 @@ Until the lawyer replies, intake is read-only. It sends no email and does not to
 
 ## Renamed from Vera
 
-Ada was called Vera. Existing deployments keep working: `VERA_*` variables are still read, the stores stay in `$OPENCLAW_STATE_DIR/vera/` (table names and token encryption contexts included), and the HTTP routes answer on both `/ada/...` and `/vera/...`. The plugin id is `ada` and the tools are `ada_*`. See `deploy/railway/README.md#renamed-from-vera` for the Railway steps and the variables worth renaming.
+Ada was called Vera, and she always presents herself as Ada: every turn's system prompt starts with a persona line saying so (`src/persona.ts`), and `src/no-vera.test.ts` fails if the old name reaches the model or users anywhere else. Existing deployments keep working: `VERA_*` variables are still read, the stores stay in `$OPENCLAW_STATE_DIR/vera/` (table names and token encryption contexts included), and the HTTP routes answer on both `/ada/...` and `/vera/...`. The plugin id is `ada` and the tools are `ada_*`. See `deploy/railway/README.md#renamed-from-vera` for the Railway steps and the variables worth renaming.

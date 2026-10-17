@@ -40,7 +40,7 @@ const BUNDLED_TYPED_HOOK_REGISTRATION_FILES = [
 const BUNDLED_TYPED_HOOK_REGISTRATION_GUARDS = {
   "extensions/acpx/index.ts": ["reply_dispatch"],
   "extensions/active-memory/index.ts": ["agent_end", "before_prompt_build"],
-  "extensions/ada/index.ts": ["before_prompt_build", "message_received"],
+  "extensions/ada/index.ts": ["before_prompt_build", "before_prompt_build", "message_received"],
   "extensions/ada/src/research-link-outbound.ts": ["message_sending", "reply_payload_sending"],
   "extensions/ada/src/status-reactions.ts": ["agent_end", "before_tool_call", "llm_input"],
   "extensions/browser/plugin-registration.ts": ["session_end"],
