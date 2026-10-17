@@ -171,7 +171,7 @@ async function verifyBearer(
   },
   accessToken: string,
 ): Promise<LexroomLoginResult | undefined> {
-  let status = 0;
+  let status: number;
   try {
     const reply = await lexroomCreditsProbe(
       {

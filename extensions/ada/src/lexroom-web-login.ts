@@ -190,14 +190,22 @@ export function primaryForm(html: string): Form | undefined {
   const end = body.indexOf("</form>", open.index);
   const inner = body.slice(open.index + open[0].length, end === -1 ? undefined : end);
   const fields: Array<[string, string]> = [];
-  for (const [tag] of inner.matchAll(/<input\b[^>]*>/giu)) {
-    const attrs = attributes(tag);
+  for (const match of inner.matchAll(/<(input|select)\b[^>]*>/giu)) {
+    const attrs = attributes(match[0]);
     const name = attrs.get("name");
+    if (!name) {
+      continue;
+    }
+    if (match[1]?.toLowerCase() === "select") {
+      // A browser submits the selected option, or the first when none is marked.
+      const options = inner.slice(match.index + match[0].length).split(/<\/select>/iu)[0] ?? "";
+      const tags = [...options.matchAll(/<option\b[^>]*>/giu)].map((tag) => attributes(tag[0]));
+      const chosen = tags.find((tag) => tag.has("selected")) ?? tags[0];
+      fields.push([name, chosen?.get("value") ?? ""]);
+      continue;
+    }
     const type = (attrs.get("type") ?? "text").toLowerCase();
-    if (
-      name &&
-      !["submit", "button", "image", "reset", "file", "checkbox", "radio"].includes(type)
-    ) {
+    if (!["submit", "button", "image", "reset", "file", "checkbox", "radio"].includes(type)) {
       fields.push([name, attrs.get("value") ?? ""]);
     }
   }

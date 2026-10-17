@@ -1,5 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LexroomAccountRecord, LexroomAccountStore } from "./lexroom-account-contract.js";
+import {
+  html,
+  jsonBody,
+  jwt,
+  lexroomSite,
+  PASSWORD_PAGE,
+  withCaptcha,
+} from "./lexroom-auth0-test-support.js";
 import { needsReconnect, renewLexroomAccount } from "./lexroom-session.js";
 
 const NOW = new Date("2026-10-17T06:00:00.000Z");
@@ -132,5 +140,114 @@ describe("the other reasons are unchanged", () => {
     expect(result).toMatchObject({ ok: false, reason: "wrong_password" });
     expect(needsReconnect(result as never)).toBe(true);
     expect(store.clearAccount).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("re-login through Auth0", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const renewWith = (site: ReturnType<typeof lexroomSite>) => {
+    const store: LexroomAccountStore = {
+      replacePending: vi.fn(async () => {}),
+      hasPending: vi.fn(async () => false),
+      consumePending: vi.fn(async () => false),
+      upsertAccount: vi.fn(async () => {}),
+      readAccount: vi.fn(async () => account()),
+      clearAccount: vi.fn(async () => {}),
+    };
+    const events: Array<{ event: string; fields: Record<string, string | number | boolean> }> = [];
+    return {
+      store,
+      events,
+      renew: () =>
+        renewLexroomAccount(account(), {
+          store,
+          fetchImpl: site.fetchImpl,
+          log: (event, fields) => events.push({ event, fields }),
+          now: NOW,
+          why: "expired",
+        }),
+    };
+  };
+
+  it("renews the saved sign-in through the web flow when Lexroom wants Auth0", async () => {
+    const exp = Math.floor(NOW.getTime() / 1000) + 3600;
+    const token = jwt(exp);
+    const site = lexroomSite({
+      "POST api.lexroom.ai/v1/login": () => jsonBody({ detail: "auth0_login_required" }, 403),
+      "GET app.lexroom.ai/api/auth/session": () =>
+        jsonBody({ user: { email: "lawyer@example.com", accessToken: token } }),
+    });
+    const { store, renew } = renewWith(site);
+    await expect(renew()).resolves.toMatchObject({
+      ok: true,
+      account: { accessToken: token, accessExpiresAtMs: exp * 1000, password: PASSWORD },
+    });
+    expect(store.upsertAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ accessToken: token, password: PASSWORD }),
+    );
+    expect(store.clearAccount).not.toHaveBeenCalled();
+  });
+
+  it("renews through Auth0's password-realm grant when the client secret is set", async () => {
+    vi.stubEnv("ADA_LEXROOM_AUTH0_CLIENT_SECRET", "auth0-client-secret-0123456789abcdef");
+    const token = jwt(Math.floor(NOW.getTime() / 1000) + 3600);
+    const site = lexroomSite({
+      "POST auth.lexroom.ai/oauth/token": () => jsonBody({ access_token: token, expires_in: 3600 }),
+      "GET api.lexroom.ai/v1/credits": () => jsonBody({ credits: 1 }),
+    });
+    const { store, renew } = renewWith(site);
+    await expect(renew()).resolves.toMatchObject({ ok: true, account: { accessToken: token } });
+    expect(site.calls.map((call) => call.path)).toEqual(["/oauth/token", "/v1/credits"]);
+    expect(store.upsertAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the saved sign-in and says why when Lexroom asks for a captcha", async () => {
+    const site = lexroomSite({
+      "POST api.lexroom.ai/v1/login": () => jsonBody({ detail: "auth0_login_required" }, 403),
+      "POST auth.lexroom.ai/u/login/password": () => html(withCaptcha(PASSWORD_PAGE), 400),
+    });
+    const { store, events, renew } = renewWith(site);
+    const result = await renew();
+    expect(result).toMatchObject({ ok: false, reason: "captcha_required" });
+    if (result.ok) {
+      throw new Error("expected a failure");
+    }
+    expect(result.error).toContain("captcha");
+    expect(needsReconnect(result)).toBe(false);
+    expect(store.clearAccount).not.toHaveBeenCalled();
+    expect(events.find((entry) => entry.event === "relogin.failed")?.fields).toMatchObject({
+      reason: "captcha_required",
+    });
+  });
+
+  it("clears the account for a wrong password from Auth0, and keeps it for one-time codes and blocks", async () => {
+    vi.stubEnv("ADA_LEXROOM_AUTH0_CLIENT_SECRET", "auth0-client-secret-0123456789abcdef");
+    const wrong = renewWith(
+      lexroomSite({
+        "POST auth.lexroom.ai/oauth/token": () =>
+          jsonBody({ error: "invalid_grant", error_description: "Wrong email or password." }, 403),
+      }),
+    );
+    const result = await wrong.renew();
+    expect(result).toMatchObject({ ok: false, reason: "wrong_password" });
+    expect(wrong.store.clearAccount).toHaveBeenCalledTimes(1);
+
+    const blocked = renewWith(
+      lexroomSite({
+        "POST auth.lexroom.ai/oauth/token": () =>
+          jsonBody({ error: "unauthorized_client", error_description: "not allowed" }, 403),
+      }),
+    );
+    const refused = await blocked.renew();
+    expect(refused).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(blocked.store.clearAccount).not.toHaveBeenCalled();
+    expect(blocked.events.find((entry) => entry.event === "relogin.failed")?.fields).toMatchObject({
+      status: 403,
+      code: "unauthorized_client",
+      detail: "not allowed",
+    });
   });
 });
