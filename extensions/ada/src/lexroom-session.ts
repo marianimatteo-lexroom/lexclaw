@@ -1,6 +1,6 @@
 import type { LexroomAccountRecord, LexroomAccountStore } from "./lexroom-account-contract.js";
-import type { LexroomLog } from "./lexroom-client.js";
 import { isLexroomAccessLive } from "./lexroom-connect.js";
+import type { LexroomLog } from "./lexroom-log.js";
 import { loginLexroomAccount } from "./lexroom-login.js";
 import { lexroomTimeoutMs, timeoutFailure, withDeadline } from "./lexroom-timeout.js";
 
@@ -21,7 +21,7 @@ async function signInSilently(params: {
   signal?: AbortSignal;
   log: LexroomLog;
 }): Promise<SilentLogin> {
-  const result = await loginLexroomAccount(params);
+  const result = await loginLexroomAccount({ ...params, timeoutMs: lexroomTimeoutMs() });
   if (result.ok) {
     return {
       ok: true,

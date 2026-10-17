@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
-import type { LexroomFailure, LexroomLog, ResearchOutcome } from "./lexroom-client.js";
+import type { LexroomFailure, ResearchOutcome } from "./lexroom-client.js";
+import type { LexroomLog } from "./lexroom-log.js";
 import { timeoutFailure, withDeadline } from "./lexroom-timeout.js";
 import { markResearchLinkReady } from "./research-link-outbound.js";
 

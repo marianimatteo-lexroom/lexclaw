@@ -1,7 +1,15 @@
 import { mergeAnswer } from "./lexroom-answer.js";
+import {
+  asciiJson,
+  lexroomBaseUrl,
+  lexroomCreditsProbe,
+  lexroomHeaders,
+  lexroomUserModules,
+} from "./lexroom-api.js";
 import { citedSources, toWhatsAppText, type CitedSource } from "./lexroom-citations.js";
 import { createGuard, LexroomTimeoutError, type LexroomGuard } from "./lexroom-guard.js";
 import { lexroomResearchUrl } from "./lexroom-links.js";
+import type { LexroomLog } from "./lexroom-log.js";
 import {
   chooseModules,
   FALLBACK_MODULES,
@@ -17,7 +25,6 @@ import {
 } from "./lexroom-timeout.js";
 import {
   createTrace,
-  exchange,
   fetchGuarded,
   newCorrelationId,
   readJsonGuarded,
@@ -26,15 +33,11 @@ import {
 
 export type { CitedSource } from "./lexroom-citations.js";
 
-export const DEFAULT_LEXROOM_BASE_URL = "https://api.lexroom.ai";
-export const LEXROOM_CLIENT_TYPE = "app_lex";
-
 const MIN_TIMEOUT_MS = 1000;
 const PROGRESS_LOG_EVERY_LINES = 10;
 const MAX_ANSWER_CHARS = 24_000;
 const MAX_DRAFT_CHARS = 100_000;
 const FAILED_STATUSES = new Set(["FAILED", "ERROR", "CANCELED", "CANCELLED"]);
-const AUTH_PROBE_PATH = "/v1/credits";
 const AUTH_PROBE_TIMEOUT_MS = 15_000;
 
 export type LexroomConfig = {
@@ -94,10 +97,6 @@ export type LexroomFailure =
 
 type FetchLike = typeof fetch;
 
-export type LexroomLogFields = Record<string, string | number | boolean>;
-/** Structured diagnostics. Never pass tokens or query text, only lengths and counts. */
-export type LexroomLog = (event: string, fields: LexroomLogFields) => void;
-
 type StreamStats = { lines: number; status?: string; answered?: boolean };
 
 class LexroomError extends Error {
@@ -112,7 +111,7 @@ class LexroomError extends Error {
 }
 
 function baseUrl(config: LexroomConfig): string {
-  const value = (config.baseUrl?.trim() || DEFAULT_LEXROOM_BASE_URL).replace(/\/+$/u, "");
+  const value = lexroomBaseUrl(config.baseUrl);
   let url: URL;
   try {
     url = new URL(value);
@@ -145,28 +144,6 @@ function token(config: LexroomConfig): string {
     );
   }
   return accessToken;
-}
-
-/** Exactly what the lexroom-bot client sends: the bearer, the client type, and JSON for POSTs. */
-function headers(accessToken: string, method: "GET" | "POST"): Headers {
-  const result = new Headers();
-  result.set("Authorization", `Bearer ${accessToken}`);
-  result.set("X-Client-Type", LEXROOM_CLIENT_TYPE);
-  if (method === "POST") {
-    result.set("Content-Type", "application/json");
-  }
-  return result;
-}
-
-/**
- * Escapes non-ASCII to \uXXXX so a request body is pure ASCII bytes, which keeps the
- * Python backend from choking on a UTF-8 decode whatever the runtime encoding is.
- */
-export function asciiJson(value: unknown): string {
-  return JSON.stringify(value).replace(
-    /[\u0080-\uFFFF]/gu,
-    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
-  );
 }
 
 function names(values: readonly string[] | undefined): string[] {
@@ -210,21 +187,18 @@ export async function checkLexroomAuth(input: {
   let verdict: LexroomAuthVerdict = "unknown";
   let status = 0;
   try {
-    const result = await exchange({
-      fetchImpl: input.fetchImpl ?? fetch,
-      url: `${baseUrl(input.config)}${AUTH_PROBE_PATH}`,
-      init: { method: "GET", headers: headers(token(input.config), "GET") },
-      timeoutMs: Math.min(AUTH_PROBE_TIMEOUT_MS, limits(input.config).idleMs),
-      signal: input.signal,
-      trace,
-      step: "auth_probe",
-      retry: "any",
-      read: async (response) => {
-        void response.body?.cancel().catch(() => undefined);
+    const reply = await lexroomCreditsProbe(
+      {
+        baseUrl: baseUrl(input.config),
+        timeoutMs: Math.min(AUTH_PROBE_TIMEOUT_MS, limits(input.config).idleMs),
+        fetchImpl: input.fetchImpl,
+        signal: input.signal,
+        trace,
       },
-    });
-    status = result.status;
-    verdict = result.ok ? "accepted" : status === 401 ? "rejected" : "unknown";
+      token(input.config),
+    );
+    status = reply.status;
+    verdict = reply.kind === "ok" ? "accepted" : status === 401 ? "rejected" : "unknown";
   } catch {
     // A probe that failed or timed out proves nothing about the bearer.
   }
@@ -324,7 +298,7 @@ async function request(
     url,
     init: {
       method: init.method,
-      headers: headers(token(config), init.method),
+      headers: lexroomHeaders(token(config), init.method),
       ...(init.method === "POST" ? { body: asciiJson(init.body) } : {}),
     },
     guard,
@@ -359,21 +333,24 @@ async function userModules(
     return modulesCache.modules;
   }
   try {
-    const result = await exchange({
-      fetchImpl,
-      url: `${baseUrl(config)}/v1/user/modules`,
-      init: { method: "GET", headers: headers(token(config), "GET") },
-      timeoutMs: limits(config).idleMs,
-      signal: call.signal,
-      trace: call.trace,
-      step: "modules",
-      retry: "any",
-      read: (response, guard) => readJsonGuarded(response, guard),
-    });
-    if (!result.ok) {
-      throw new LexroomError(`Lexroom user/modules returned ${result.status}`);
+    const reply = await lexroomUserModules(
+      {
+        baseUrl: baseUrl(config),
+        timeoutMs: limits(config).idleMs,
+        fetchImpl,
+        signal: call.signal,
+        trace: call.trace,
+      },
+      token(config),
+    );
+    if (reply.kind !== "ok") {
+      throw new LexroomError(
+        reply.kind === "unexpected_shape"
+          ? "Lexroom user/modules returned an unexpected body"
+          : `Lexroom user/modules returned ${reply.status}`,
+      );
     }
-    const modules = normalizeModules(result.value);
+    const modules = normalizeModules(reply.body);
     if (modules.length === 0) {
       throw new LexroomError("Lexroom user/modules returned an empty list");
     }

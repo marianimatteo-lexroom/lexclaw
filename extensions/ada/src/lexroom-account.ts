@@ -9,9 +9,8 @@ import {
   type LexroomAccountStore,
   type AdaLexroomOperations,
 } from "./lexroom-account-contract.js";
-import type { LexroomLog } from "./lexroom-client.js";
 import { accessTokenExpiresAtMs } from "./lexroom-connect.js";
-import { lexroomLogger, runtimeIdentity } from "./lexroom-log.js";
+import { lexroomLogger, runtimeIdentity, type LexroomLog } from "./lexroom-log.js";
 import { adaStatePath } from "./state-paths.js";
 
 const stores = new Map<string, Promise<LexroomAccountStore>>();

@@ -1,15 +1,9 @@
-import {
-  asciiJson,
-  DEFAULT_LEXROOM_BASE_URL,
-  LEXROOM_CLIENT_TYPE,
-  type LexroomLog,
-} from "./lexroom-client.js";
+import { lexroomBaseUrl, lexroomLogin } from "./lexroom-api.js";
 import { accessTokenExpiresAtMs } from "./lexroom-connect.js";
 import { LexroomTimeoutError } from "./lexroom-guard.js";
-import { lexroomTimeoutMs, timeoutFailure, type LexroomTimeoutFailure } from "./lexroom-timeout.js";
-import { createTrace, exchange, newCorrelationId, readJsonGuarded } from "./lexroom-transport.js";
-
-type FetchLike = typeof fetch;
+import type { LexroomLog } from "./lexroom-log.js";
+import { timeoutFailure, type LexroomTimeoutFailure } from "./lexroom-timeout.js";
+import { createTrace, newCorrelationId } from "./lexroom-transport.js";
 
 export type LexroomLoginSuccess = {
   ok: true;
@@ -31,29 +25,8 @@ export type LexroomLoginResult = LexroomLoginSuccess | LexroomLoginFailure;
 const MFA_ERROR =
   "This Lexroom account requires a one-time code (MFA), which Ada cannot enter. Use a Lexroom account without MFA.";
 
-function apiBaseUrl(value: string | undefined): string {
-  return (value?.trim() || DEFAULT_LEXROOM_BASE_URL).replace(/\/+$/u, "");
-}
-
-function readString(record: Record<string, unknown>, keys: string[]): string {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim()) {
-      return value.trim();
-    }
-  }
-  return "";
-}
-
-function detailCode(body: unknown): { detail: string; code: string } {
-  if (!body || typeof body !== "object") {
-    return { detail: "", code: "" };
-  }
-  const record = body as Record<string, unknown>;
-  return {
-    detail: typeof record.detail === "string" ? record.detail : "",
-    code: typeof record.code === "string" ? record.code : "",
-  };
+function firstText(...values: Array<string | undefined>): string {
+  return values.map((value) => value?.trim() ?? "").find((value) => value !== "") ?? "";
 }
 
 /**
@@ -66,10 +39,10 @@ export async function loginLexroomAccount(params: {
   email: string;
   password: string;
   baseUrl?: string;
-  /** Hard limit on one attempt, connect to last body byte. Defaults to the Lexroom request limit. */
-  timeoutMs?: number;
+  /** Hard limit on one attempt, connect to last body byte. No default: the caller decides. */
+  timeoutMs: number;
   signal?: AbortSignal;
-  fetchImpl?: FetchLike;
+  fetchImpl?: typeof fetch;
   log?: LexroomLog;
 }): Promise<LexroomLoginResult> {
   const email = params.email.trim();
@@ -81,42 +54,30 @@ export async function loginLexroomAccount(params: {
       error: "Email and password are required.",
     };
   }
-  const trace = createTrace(params.log, newCorrelationId());
-  let sent: { status: number; ok: boolean; value: unknown };
+  let reply: Awaited<ReturnType<typeof lexroomLogin>>;
   try {
-    sent = await exchange({
-      fetchImpl: params.fetchImpl ?? fetch,
-      url: `${apiBaseUrl(params.baseUrl)}/v1/login`,
-      init: {
-        method: "POST",
-        headers: new Headers({
-          "Content-Type": "application/json",
-          "X-Client-Type": LEXROOM_CLIENT_TYPE,
-        }),
-        body: asciiJson({ email, password }),
+    reply = await lexroomLogin(
+      {
+        baseUrl: lexroomBaseUrl(params.baseUrl),
+        timeoutMs: params.timeoutMs,
+        fetchImpl: params.fetchImpl,
+        signal: params.signal,
+        trace: createTrace(params.log, newCorrelationId()),
       },
-      timeoutMs: params.timeoutMs ?? lexroomTimeoutMs(),
-      signal: params.signal,
-      trace,
-      step: "login",
-      // A login can be repeated safely, so a dropped connection or a silent server gets one more try.
-      retry: "any",
-      retryTimeout: true,
-      read: (response, guard) => readJsonGuarded(response, guard),
-    });
+      { email, password },
+    );
   } catch (error) {
     if (error instanceof LexroomTimeoutError) {
       return timeoutFailure(error.limitMs);
     }
     return { ok: false, reason: "lexroom_error", error: "Ada could not reach Lexroom." };
   }
-  const json = sent.value;
-  if (!sent.ok) {
-    const { detail, code } = detailCode(json);
+  if (reply.kind === "http_error") {
+    const { status, detail, code } = reply;
     if (detail.startsWith("mfa_") || code.startsWith("mfa_")) {
       return { ok: false, reason: "mfa_required", error: MFA_ERROR };
     }
-    if (sent.status === 401 || code === "authentication_failed") {
+    if (status === 401 || code === "authentication_failed") {
       return {
         ok: false,
         reason: "invalid_credentials",
@@ -127,15 +88,15 @@ export async function loginLexroomAccount(params: {
       ok: false,
       reason: "lexroom_error",
       error: detail
-        ? `Lexroom returned ${sent.status}: ${detail.slice(0, 160)}`
-        : `Lexroom returned ${sent.status}`,
+        ? `Lexroom returned ${status}: ${detail.slice(0, 160)}`
+        : `Lexroom returned ${status}`,
     };
   }
-  if (!json || typeof json !== "object") {
+  if (reply.kind === "unexpected_shape") {
     return { ok: false, reason: "lexroom_error", error: "Lexroom login returned an empty body." };
   }
-  const record = json as Record<string, unknown>;
-  const accessToken = readString(record, ["access_token", "token", "accessToken", "access"]);
+  const body = reply.body;
+  const accessToken = firstText(body.access_token, body.token, body.accessToken, body.access);
   if (!accessToken) {
     return {
       ok: false,
@@ -145,9 +106,9 @@ export async function loginLexroomAccount(params: {
   }
   return {
     ok: true,
-    email: readString(record, ["email", "user_email", "username"]) || email,
+    email: firstText(body.email, body.user_email, body.username) || email,
     accessToken,
-    refreshToken: readString(record, ["refresh_token", "refresh", "refreshToken"]),
+    refreshToken: firstText(body.refresh_token, body.refresh, body.refreshToken),
     accessExpiresAtMs: accessTokenExpiresAtMs(accessToken),
   };
 }

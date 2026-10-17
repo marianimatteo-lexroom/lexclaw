@@ -1,5 +1,8 @@
 import os from "node:os";
-import type { LexroomLog } from "./lexroom-client.js";
+
+export type LexroomLogFields = Record<string, string | number | boolean>;
+/** Structured diagnostics. Never pass tokens or query text, only lengths and counts. */
+export type LexroomLog = (event: string, fields: LexroomLogFields) => void;
 
 type LogSink = { info: (message: string) => void; warn: (message: string) => void };
 

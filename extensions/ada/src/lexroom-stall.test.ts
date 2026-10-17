@@ -2,7 +2,8 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { runDraft, runResearch, type LexroomLogFields } from "./lexroom-client.js";
+import { runDraft, runResearch } from "./lexroom-client.js";
+import type { LexroomLogFields } from "./lexroom-log.js";
 import { loginLexroomAccount } from "./lexroom-login.js";
 
 /** The structured result every Lexroom tool returns when a request outlived its limit. */
