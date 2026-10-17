@@ -204,3 +204,23 @@ describe("ada memory store", () => {
     }
   });
 });
+
+describe("ada welcome markers", () => {
+  it("claims a number once, survives a reopen, and can be released", () => {
+    const databasePath = path.join(tempDirs.make("ada-welcome-"), "memory.sqlite");
+    const claim = (backend: ReturnType<typeof createSqliteWorkerBackend>, number: string) =>
+      backend.execute({ type: "claimWelcome", input: { number, atMs: 1000 } });
+
+    const first = createSqliteWorkerBackend(undefined, { databasePath });
+    expect(claim(first, "393331111111")).toBe(true);
+    expect(claim(first, "393331111111")).toBe(false);
+    expect(claim(first, "393332222222")).toBe(true);
+    void first.close();
+
+    const second = createSqliteWorkerBackend(undefined, { databasePath });
+    expect(claim(second, "393331111111")).toBe(false);
+    second.execute({ type: "releaseWelcome", input: { number: "393331111111" } });
+    expect(claim(second, "393331111111")).toBe(true);
+    void second.close();
+  });
+});

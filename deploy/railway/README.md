@@ -81,6 +81,14 @@ Also needed for a working gateway, but not checked by `start.sh`: `OPENCLAW_GATE
 | `ADA_DEADLINE_INTAKE_ENABLED`       | `deadlineIntake.enabled`       | `true` or `false` (case-insensitive), default `false`. Written on every boot, so removing the variable turns intake off. Any other value fails the boot.                                                                                                                                   |
 | `ADA_DEADLINE_REMINDERS`            | `deadlineIntake.reminders`     | Comma-separated cadence such as `7d,2d,morning-of`. Unset keeps the plugin default (`7d,2d,morning-of`). An invalid value fails the boot, because the plugin would reject it.                                                                                                              |
 
+**Per-number sessions.** `start.sh` sets `session.dmScope` to `per-channel-peer` on every boot, so each WhatsApp number has its own conversation and chats are not visible across numbers. The lawyer's chat (`KAPSO_DEFAULT_TO`) starts a new session of its own on the first message after this deploy; the earlier shared history is not copied. The digest and connect turns run in their own hook sessions, held research results are kept per number, and matter memory is a database, so none of them depend on the shared session.
+
+First-message welcome (read by the plugin from the gateway environment; not validated by `start.sh`):
+
+| Variable              | Effect                                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `ADA_WELCOME_ENABLED` | `false` (also `0`, `off`, `no`) stops Ada from sending the welcome to a number's first message. Default on. See the Ada README. |
+
 WhatsApp status reactions (read from the gateway environment; validated by `start.sh`):
 
 | Variable                 | Effect                                                                                                         |

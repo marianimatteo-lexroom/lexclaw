@@ -9,6 +9,7 @@ import { ADA_PERSONA } from "./persona.js";
 import type { Language } from "./research-link-outbound.js";
 import { buildResearchPdf } from "./research-pdf.js";
 import { researchAckText, researchMessage } from "./research-push.js";
+import { welcomeText } from "./welcome.js";
 
 /**
  * The assistant is called Ada. "Vera" is the old name: it stays in internal identifiers (state
@@ -73,7 +74,7 @@ describe("the assistant's name", () => {
 
     const messages: string[] = [];
     for (const language of LANGUAGES) {
-      messages.push(researchAckText(language));
+      messages.push(researchAckText(language), welcomeText(language));
       for (const failure of [
         { ok: false as const, reason: "timeout" as const, message: "m", error: "m" },
         { ok: false as const, reason: "not_connected" as const, error: "e" },

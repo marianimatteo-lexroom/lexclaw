@@ -256,4 +256,7 @@ export type AdaMemoryOperations = {
   >;
   filterUnscannedMessages: Operation<{ ids: string[] }, string[]>;
   markMessagesScanned: Operation<{ ids: string[]; atMs: number }, undefined>;
+  /** True when `number` had no welcome marker and now has one; false when it was already marked. */
+  claimWelcome: Operation<{ number: string; atMs: number }, boolean>;
+  releaseWelcome: Operation<{ number: string }, undefined>;
 };

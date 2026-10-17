@@ -238,6 +238,10 @@ config_set 'channels["kapso-whatsapp"].defaultTo' "$(json_of_env KAPSO_DEFAULT_T
 # digest window), but it no longer gates who can chat.
 config_set 'channels["kapso-whatsapp"].dmSecurity' '"open"'
 config_set 'channels["kapso-whatsapp"].allowFrom' '["*"]'
+# With the default "main" scope every DM shares one conversation, so anyone could read what
+# another number said. One isolated session per WhatsApp number keeps chats apart; the lawyer's
+# own chat moves to a session of its own too (the default scope's shared history is not copied).
+config_set session.dmScope '"per-channel-peer"'
 config_set agents.defaults.model.primary "$(json_of_env ADA_MODEL)"
 # Ada's own service owns the 15-minute poll and the 07:40 Europe/Rome pass.
 config_set agents.defaults.heartbeat.every '"0m"'
