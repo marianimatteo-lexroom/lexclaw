@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loginLexroomAccount } from "./lexroom-login.js";
 
+const TEST_TIMEOUT_MS = 5000;
+
+function signIn(params: Omit<Parameters<typeof loginLexroomAccount>[0], "timeoutMs">) {
+  return loginLexroomAccount({ ...params, timeoutMs: TEST_TIMEOUT_MS });
+}
+
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -23,7 +29,7 @@ describe("loginLexroomAccount", () => {
       calls.push({ url: String(input), init });
       return jsonResponse({ access_token: "tok" }, 200);
     });
-    await loginLexroomAccount({ email: " Lawyer@Lexroom.ai ", password: "pässwörd", fetchImpl });
+    await signIn({ email: " Lawyer@Lexroom.ai ", password: "pässwörd", fetchImpl });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe("https://api.lexroom.ai/v1/login");
     expect(calls[0]?.init?.method).toBe("POST");
@@ -40,7 +46,7 @@ describe("loginLexroomAccount", () => {
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL) =>
       jsonResponse({ access_token: "tok" }, 200),
     );
-    await loginLexroomAccount({
+    await signIn({
       email: "a@b.it",
       password: "x",
       baseUrl: "https://staging.lexroom.test/",
@@ -56,9 +62,10 @@ describe("loginLexroomAccount", () => {
     ["access", { access: "d" }, "d"],
   ])("reads the bearer from %s", async (_key, body, expected) => {
     const fetchImpl = vi.fn(async () => jsonResponse(body, 200));
-    await expect(
-      loginLexroomAccount({ email: "a@b.it", password: "x", fetchImpl }),
-    ).resolves.toMatchObject({ ok: true, accessToken: expected });
+    await expect(signIn({ email: "a@b.it", password: "x", fetchImpl })).resolves.toMatchObject({
+      ok: true,
+      accessToken: expected,
+    });
   });
 
   it("returns the token, refresh token, expiry and email without cookies or a web session", async () => {
@@ -71,7 +78,7 @@ describe("loginLexroomAccount", () => {
       ),
     );
     await expect(
-      loginLexroomAccount({ email: "Lawyer@Lexroom.ai", password: "secret", fetchImpl }),
+      signIn({ email: "Lawyer@Lexroom.ai", password: "secret", fetchImpl }),
     ).resolves.toEqual({
       ok: true,
       email: "lawyer@lexroom.ai",
@@ -85,7 +92,7 @@ describe("loginLexroomAccount", () => {
   it("falls back to the typed email and an empty refresh token", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ access_token: "opaque" }, 200));
     await expect(
-      loginLexroomAccount({ email: "lawyer@lexroom.ai", password: "secret", fetchImpl }),
+      signIn({ email: "lawyer@lexroom.ai", password: "secret", fetchImpl }),
     ).resolves.toEqual({
       ok: true,
       email: "lawyer@lexroom.ai",
@@ -105,9 +112,7 @@ describe("loginLexroomAccount", () => {
         401,
       ),
     );
-    await expect(
-      loginLexroomAccount({ email: "a@b.it", password: "wrong", fetchImpl }),
-    ).resolves.toEqual({
+    await expect(signIn({ email: "a@b.it", password: "wrong", fetchImpl })).resolves.toEqual({
       ok: false,
       reason: "invalid_credentials",
       error: "Those Lexroom credentials were not accepted.",
@@ -116,15 +121,15 @@ describe("loginLexroomAccount", () => {
 
   it("reports an account that needs MFA instead of starting a web-app sign-in", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ detail: "mfa_step_up_required" }, 403));
-    await expect(
-      loginLexroomAccount({ email: "a@b.it", password: "x", fetchImpl }),
-    ).resolves.toMatchObject({ ok: false, reason: "mfa_required" });
+    await expect(signIn({ email: "a@b.it", password: "x", fetchImpl })).resolves.toMatchObject({
+      ok: false,
+      reason: "mfa_required",
+    });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("is a Lexroom error for a 5xx, a missing token, an empty body or a network failure", async () => {
-    const run = (fetchImpl: typeof fetch) =>
-      loginLexroomAccount({ email: "a@b.it", password: "x", fetchImpl });
+    const run = (fetchImpl: typeof fetch) => signIn({ email: "a@b.it", password: "x", fetchImpl });
     await expect(run(vi.fn(async () => jsonResponse({}, 503)))).resolves.toEqual({
       ok: false,
       reason: "lexroom_error",
@@ -150,12 +155,14 @@ describe("loginLexroomAccount", () => {
 
   it("does not call Lexroom without an email and password", async () => {
     const fetchImpl = vi.fn();
-    await expect(
-      loginLexroomAccount({ email: "", password: "x", fetchImpl }),
-    ).resolves.toMatchObject({ ok: false, reason: "invalid_credentials" });
-    await expect(
-      loginLexroomAccount({ email: "a@b.it", password: "", fetchImpl }),
-    ).resolves.toMatchObject({ ok: false, reason: "invalid_credentials" });
+    await expect(signIn({ email: "", password: "x", fetchImpl })).resolves.toMatchObject({
+      ok: false,
+      reason: "invalid_credentials",
+    });
+    await expect(signIn({ email: "a@b.it", password: "", fetchImpl })).resolves.toMatchObject({
+      ok: false,
+      reason: "invalid_credentials",
+    });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

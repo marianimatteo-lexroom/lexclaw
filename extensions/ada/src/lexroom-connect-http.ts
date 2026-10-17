@@ -9,6 +9,7 @@ import {
 } from "./lexroom-connect.js";
 import { lexroomLogger } from "./lexroom-log.js";
 import { loginLexroomAccount } from "./lexroom-login.js";
+import { lexroomTimeoutMs } from "./lexroom-timeout.js";
 
 type ConnectHttpDeps = {
   config: LexroomConnectConfig;
@@ -390,6 +391,7 @@ export async function handleAdaLexroomConnect(
     email,
     password,
     baseUrl: config.settings.baseUrl,
+    timeoutMs: lexroomTimeoutMs(),
     log,
   });
   if (!result.ok) {

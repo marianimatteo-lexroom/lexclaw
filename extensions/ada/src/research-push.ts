@@ -7,8 +7,8 @@ import {
   sendAdaWhatsAppText,
 } from "./google-notify.js";
 import { formatSources } from "./lexroom-citations.js";
-import type { LexroomFailure, LexroomLog, ResearchOutcome } from "./lexroom-client.js";
-import { lexroomLogger } from "./lexroom-log.js";
+import type { LexroomFailure, ResearchOutcome } from "./lexroom-client.js";
+import { lexroomLogger, type LexroomLog } from "./lexroom-log.js";
 import { openAdaMemoryFromApi } from "./memory.js";
 import { researchLinkLine, resolveLanguage, type Language } from "./research-link-outbound.js";
 import { readDigestReadyTemplate, sendDigestReadyNotice } from "./whatsapp-template.js";

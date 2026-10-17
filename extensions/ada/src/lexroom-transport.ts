@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createGuard, LexroomTimeoutError, type LexroomGuard } from "./lexroom-guard.js";
-import type { LexroomLog, LexroomLogFields } from "./lexroom-client.js";
+import type { LexroomLog, LexroomLogFields } from "./lexroom-log.js";
 
 type FetchLike = typeof fetch;
 
