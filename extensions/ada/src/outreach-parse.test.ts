@@ -3,6 +3,7 @@ import {
   firstName,
   isOptOutText,
   maskPhone,
+  maskPhonesInText,
   normalizePhone,
   parseRecipientList,
 } from "./outreach-parse.js";
@@ -36,6 +37,12 @@ describe("masking and names", () => {
   it("keeps only the country code and the last two digits", () => {
     expect(maskPhone("+393331234567")).toBe("+39********67");
     expect(maskPhone("+393331234567")).not.toContain("333");
+  });
+
+  it("masks every phone-like number inside a text and leaves short numbers alone", () => {
+    expect(
+      maskPhonesInText("to +393331234567 and 39 340 111 2222 failed (HTTP 400, code 131026)"),
+    ).toBe("to +39********67 and +39********22 failed (HTTP 400, code 131026)");
   });
 
   it("takes a safe first word as the first name", () => {

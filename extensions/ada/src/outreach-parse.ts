@@ -42,6 +42,14 @@ export function maskPhone(phone: string): string {
   return `${phone.slice(0, 3)}${"*".repeat(Math.max(phone.length - 5, 1))}${phone.slice(-2)}`;
 }
 
+/** Masks every phone-number-like run of digits in a piece of text, such as an upstream error. */
+export function maskPhonesInText(text: string): string {
+  return text.replace(/\+?\d(?:[ .-]?\d){6,}/gu, (match) => {
+    const digits = match.replace(/\D/gu, "");
+    return digits.length < 7 ? match : maskPhone(`+${digits}`);
+  });
+}
+
 /** The first word of a name, letters only, so it is safe inside a template variable. */
 export function firstName(raw: string | undefined): string | undefined {
   const word = raw

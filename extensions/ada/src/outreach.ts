@@ -11,6 +11,7 @@ import {
   firstName,
   isOptOutText,
   maskPhone,
+  maskPhonesInText,
   parseRecipientList,
   type ParsedList,
   type Recipient,
@@ -29,6 +30,10 @@ import {
  */
 
 const COMMAND_SEND = /^\/invia-intro(?=\s|$)/iu;
+/** An attached file is a list only when its caption names the command. */
+const COMMAND_IN_CAPTION = /\/invia-intro(?=\s|$)/iu;
+/** Key of the one batch allowed to exist at a time, across all admins. */
+const ACTIVE_BATCH = "active";
 const COMMAND_CANCEL = /^\/annulla$/iu;
 const CONFIRM_WORD = /^conferma[.!]*$/iu;
 const PENDING_TTL_MS = 30 * 60_000;
@@ -52,6 +57,7 @@ export type OutreachConfig = {
 
 type Store<T> = {
   register(key: string, value: T): Promise<void>;
+  registerIfAbsent(key: string, value: T): Promise<boolean>;
   lookup(key: string): Promise<T | undefined>;
   consume(key: string): Promise<T | undefined>;
   delete(key: string): Promise<boolean>;
@@ -61,6 +67,8 @@ type Store<T> = {
 type SentRecord = { at: number; batchId: string; status: "claimed" | "sent" };
 type Pending = { expiresAt: number; recipients: Recipient[] };
 type Batch = {
+  /** Tells this batch's sent records apart from an earlier batch's. */
+  id: string;
   admin: string;
   status: "running" | "cancelled";
   config: Pick<OutreachConfig, "template" | "defaultName" | "paramCount">;
@@ -69,6 +77,7 @@ type Batch = {
   cursor: number;
   sent: number;
   skipped: number;
+  optedOut: number;
   unconfirmed: number;
   failures: Record<string, number>;
 };
@@ -187,6 +196,9 @@ function describeResult(batch: Batch): string {
   if (batch.skipped > 0) {
     lines.push(`Saltati perché già contattati di recente: ${batch.skipped}.`);
   }
+  if (batch.optedOut > 0) {
+    lines.push(`Saltati perché si sono disiscritti nel frattempo: ${batch.optedOut}.`);
+  }
   if (batch.unconfirmed > 0) {
     lines.push(
       `Non confermati: ${batch.unconfirmed}. Il servizio si è riavviato durante l'invio e non li ho rimandati, per non scrivere due volte alla stessa persona.`,
@@ -206,8 +218,8 @@ async function handleAdminMessage(
     config: OutreachConfig;
     store: OutreachStore;
     now: () => number;
-    startBatch: (id: string) => void;
-    cancelBatch: (id: string) => Promise<void>;
+    startBatch: () => void;
+    cancelBatch: () => Promise<void>;
   },
   admin: string,
   text: string,
@@ -216,12 +228,11 @@ async function handleAdminMessage(
   const { config, store } = ctx;
   const isSend = COMMAND_SEND.test(text);
   if (COMMAND_CANCEL.test(text)) {
-    const running = (await store.batches.entries()).find((entry) => entry.value.admin === admin);
     if (await store.pending.consume(admin)) {
       return "Annullato: non invio nulla.";
     }
-    if (running) {
-      await ctx.cancelBatch(running.key);
+    if (await store.batches.lookup(ACTIVE_BATCH)) {
+      await ctx.cancelBatch();
       return "Fermo l'invio. I messaggi già partiti restano inviati; ti scrivo il riepilogo tra poco.";
     }
     return "Non c'è nessun invio in sospeso.";
@@ -235,8 +246,8 @@ async function handleAdminMessage(
     if (pending.expiresAt <= ctx.now()) {
       return "La conferma è arrivata troppo tardi (30 minuti): rimanda l'elenco e ripartiamo.";
     }
-    const id = randomUUID();
-    await store.batches.register(id, {
+    const started = await store.batches.registerIfAbsent(ACTIVE_BATCH, {
+      id: randomUUID(),
       admin,
       status: "running",
       config: {
@@ -248,26 +259,31 @@ async function handleAdminMessage(
       cursor: 0,
       sent: 0,
       skipped: 0,
+      optedOut: 0,
       unconfirmed: 0,
       failures: {},
     });
-    ctx.startBatch(id);
+    if (!started) {
+      await store.pending.register(admin, pending);
+      return "C'è già un invio in corso, avviato da un admin: ne parte uno solo alla volta. Aspetta il riepilogo; la tua lista resta in attesa finché non scade, poi rispondi di nuovo CONFERMA.";
+    }
+    ctx.startBatch();
     return `Confermato. Invio a ${pending.recipients.length} numeri, circa uno al secondo. Ti scrivo il riepilogo a fine invio; /annulla per fermarmi.`;
   }
 
   let source: string | undefined;
-  if (isSend) {
-    source = text.replace(COMMAND_SEND, "");
-  } else if (documentPath) {
+  if (documentPath && COMMAND_IN_CAPTION.test(text)) {
     source = await readListFile(documentPath);
     if (source === undefined) {
       return "Non riesco a leggere il file (CSV o TXT, al massimo 512 KB). Incolla i numeri nel messaggio dopo /invia-intro, uno per riga.";
     }
+  } else if (isSend) {
+    source = text.replace(COMMAND_SEND, "");
   }
   if (source === undefined) {
     return undefined;
   }
-  if ((await store.batches.entries()).length > 0) {
+  if (await store.batches.lookup(ACTIVE_BATCH)) {
     return "C'è già un invio in corso. Aspetta il riepilogo oppure usa /annulla per fermarlo.";
   }
   const list = parseRecipientList(source);
@@ -289,18 +305,17 @@ async function handleAdminMessage(
   return describeBatch(config, list, plan);
 }
 
-async function runBatch(
-  params: {
-    store: OutreachStore;
-    deps: OutreachDeps;
-    signal: AbortSignal;
-    notify: (admin: string, text: string) => Promise<void>;
-    log: OpenClawPluginApi["logger"];
-  },
-  id: string,
-): Promise<void> {
+async function runBatch(params: {
+  store: OutreachStore;
+  deps: OutreachDeps;
+  signal: AbortSignal;
+  notify: (admin: string, text: string) => Promise<void>;
+  log: OpenClawPluginApi["logger"];
+  /** Called before the finished batch is removed, so the next one may start. */
+  release: () => void;
+}): Promise<void> {
   const { store, deps, signal } = params;
-  let batch = await store.batches.lookup(id);
+  let batch = await store.batches.lookup(ACTIVE_BATCH);
   while (batch && batch.status === "running" && batch.cursor < batch.recipients.length) {
     if (signal.aborted) {
       break;
@@ -309,6 +324,7 @@ async function runBatch(
     if (!row) {
       break;
     }
+    const id = batch.id;
     const prior = await store.sent.lookup(row.phone);
     let sentNow = false;
     if (prior?.batchId === id) {
@@ -319,6 +335,9 @@ async function runBatch(
       } else {
         batch.unconfirmed += 1;
       }
+    } else if (await store.optOut.lookup(row.phone)) {
+      // A STOP may have arrived after the list was confirmed.
+      batch.optedOut += 1;
     } else if (prior && deps.now() - prior.at < SENT_SKIP_MS) {
       batch.skipped += 1;
     } else {
@@ -334,20 +353,21 @@ async function runBatch(
         batch.sent += 1;
       } else {
         await store.sent.delete(row.phone);
-        batch.failures[result.error] = (batch.failures[result.error] ?? 0) + 1;
-        params.log.debug?.(`ada outreach send failed for ${maskPhone(row.phone)}: ${result.error}`);
+        const reason = maskPhonesInText(result.error);
+        batch.failures[reason] = (batch.failures[reason] ?? 0) + 1;
+        params.log.debug?.(`ada outreach send failed for ${maskPhone(row.phone)}: ${reason}`);
       }
     }
     batch.cursor += 1;
     if (signal.aborted && signal.reason === "cancel") {
       batch.status = "cancelled";
     }
-    await store.batches.register(id, batch);
+    await store.batches.register(ACTIVE_BATCH, batch);
     if (sentNow && !signal.aborted && batch.cursor < batch.recipients.length) {
       await deps.sleep(THROTTLE_MS, signal);
     }
     // /annulla may have written the cancellation while this row was being sent.
-    const latest = await store.batches.lookup(id);
+    const latest = await store.batches.lookup(ACTIVE_BATCH);
     batch = latest && latest.status !== "running" ? latest : batch;
   }
   if (!batch || (signal.aborted && signal.reason !== "cancel")) {
@@ -357,7 +377,8 @@ async function runBatch(
     batch.status = "cancelled";
   }
   await params.notify(batch.admin, describeResult(batch));
-  await store.batches.delete(id);
+  params.release();
+  await store.batches.delete(ACTIVE_BATCH);
   params.log.info(
     `ada outreach batch finished status=${batch.status} sent=${batch.sent} skipped=${batch.skipped} unconfirmed=${batch.unconfirmed}`,
   );
@@ -397,7 +418,7 @@ export function registerAdaOutreach(
   };
   let store: OutreachStore | undefined;
   const getStore = () => (store ??= options.store ?? openOutreachStore(api));
-  const running = new Map<string, AbortController>();
+  let current: AbortController | undefined;
   const documents = new Map<string, string>();
 
   const notify = async (admin: string, text: string) => {
@@ -406,30 +427,41 @@ export function registerAdaOutreach(
       api.logger.warn(`ada outreach could not message the admin: ${result.error}`);
     }
   };
-  const startBatch = (id: string) => {
-    if (running.has(id)) {
+  const startBatch = () => {
+    if (current) {
       return;
     }
     const controller = new AbortController();
-    running.set(id, controller);
-    runBatch({ store: getStore(), deps, signal: controller.signal, notify, log: api.logger }, id)
+    current = controller;
+    const release = () => {
+      if (current === controller) {
+        current = undefined;
+      }
+    };
+    runBatch({
+      store: getStore(),
+      deps,
+      signal: controller.signal,
+      notify,
+      log: api.logger,
+      release,
+    })
       .catch((error: unknown) => {
         api.logger.error(
-          `ada outreach batch failed: ${error instanceof Error ? error.message : "unknown"}`,
+          `ada outreach batch failed: ${error instanceof Error ? maskPhonesInText(error.message) : "unknown"}`,
         );
       })
-      .finally(() => running.delete(id));
+      .finally(release);
   };
-  const cancelBatch = async (id: string) => {
-    const batch = await getStore().batches.lookup(id);
+  const cancelBatch = async () => {
+    const batch = await getStore().batches.lookup(ACTIVE_BATCH);
     if (batch) {
-      await getStore().batches.register(id, { ...batch, status: "cancelled" });
+      await getStore().batches.register(ACTIVE_BATCH, { ...batch, status: "cancelled" });
     }
-    const controller = running.get(id);
-    if (controller) {
-      controller.abort("cancel");
+    if (current) {
+      current.abort("cancel");
     } else {
-      startBatch(id);
+      startBatch();
     }
   };
 
@@ -503,14 +535,12 @@ export function registerAdaOutreach(
     id: "ada-outreach",
     async start() {
       // A batch interrupted by a restart picks up at its saved row.
-      for (const entry of await getStore().batches.entries()) {
-        startBatch(entry.key);
+      if (await getStore().batches.lookup(ACTIVE_BATCH)) {
+        startBatch();
       }
     },
     stop() {
-      for (const controller of running.values()) {
-        controller.abort("stop");
-      }
+      current?.abort("stop");
     },
   });
 }

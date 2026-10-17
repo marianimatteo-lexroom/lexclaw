@@ -227,7 +227,7 @@ The template must be approved in the WhatsApp Business Manager that owns the Kap
 
 How an admin uses it, in a WhatsApp chat with Ada:
 
-1. Send the list, either as a CSV or TXT document, or as a text message that starts with `/invia-intro` and has one number per line. A row may be `number` or `number,name`; a file may instead start with a header row naming a `phone`/`telefono` column and optionally a `name`/`nome` column (comma, semicolon or tab separated). Numbers are normalized to E.164: `+39` is assumed when there is no country code, spaces, dashes and dots are removed, and a leading `00` means `+`. The first name of the row fills `{{1}}`. At most 1,000 numbers per list.
+1. Send the list, either as a CSV or TXT document whose caption contains `/invia-intro`, or as a text message that starts with `/invia-intro` and has one number per line. A row may be `number` or `number,name`; a file may instead start with a header row naming a `phone`/`telefono` column and optionally a `name`/`nome` column (comma, semicolon or tab separated). Numbers are normalized to E.164: `+39` is assumed when there is no country code, spaces, dashes and dots are removed, and a leading `00` means `+`. The first name of the row fills `{{1}}`. At most 1,000 numbers per list.
 2. Ada replies with how many numbers are valid, invalid, duplicate and opted out (and how many were skipped for a recent intro), plus a few masked examples. Nothing is sent yet.
 3. Reply `CONFERMA` within 30 minutes to send. `/annulla` cancels the pending list, or stops a batch that is running (messages already sent stay sent). After 30 minutes the pending list expires.
 4. Ada sends about one message per second. When it finishes she tells the admin how many went out and how many failed, grouped by reason.
@@ -235,10 +235,11 @@ How an admin uses it, in a WhatsApp chat with Ada:
 Rules Ada enforces:
 
 - A number that replied `STOP`, `BASTA` or `annulla iscrizione` to Ada is saved on an opt-out list, gets a short confirmation from Ada, and is never sent outreach again. The opt-out list is permanent. The configured lawyer's `stop` is left alone, because it also aborts a running turn. OpenClaw treats `stop` as an abort command, so that reply may also carry its own "aborted" notice.
-- A number is sent the intro once per batch, and not again within 30 days of its last intro.
+- A number is sent the intro once per batch, and not again within 30 days of its last intro. The opt-out list is checked again right before each send, so a STOP that arrives mid-batch is honored.
+- One batch runs at a time across all admins. A second admin's `CONFERMA` while one is running is refused and their list stays pending until it expires; any admin can stop the running batch with `/annulla`.
 - Progress is saved in the Gateway's plugin state (`$OPENCLAW_STATE_DIR`, the same volume as the other Ada stores) before each send. After a restart Ada resumes at the saved row. A number whose send was interrupted without a recorded outcome is reported as "non confermato" and is not sent again, so nobody gets two intros.
-- Phone numbers are masked in logs (`+39********67`); nothing at info level shows a full number.
-- An admin's CSV or TXT attachment is always read as an outreach list. An admin's other messages, including a `CONFERMA` with nothing pending, reach Ada as usual.
+- Phone numbers are masked in logs and in the failure reasons shown to the admin (`+39********67`); nothing at info level shows a full number.
+- An admin's other messages reach Ada as usual: a CSV or TXT attachment without `/invia-intro` in its caption, and a `CONFERMA` with nothing pending.
 
 ## WhatsApp read receipts
 
@@ -279,4 +280,4 @@ Until the lawyer replies, intake is read-only. It sends no email and does not to
 
 ## Renamed from Vera
 
-Ada was called Vera. Existing deployments keep working: `VERA_*` variables are still read, the stores stay in `$OPENCLAW_STATE_DIR/vera/` (table names and token encryption contexts included), and the HTTP routes answer on both `/ada/...` and `/vera/...`. The plugin id is `ada` and the tools are `ada_*`. See `deploy/railway/README.md#renamed-from-vera` for the Railway steps and the variables worth renaming.
+Ada was called Vera, and she always presents herself as Ada: every turn's system prompt starts with a persona line saying so (`src/persona.ts`), and `src/no-vera.test.ts` fails if the old name reaches the model or users anywhere else. Existing deployments keep working: `VERA_*` variables are still read, the stores stay in `$OPENCLAW_STATE_DIR/vera/` (table names and token encryption contexts included), and the HTTP routes answer on both `/ada/...` and `/vera/...`. The plugin id is `ada` and the tools are `ada_*`. See `deploy/railway/README.md#renamed-from-vera` for the Railway steps and the variables worth renaming.

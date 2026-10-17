@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -70,6 +70,7 @@ function boot(env: Record<string, string>, seed: Record<string, unknown> = {}) {
     });
   return {
     run,
+    workspace: join(dir, "workspace"),
     store: () => JSON.parse(readFileSync(store, "utf8")) as Record<string, unknown>,
     calls: () => readFileSync(log, "utf8").trim().split("\n"),
   };
@@ -171,5 +172,70 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
     );
     expect(deploy.run().status).toBe(0);
     expect(deploy.store()["plugins.entries.ada.config.timeoutMs"]).toBe(120000);
+  });
+
+  describe("the assistant's name on a volume from before the rename", () => {
+    const ENV = { ADA_PUBLIC_ORIGIN: "https://ada.example.com" };
+    const IDENTITY =
+      "# IDENTITY.md\n\n- **Name:** Vera\n- **Emoji:** ⚖️\n- Theme: Lexroom's assistant for one lawyer\n\nHost vera.verus.legal, route /vera/status, VERA_TOKEN_KEY stay.\n";
+    const SOUL = "You are Vera. Do not ask what you should be called.\nVERA never lies.\n";
+    const USER = "Cliente: Vera Bianchi (Rossi SRL)\n";
+
+    function seeded(config: Record<string, unknown> = {}) {
+      const deploy = boot(ENV, config);
+      mkdirSync(deploy.workspace, { recursive: true });
+      writeFileSync(join(deploy.workspace, "IDENTITY.md"), IDENTITY);
+      writeFileSync(join(deploy.workspace, "SOUL.md"), SOUL);
+      writeFileSync(join(deploy.workspace, "USER.md"), USER);
+      return deploy;
+    }
+    const read = (deploy: { workspace: string }, name: string) =>
+      readFileSync(join(deploy.workspace, name), "utf8");
+
+    it("renames the word in the identity files, keeps a copy, and leaves everything else alone", () => {
+      const deploy = seeded();
+      const first = deploy.run();
+      expect(first.status).toBe(0);
+      expect(read(deploy, "IDENTITY.md")).toBe(IDENTITY.replace("**Name:** Vera", "**Name:** Ada"));
+      expect(read(deploy, "SOUL.md")).toBe(
+        "You are Ada. Do not ask what you should be called.\nADA never lies.\n",
+      );
+      expect(read(deploy, "USER.md")).toBe(USER);
+      expect(read(deploy, "IDENTITY.md.pre-ada")).toBe(IDENTITY);
+      expect(read(deploy, "SOUL.md.pre-ada")).toBe(SOUL);
+      expect(`${first.stdout}${first.stderr}`).toContain("renamed Vera to Ada in IDENTITY.md");
+    });
+
+    it("is idempotent and never overwrites the first copy", () => {
+      const deploy = seeded();
+      deploy.run();
+      const identity = read(deploy, "IDENTITY.md");
+      writeFileSync(join(deploy.workspace, "IDENTITY.md"), `${identity}Vera again.\n`);
+      const second = deploy.run();
+      expect(second.status).toBe(0);
+      expect(read(deploy, "IDENTITY.md")).toBe(`${identity}Ada again.\n`);
+      expect(read(deploy, "IDENTITY.md.pre-ada")).toBe(IDENTITY);
+      const third = deploy.run();
+      expect(read(deploy, "IDENTITY.md")).toBe(`${identity}Ada again.\n`);
+      expect(`${third.stdout}${third.stderr}`).not.toContain("renamed Vera to Ada");
+    });
+
+    it("boots on an empty workspace without creating identity files", () => {
+      const deploy = boot(ENV);
+      expect(deploy.run().status).toBe(0);
+      expect(existsSync(join(deploy.workspace, "IDENTITY.md"))).toBe(false);
+    });
+
+    it("renames the configured agent name only when it is Vera", () => {
+      const old = boot(ENV, { "agents.entries.main.identity.name": "Vera" });
+      expect(old.run().status).toBe(0);
+      expect(old.store()["agents.entries.main.identity.name"]).toBe("Ada");
+      const custom = boot(ENV, { "agents.entries.main.identity.name": "Ada Legal" });
+      expect(custom.run().status).toBe(0);
+      expect(custom.store()["agents.entries.main.identity.name"]).toBe("Ada Legal");
+      const none = boot(ENV);
+      expect(none.run().status).toBe(0);
+      expect(none.store()).not.toHaveProperty("agents.entries.main.identity.name");
+    });
   });
 });

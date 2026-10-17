@@ -9,6 +9,7 @@ import { registerAdaOutreach, type OutreachDeps, type OutreachStore } from "./ou
 const ADMIN = "+390000000001";
 const LAWYER = "+390000000002";
 const STRANGER = "+390000000003";
+const SECOND_ADMIN = "+390000000009";
 const ENV = { ADA_ADMIN_NUMBERS: `${ADMIN}, +39 000 000 0009` };
 const CHANNEL = "kapso-whatsapp";
 const MINUTE = 60_000;
@@ -19,6 +20,13 @@ function memoryStore<T>() {
   return {
     async register(key: string, value: T) {
       rows.set(key, structuredClone(value));
+    },
+    async registerIfAbsent(key: string, value: T) {
+      if (rows.has(key)) {
+        return false;
+      }
+      rows.set(key, structuredClone(value));
+      return true;
     },
     async lookup(key: string) {
       return rows.get(key);
@@ -308,7 +316,7 @@ describe("confirmation flow", () => {
       [{ path: file, contentType: "text/csv" }],
       "doc-1",
     );
-    const reply = await ada.say(ADMIN, "<media:document>", "doc-1");
+    const reply = await ada.say(ADMIN, "/invia-intro lista in allegato", "doc-1");
     expect(reply?.text).toContain("Validi: 2. Non validi: 1.");
     await ada.say(ADMIN, "CONFERMA");
     await ada.finished();
@@ -327,6 +335,27 @@ describe("confirmation flow", () => {
     expect(await other.say(STRANGER, "<media:document>", "doc-2")).toBeUndefined();
   });
 
+  it("leaves an admin's CSV or TXT attachment to Ada unless its caption has /invia-intro", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ada-outreach-"));
+    tempDirs.push(dir);
+    const file = path.join(dir, "elenco.txt");
+    await writeFile(file, "333 123 4567\n340 111 2222\n");
+    const ada = setup();
+    for (const [index, caption] of ["", "Ecco il fascicolo", "<media:document>"].entries()) {
+      const id = `plain-${index}`;
+      await ada.receive(ADMIN, caption, [{ path: file, contentType: "text/plain" }], id);
+      expect(await ada.say(ADMIN, caption, id)).toBeUndefined();
+    }
+    expect(await ada.say(ADMIN, "CONFERMA")).toBeUndefined();
+    expect(ada.messages).toHaveLength(0);
+    expect(ada.send).not.toHaveBeenCalled();
+
+    await ada.receive(ADMIN, "", [{ path: file, contentType: "text/plain" }], "listed");
+    expect((await ada.say(ADMIN, "Per favore /invia-intro", "listed"))?.text).toContain(
+      "Validi: 2.",
+    );
+  });
+
   it("tells the admin when there is nothing to send or the file cannot be read", async () => {
     const ada = setup();
     expect((await ada.say(ADMIN, "/invia-intro"))?.text).toContain("Non ho trovato numeri");
@@ -339,7 +368,9 @@ describe("confirmation flow", () => {
       [{ path: "/nonexistent/lista.csv", contentType: "text/csv" }],
       "doc-3",
     );
-    expect((await ada.say(ADMIN, "", "doc-3"))?.text).toContain("Non riesco a leggere il file");
+    expect((await ada.say(ADMIN, "/invia-intro", "doc-3"))?.text).toContain(
+      "Non riesco a leggere il file",
+    );
     expect(await ada.say(ADMIN, "CONFERMA")).toBeUndefined();
   });
 });
@@ -446,7 +477,7 @@ describe("resume after a restart", () => {
     expect(second.sentTo()).toEqual(["+393470000001"]);
     expect(second.report()).toContain("2 messaggi inviati, 0 non riusciti");
     expect(second.report()).toContain("Non confermati: 1");
-    expect(await store.batches.entries()).toHaveLength(0);
+    expect(await store.batches.lookup("active")).toBeUndefined();
 
     const third = setup({ store });
     await third.services[0]?.start();
@@ -469,13 +500,97 @@ describe("resume after a restart", () => {
     stopService.now = () => first.services[0]?.stop();
     await first.say(ADMIN, `/invia-intro\n${LIST}`);
     await first.say(ADMIN, "CONFERMA");
-    await vi.waitFor(async () => expect((await store.batches.entries())[0]?.value.cursor).toBe(2));
+    await vi.waitFor(async () => expect((await store.batches.lookup("active"))?.cursor).toBe(2));
 
     const second = setup({ store });
     await second.services[0]?.start();
     await second.finished();
     expect(second.sentTo()).toEqual(["+393470000001"]);
     expect(second.report()).toContain("3 messaggi inviati, 0 non riusciti");
+  });
+});
+
+describe("sending safeguards", () => {
+  function gatedSend() {
+    const gate = { release: () => undefined as void };
+    const open = new Promise<void>((resolve) => {
+      gate.release = resolve;
+    });
+    return {
+      gate,
+      send: async (): Promise<{ ok: true }> => {
+        await open;
+        return { ok: true };
+      },
+    };
+  }
+
+  it("checks the opt-out list again right before each send", async () => {
+    const { gate, send } = gatedSend();
+    const ada = setup({ send });
+    await ada.say(ADMIN, `/invia-intro\n${LIST}`);
+    await ada.say(ADMIN, "CONFERMA");
+    await vi.waitFor(() => expect(ada.send).toHaveBeenCalledTimes(1));
+    await ada.receive("393470000001", "BASTA");
+    gate.release();
+    await ada.finished();
+    expect(ada.sentTo()).toEqual(["+393331234567", "+393401112222"]);
+    expect(ada.report()).toContain("2 messaggi inviati");
+    expect(ada.report()).toContain("disiscritti nel frattempo: 1");
+  });
+
+  it("masks phone numbers in the failure reason, in the report and in the logs", async () => {
+    const ada = setup({
+      send: async (to) => ({ ok: false, error: `recipient ${to} (39 340 111 2222) is not valid` }),
+    });
+    await ada.say(ADMIN, `/invia-intro\n${LIST}`);
+    await ada.say(ADMIN, "CONFERMA");
+    await ada.finished();
+    expect(ada.report()).toContain("recipient +39********67 (+39********22) is not valid");
+    const logged = [ada.logger.debug, ada.logger.info, ada.logger.warn, ada.logger.error]
+      .flatMap((fn) => fn.mock.calls.map(([line]) => String(line)))
+      .join("\n");
+    expect(logged).toContain("is not valid");
+    for (const digits of ["3331234567", "3401112222", "3470000001"]) {
+      expect(`${logged}\n${ada.report()}`).not.toContain(digits);
+    }
+  });
+
+  it("runs one batch at a time across admins, even when both confirm at once", async () => {
+    const { gate, send } = gatedSend();
+    const ada = setup({ send });
+    await ada.say(ADMIN, "/invia-intro 333 123 4567\n340 111 2222");
+    await ada.say(SECOND_ADMIN, "/invia-intro 347 000 0001");
+    const [first, second] = await Promise.all([
+      ada.say(ADMIN, "CONFERMA"),
+      ada.say(SECOND_ADMIN, "CONFERMA"),
+    ]);
+    expect(
+      [first?.text, second?.text].filter((text) => text?.startsWith("Confermato")),
+    ).toHaveLength(1);
+    expect([first?.text, second?.text].join("\n")).toContain("ne parte uno solo alla volta");
+    await vi.waitFor(() => expect(ada.send).toHaveBeenCalledTimes(1));
+    expect((await ada.say(SECOND_ADMIN, "/invia-intro 340 999 0000"))?.text).toContain(
+      "già un invio",
+    );
+    gate.release();
+    await vi.waitFor(async () => expect(await ada.store.batches.lookup("active")).toBeUndefined());
+    expect(new Set(ada.sentTo()).size).toBe(ada.sentTo().length);
+  });
+
+  it("keeps the second admin's list pending and runs it once the first batch is done", async () => {
+    const { gate, send } = gatedSend();
+    const ada = setup({ send });
+    await ada.say(ADMIN, "/invia-intro 333 123 4567");
+    await ada.say(SECOND_ADMIN, "/invia-intro 347 000 0001");
+    await ada.say(ADMIN, "CONFERMA");
+    await vi.waitFor(() => expect(ada.send).toHaveBeenCalledTimes(1));
+    expect((await ada.say(SECOND_ADMIN, "CONFERMA"))?.text).toContain("solo alla volta");
+    gate.release();
+    await vi.waitFor(async () => expect(await ada.store.batches.lookup("active")).toBeUndefined());
+    expect((await ada.say(SECOND_ADMIN, "CONFERMA"))?.text).toContain("Confermato");
+    await ada.finished(SECOND_ADMIN);
+    expect(ada.sentTo()).toEqual(["+393331234567", "+393470000001"]);
   });
 });
 
