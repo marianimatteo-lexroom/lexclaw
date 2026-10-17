@@ -44,6 +44,7 @@ import {
   executeAdaTodoList,
 } from "./src/memory-tools.js";
 import { openAdaMemoryFromApi } from "./src/memory.js";
+import { registerAdaOutreach } from "./src/outreach.js";
 import { registerResearchLinkHooks } from "./src/research-link-outbound.js";
 import { onSenderInbound } from "./src/research-push.js";
 import {
@@ -498,6 +499,7 @@ const entry = definePluginEntry({
   register(api) {
     tools.register(api);
     registerAdaService({ api });
+    registerAdaOutreach(api);
 
     const statusReactions = registerStatusReactionHooks(api);
     registerResearchLinkHooks(

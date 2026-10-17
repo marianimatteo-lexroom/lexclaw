@@ -54,6 +54,23 @@ describe("sendKapsoTemplate", () => {
     });
   });
 
+  it("fills the body variables in order when the template has params", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(200));
+    await sendKapsoTemplate({
+      config,
+      to: "390000000000",
+      template: { name: "ada_intro", language: "it", params: ["Mario"] },
+      env: {},
+      fetchImpl,
+    });
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(JSON.parse(String(init?.body)).template).toEqual({
+      name: "ada_intro",
+      language: { code: "it" },
+      components: [{ type: "body", parameters: [{ type: "text", text: "Mario" }] }],
+    });
+  });
+
   it("accepts a 2xx without a parsable body", async () => {
     const fetchImpl = vi.fn(async () => new Response("", { status: 200 }));
     expect(

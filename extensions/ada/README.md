@@ -211,6 +211,35 @@ The template goes to `channels["kapso-whatsapp"].defaultTo` using the same Kapso
 - A new template can go out only after the held plan is delivered and a later plan is held again.
 - The send has a 10-second timeout and never fails or delays the collect pass beyond it.
 
+## Admin batch outreach
+
+Off unless `ADA_ADMIN_NUMBERS` is set. For everyone else Ada behaves exactly as before and never mentions the feature. An admin can hand Ada a list of numbers, and Ada sends each one an approved WhatsApp intro template so she can start conversations with people who have never written to her. A recipient who replies starts an ordinary chat with Ada; no recipient ever sees another.
+
+| Variable                    | Default             | Meaning                                                                                                                              |
+| --------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `ADA_ADMIN_NUMBERS`         | unset (feature off) | Comma-separated E.164 numbers, such as `+390000000001,+390000000002`, allowed to run outreach from their own WhatsApp chat with Ada. |
+| `ADA_INTRO_TEMPLATE_NAME`   | `ada_intro`         | Approved WhatsApp template to send.                                                                                                  |
+| `ADA_INTRO_TEMPLATE_LANG`   | `it`                | Language code the template was approved in.                                                                                          |
+| `ADA_INTRO_TEMPLATE_PARAMS` | `1`                 | Body variables the template declares: `1` fills `{{1}}` with the first name, `0` sends a template without variables.                 |
+| `ADA_INTRO_DEFAULT_NAME`    | `gentile utente`    | What fills `{{1}}` for a row without a name (Meta rejects an empty variable).                                                        |
+
+The template must be approved in the WhatsApp Business Manager that owns the Kapso number, with the name, language and variable count above. It is sent through the same Kapso client as the digest-ready nudge (`whatsapp-template.ts`).
+
+How an admin uses it, in a WhatsApp chat with Ada:
+
+1. Send the list, either as a CSV or TXT document, or as a text message that starts with `/invia-intro` and has one number per line. A row may be `number` or `number,name`; a file may instead start with a header row naming a `phone`/`telefono` column and optionally a `name`/`nome` column (comma, semicolon or tab separated). Numbers are normalized to E.164: `+39` is assumed when there is no country code, spaces, dashes and dots are removed, and a leading `00` means `+`. The first name of the row fills `{{1}}`. At most 1,000 numbers per list.
+2. Ada replies with how many numbers are valid, invalid, duplicate and opted out (and how many were skipped for a recent intro), plus a few masked examples. Nothing is sent yet.
+3. Reply `CONFERMA` within 30 minutes to send. `/annulla` cancels the pending list, or stops a batch that is running (messages already sent stay sent). After 30 minutes the pending list expires.
+4. Ada sends about one message per second. When it finishes she tells the admin how many went out and how many failed, grouped by reason.
+
+Rules Ada enforces:
+
+- A number that replied `STOP`, `BASTA` or `annulla iscrizione` to Ada is saved on an opt-out list, gets a short confirmation from Ada, and is never sent outreach again. The opt-out list is permanent. The configured lawyer's `stop` is left alone, because it also aborts a running turn. OpenClaw treats `stop` as an abort command, so that reply may also carry its own "aborted" notice.
+- A number is sent the intro once per batch, and not again within 30 days of its last intro.
+- Progress is saved in the Gateway's plugin state (`$OPENCLAW_STATE_DIR`, the same volume as the other Ada stores) before each send. After a restart Ada resumes at the saved row. A number whose send was interrupted without a recorded outcome is reported as "non confermato" and is not sent again, so nobody gets two intros.
+- Phone numbers are masked in logs (`+39********67`); nothing at info level shows a full number.
+- An admin's CSV or TXT attachment is always read as an outreach list. An admin's other messages, including a `CONFERMA` with nothing pending, reach Ada as usual.
+
 ## WhatsApp read receipts
 
 When Ada accepts an inbound Kapso WhatsApp message, she marks that WhatsApp message read. The lawyer sees the blue checks while Ada is working, instead of gray delivered checks until a later reply. Set `channels["kapso-whatsapp"].sendReadReceipts` to `false` to leave messages delivered.

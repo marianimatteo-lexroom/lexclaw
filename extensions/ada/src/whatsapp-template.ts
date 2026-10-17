@@ -16,7 +16,8 @@ const TEMPLATE_NAME = /^[a-z0-9_]{1,512}$/;
 const TEMPLATE_LANGUAGE = /^[a-z]{2,3}(?:_[A-Za-z]{2,4})?$/;
 const RECIPIENT_DIGITS = /^\d{6,20}$/;
 
-export type KapsoTemplate = { name: string; language: string };
+/** `params` fill the body variables {{1}}, {{2}}, ... in order; omit them for a variable-less template. */
+export type KapsoTemplate = { name: string; language: string; params?: string[] };
 
 export type KapsoTemplateResult = { ok: true; messageId?: string } | { ok: false; error: string };
 
@@ -35,8 +36,9 @@ function normalizeRecipient(value: string): string | null {
 }
 
 /**
- * Send one pre-approved, variable-less WhatsApp template through Kapso. Templates are the
- * only message the Cloud API accepts outside the 24-hour customer-service window.
+ * Send one pre-approved WhatsApp template through Kapso, with body variables when `params` are
+ * given. Templates are the only message the Cloud API accepts outside the 24-hour
+ * customer-service window.
  */
 export async function sendKapsoTemplate(params: {
   config: unknown;
@@ -78,7 +80,20 @@ export async function sendKapsoTemplate(params: {
       messaging_product: "whatsapp",
       to,
       type: "template",
-      template: { name: params.template.name, language: { code: params.template.language } },
+      template: {
+        name: params.template.name,
+        language: { code: params.template.language },
+        ...(params.template.params?.length
+          ? {
+              components: [
+                {
+                  type: "body",
+                  parameters: params.template.params.map((text) => ({ type: "text", text })),
+                },
+              ],
+            }
+          : {}),
+      },
     },
     timeoutMs: TEMPLATE_TIMEOUT_MS,
     readJson: true,
