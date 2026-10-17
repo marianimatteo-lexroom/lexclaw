@@ -26,5 +26,5 @@ number's message list holds its own ack plus its own result with the URL in the 
 
 - This proves Ada's code, not the host: `requesterSenderId` and hook registration are the host's.
   A gateway-level run (Kapso webhook in, outbound payloads out) is not covered here.
-- The fixture answer is about 5,000 characters, so a result is several WhatsApp chunks; assert on the
-  last chunk, not on a single message.
+- The fixture answer is about 5,000 characters, so a result is one truncated WhatsApp message ending
+  in the link; the PDF carries the full text.
