@@ -60,11 +60,29 @@ const MUTATIONS: Mutation[] = [
   {
     id: "unbounded-login-and-gets",
     recreates:
-      "login, modules and credits calls without a request limit: a silent Lexroom hangs them",
+      "modules and credits calls without a request limit: a silent Lexroom hangs them (login also has its own flow limit)",
     file: "src/lexroom-transport.ts",
     from: "      idleMs: params.timeoutMs,\n      totalMs: params.timeoutMs,",
     to: "      idleMs: 3_600_000,\n      totalMs: 3_600_000,",
-    expect: ["login.timeouts", "research.timeouts", "relogin.edges"],
+    expect: ["research.timeouts"],
+  },
+  {
+    id: "pre-48-legacy-login-only",
+    recreates:
+      "#48: the 403 auth0_login_required answer is read as a refusal, so the web sign-in never runs",
+    file: "src/lexroom-login.ts",
+    from: '      return "auth0_required";',
+    to: '      return { ok: false, reason: "forbidden", error: "forbidden" };',
+    expect: ["login.ok", "relogin.auto"],
+  },
+  {
+    id: "pre-48-captcha-unrecognized",
+    recreates:
+      "#48: a captcha page on the Auth0 form is not recognized and reads as a wrong password",
+    file: "src/lexroom-web-login.ts",
+    from: '  if (/<div\\b[^>]*data-captcha-sitekey/iu.test(body) || /name="captcha"/iu.test(body)) {',
+    to: "  if (false) {",
+    expect: ["login.failures", "relogin.edges"],
   },
   {
     id: "unbounded-research-stream",

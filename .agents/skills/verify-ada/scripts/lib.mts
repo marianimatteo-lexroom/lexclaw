@@ -39,17 +39,24 @@ export async function loadAda() {
   return { login, client, tools, jobs, links, push, account, session };
 }
 
+/** Lexroom's sign-in hosts, served by the mock under /__host/<host>/. */
+const WEB_ORIGINS = ["https://app.lexroom.ai", "https://auth.lexroom.ai"];
+
 /**
- * Real `fetch`, with Lexroom's production origin rewritten to the mock's loopback port. Ada
- * keeps its production base URL, so the research link (which only exists for lexroom.ai hosts)
- * is built exactly as in production, while every byte still crosses a real socket.
+ * Real `fetch`, with Lexroom's production origins rewritten to the mock's loopback port: the API
+ * as itself, and the web app and Auth0 under /__host/<host>/. Ada keeps its production URLs, so
+ * its production path selection and the research link (which only exists for lexroom.ai hosts)
+ * work exactly as in production, while every byte still crosses a real socket.
  */
 export function mockFetch(mock: MockLexroom): typeof fetch {
   return (input, init) => {
     const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    const rewritten = raw.startsWith(PRODUCTION_BASE_URL)
-      ? `${mock.baseUrl}${raw.slice(PRODUCTION_BASE_URL.length)}`
-      : raw;
+    const web = WEB_ORIGINS.find((origin) => raw.startsWith(origin));
+    const rewritten = web
+      ? `${mock.baseUrl}/__host/${new URL(web).host}${raw.slice(web.length)}`
+      : raw.startsWith(PRODUCTION_BASE_URL)
+        ? `${mock.baseUrl}${raw.slice(PRODUCTION_BASE_URL.length)}`
+        : raw;
     return fetch(rewritten, init);
   };
 }
@@ -198,6 +205,8 @@ export function expiredToken(label: string): string {
 
 export const MOCK_EMAIL = "lawyer@example.test";
 export const MOCK_PASSWORD = "mock-password-not-a-secret";
+/** A made-up Auth0 client secret for the password-realm path; it only exists in this process. */
+export const MOCK_CLIENT_SECRET = "mock-auth0-client-secret-not-a-secret";
 
 export async function seedAccount(
   box: Sandbox,

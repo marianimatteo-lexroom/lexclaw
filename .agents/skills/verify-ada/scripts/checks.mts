@@ -7,6 +7,7 @@ import {
   type Sandbox,
   expiredToken,
   fakeWhatsApp,
+  MOCK_CLIENT_SECRET,
   MOCK_EMAIL,
   MOCK_PASSWORD,
   PRODUCTION_BASE_URL,
@@ -38,6 +39,10 @@ const reset = (ctx: CheckContext, mode: Parameters<CheckContext["mock"]["configu
 
 const count = (ctx: CheckContext, path: string, method?: string) =>
   ctx.mock.requests().filter((r) => r.path === path && (!method || r.method === method)).length;
+
+/** One logged request as `METHOD host path`; the API is `api`, the web app `app`, Auth0 `auth`. */
+const flowStep = (r: { method: string; path: string; host?: string }) =>
+  `${r.method} ${r.host?.split(".")[0] ?? "api"} ${r.path}`;
 
 async function validToken(ctx: CheckContext): Promise<string> {
   const login = await ctx.ada.login.loginLexroomAccount({
@@ -135,8 +140,9 @@ const MODEL_REPLY =
 export const CHECKS: CheckDefinition[] = [
   {
     id: "login.ok",
-    title: "Login sends the lexroom-bot request and returns a usable bearer",
-    guards: "login contract (#43 typed client)",
+    title:
+      "Login tries the old endpoint, signs in through Lexroom's Auth0 flow, and returns a usable bearer",
+    guards: "login contract (#43 typed client, #48 Auth0 sign-in)",
     async run(t, ctx) {
       reset(ctx);
       const { value: result } = await timed(
@@ -146,30 +152,134 @@ export const CHECKS: CheckDefinition[] = [
           baseUrl: PRODUCTION_BASE_URL,
           timeoutMs: 5000,
           fetchImpl: ctx.fetchImpl,
+          env: {},
         }),
       );
-      t.ok("login succeeds", result.ok, result.ok ? undefined : result.error);
+      t.ok("web-flow login succeeds", result.ok, result.ok ? undefined : result.error);
       t.ok("a bearer comes back", result.ok && result.accessToken.length > 20);
-      const [request] = ctx.mock.requests();
-      t.eq("one POST /v1/login", [request?.method, request?.path], ["POST", "/v1/login"]);
-      t.eq("sends X-Client-Type app_lex", request?.clientType, "app_lex");
-      t.eq("body is exactly email and password", request?.bodyKeys, ["email", "password"]);
-      t.eq("no bearer is sent to login", request?.bearer, "none");
+      const requests = ctx.mock.requests();
+      const [legacy] = requests;
+      t.eq(
+        "first one POST /v1/login, which answers 403 auth0_login_required",
+        [legacy?.method, legacy?.path],
+        ["POST", "/v1/login"],
+      );
+      t.eq("sends X-Client-Type app_lex", legacy?.clientType, "app_lex");
+      t.eq("body is exactly email and password", legacy?.bodyKeys, ["email", "password"]);
+      t.eq("no bearer is sent to login", legacy?.bearer, "none");
+      t.eq("then the web flow, step by step", requests.slice(1).map(flowStep), [
+        "GET app /api/auth/login",
+        "GET auth /authorize",
+        "GET auth /u/login/identifier",
+        "POST auth /u/login/identifier",
+        "GET auth /u/login/password",
+        "POST auth /u/login/password",
+        "GET auth /authorize/resume",
+        "GET app /api/auth/callback/auth0",
+        "GET app /",
+        "GET app /api/auth/session",
+      ]);
+      const identifier = requests.find(
+        (r) => r.method === "POST" && r.path === "/u/login/identifier",
+      );
+      t.ok(
+        "the identifier form is posted with the fields the page defines",
+        ["state", "username", "language", "persist", "action", "js-available"].every((key) =>
+          identifier?.bodyKeys.includes(key),
+        ),
+        JSON.stringify(identifier?.bodyKeys),
+      );
+      const password = requests.find((r) => r.method === "POST" && r.path === "/u/login/password");
+      t.ok(
+        "the password form carries state, username and password",
+        ["state", "username", "password"].every((key) => password?.bodyKeys.includes(key)),
+      );
+      t.ok(
+        "the bearer is the one the session issued",
+        result.ok && result.accessToken === ctx.mock.lastIssuedToken(),
+      );
+
+      reset(ctx);
+      const realm = await ctx.ada.login.loginLexroomAccount({
+        email: MOCK_EMAIL,
+        password: MOCK_PASSWORD,
+        baseUrl: PRODUCTION_BASE_URL,
+        timeoutMs: 5000,
+        fetchImpl: ctx.fetchImpl,
+        env: { ADA_LEXROOM_AUTH0_CLIENT_SECRET: MOCK_CLIENT_SECRET },
+      });
+      t.ok("password-realm login succeeds", realm.ok, realm.ok ? undefined : realm.error);
+      t.eq(
+        "with the secret set, only the token endpoint and one bearer check",
+        ctx.mock.requests().map(flowStep),
+        ["POST auth /oauth/token", "GET api /v1/credits"],
+      );
+      const grant = ctx.mock.requests()[0];
+      t.eq("the grant carries exactly the fields Auth0 defines", grant?.bodyKeys, [
+        "audience",
+        "client_id",
+        "client_secret",
+        "grant_type",
+        "password",
+        "realm",
+        "scope",
+        "username",
+      ]);
+      t.eq(
+        "the new bearer is checked against Lexroom's API",
+        ctx.mock.requests()[1]?.bearer,
+        "valid",
+      );
+      t.ok(
+        "the Auth0 token is what comes back",
+        realm.ok && realm.accessToken === ctx.mock.lastIssuedToken(),
+      );
     },
   },
   {
     id: "login.failures",
     title: "Login failures come back as structured ok:false results, never exceptions",
-    guards: "401 / MFA / bad-body handling (the 401, 502, 403 chain of the connect work)",
+    guards: "401 / MFA / bad-body handling, and Auth0's wrong password, MFA, captcha and refusals",
     async run(t, ctx) {
-      const cases: Array<[string, Parameters<typeof reset>[1], string]> = [
-        ["401 wrong password", { routes: { "/v1/login": "401" } }, "invalid_credentials"],
-        ["MFA required", { routes: { "/v1/login": "mfa" } }, "mfa_required"],
-        ["500 from Lexroom", { routes: { "/v1/login": "500" } }, "lexroom_error"],
-        ["200 with a non-JSON body", { routes: { "/v1/login": "malformed" } }, "lexroom_error"],
-        ["200 with an empty body", { routes: { "/v1/login": "empty" } }, "lexroom_error"],
+      const realm = { ADA_LEXROOM_AUTH0_CLIENT_SECRET: MOCK_CLIENT_SECRET };
+      const cases: Array<[string, Parameters<typeof reset>[1], string, NodeJS.ProcessEnv?]> = [
+        ["old endpoint: 401 wrong password", { routes: { "/v1/login": "401" } }, "wrong_password"],
+        ["old endpoint: MFA required", { routes: { "/v1/login": "mfa" } }, "mfa_required"],
+        ["old endpoint: 403 refusal", { routes: { "/v1/login": "403" } }, "forbidden"],
+        ["old endpoint: 500", { routes: { "/v1/login": "500" } }, "unavailable"],
+        ["old endpoint: non-JSON 200", { routes: { "/v1/login": "malformed" } }, "unavailable"],
+        ["old endpoint: empty 200", { routes: { "/v1/login": "empty" } }, "unavailable"],
+        [
+          "web: wrong password",
+          { routes: { "/u/login/password": "wrong_password" } },
+          "wrong_password",
+        ],
+        ["web: MFA step", { routes: { "/u/login/password": "mfa" } }, "mfa_required"],
+        ["web: captcha", { routes: { "/u/login/password": "captcha" } }, "captcha_required"],
+        ["web: blocked account", { routes: { "/u/login/password": "blocked" } }, "forbidden"],
+        [
+          "web: session without a token",
+          { routes: { "/api/auth/session": "no_token" } },
+          "unavailable",
+        ],
+        ["web: sign-in page down", { routes: { "/u/login/identifier": "500" } }, "unavailable"],
+        [
+          "web: sign-in page changed",
+          { routes: { "/u/login/identifier": "malformed" } },
+          "unavailable",
+        ],
+        [
+          "Auth0: invalid_grant",
+          { routes: { "/oauth/token": "wrong_password" } },
+          "wrong_password",
+          realm,
+        ],
+        ["Auth0: mfa_required", { routes: { "/oauth/token": "mfa" } }, "mfa_required", realm],
+        ["Auth0: unauthorized_client", { routes: { "/oauth/token": "403" } }, "forbidden", realm],
+        ["Auth0: invalid_client", { routes: { "/oauth/token": "401" } }, "forbidden", realm],
+        ["Auth0: 500", { routes: { "/oauth/token": "500" } }, "unavailable", realm],
       ];
-      for (const [label, mode, reason] of cases) {
+      for (const [label, mode, reason, env] of cases) {
         reset(ctx, mode);
         const result = await watchdog(
           ctx.ada.login.loginLexroomAccount({
@@ -178,6 +288,7 @@ export const CHECKS: CheckDefinition[] = [
             baseUrl: PRODUCTION_BASE_URL,
             timeoutMs: 3000,
             fetchImpl: ctx.fetchImpl,
+            env: env ?? {},
           }),
           HUNG_MS,
           label,
@@ -188,19 +299,29 @@ export const CHECKS: CheckDefinition[] = [
           JSON.stringify(result).slice(0, 160),
         );
         t.ok(
-          `${label}: the password is not in the error text`,
-          !result.ok && !result.error.includes(MOCK_PASSWORD),
+          `${label}: no password or client secret in the error text`,
+          !result.ok &&
+            !result.error.includes(MOCK_PASSWORD) &&
+            !result.error.includes(MOCK_CLIENT_SECRET),
         );
       }
     },
   },
   {
     id: "login.timeouts",
-    title: "A stalled or silent login ends at the request limit with reason timeout",
+    title: "A stalled or silent login, at any step, ends at the request limit with reason timeout",
     guards: "unbounded Lexroom calls (login hung until the host gave up)",
     async run(t, ctx) {
-      for (const mode of ["stall", "silent"] as const) {
-        reset(ctx, { routes: { "/v1/login": mode } });
+      const steps: Array<[string, "stall" | "silent", NodeJS.ProcessEnv?]> = [
+        ["/v1/login", "stall"],
+        ["/v1/login", "silent"],
+        ["/u/login/identifier", "stall"],
+        ["/u/login/password", "silent"],
+        ["/api/auth/session", "stall"],
+        ["/oauth/token", "silent", { ADA_LEXROOM_AUTH0_CLIENT_SECRET: MOCK_CLIENT_SECRET }],
+      ];
+      for (const [route, mode, env] of steps) {
+        reset(ctx, { routes: { [route]: mode } });
         const { value, ms } = await timed(
           watchdog(
             ctx.ada.login.loginLexroomAccount({
@@ -209,19 +330,20 @@ export const CHECKS: CheckDefinition[] = [
               baseUrl: PRODUCTION_BASE_URL,
               timeoutMs: 1000,
               fetchImpl: ctx.fetchImpl,
+              env: env ?? {},
             }),
             HUNG_MS,
-            `login (${mode})`,
+            `login (${route} ${mode})`,
           ),
         );
         t.ok(
-          `${mode}: ok:false reason timeout`,
+          `${route} ${mode}: ok:false reason timeout`,
           !value.ok && value.reason === "timeout",
           JSON.stringify(value).slice(0, 160),
         );
         t.ok(
-          `${mode}: ended after the 1s limit, within two attempts (took ${ms}ms)`,
-          ms >= 900 && ms < 6000,
+          `${route} ${mode}: ended within the 2s limit of the whole sign-in (took ${ms}ms)`,
+          ms >= 900 && ms < 4000,
         );
       }
     },
@@ -396,6 +518,7 @@ export const CHECKS: CheckDefinition[] = [
             JSON.stringify(result).slice(0, 200),
           );
           t.eq("exactly one silent login", count(ctx, "/v1/login", "POST"), 1);
+          t.eq("it went through the web flow once", count(ctx, "/api/auth/session", "GET"), 1);
           const asks = ctx.mock.requests().filter((r) => r.path === "/v1/ask_me_anything");
           t.eq(
             "ask went out twice: stale bearer, then the renewed one",
@@ -450,7 +573,8 @@ export const CHECKS: CheckDefinition[] = [
   },
   {
     id: "relogin.edges",
-    title: "Re-login edge cases: 403, wrong password, MFA, no saved password, stalled login",
+    title:
+      "Re-login edge cases: 403, wrong password, MFA, captcha, no saved password, stalled login",
     guards: "a 403 must keep the sign-in; a dead sign-in must ask to reconnect; nothing may hang",
     async run(t, ctx) {
       const run = (box: Sandbox) =>
@@ -528,6 +652,40 @@ export const CHECKS: CheckDefinition[] = [
               /MFA|one-time/u.test(String(result.error)),
           );
           t.eq("the MFA account is cleared", await box.store.readAccount(), null);
+        },
+        capturedLogs,
+      );
+
+      reset(ctx, { routes: { "/u/login/password": "wrong_password" } });
+      await withBox(
+        ctx,
+        async (box) => {
+          await seed(box, "webpw");
+          const result = await run(box);
+          t.ok(
+            "Auth0 says the saved password is wrong -> ok:false not_connected",
+            result.ok === false && result.reason === "not_connected",
+            JSON.stringify(result).slice(0, 160),
+          );
+          t.eq("the dead account is cleared", await box.store.readAccount(), null);
+        },
+        capturedLogs,
+      );
+
+      reset(ctx, { routes: { "/u/login/password": "captcha" } });
+      await withBox(
+        ctx,
+        async (box) => {
+          await seed(box, "captcha");
+          const result = await run(box);
+          t.ok(
+            "a captcha -> ok:false captcha_required, says why",
+            result.ok === false &&
+              result.reason === "captcha_required" &&
+              /captcha/u.test(String(result.error)),
+            JSON.stringify(result).slice(0, 160),
+          );
+          t.ok("a captcha keeps the saved account", (await box.store.readAccount()) !== null);
         },
         capturedLogs,
       );

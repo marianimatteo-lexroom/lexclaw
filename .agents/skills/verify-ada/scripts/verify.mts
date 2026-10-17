@@ -11,6 +11,7 @@ import {
   loadAda,
   maskSecrets,
   mockFetch,
+  MOCK_CLIENT_SECRET,
   MOCK_PASSWORD,
   REPO_ROOT,
   runCheck,
@@ -44,6 +45,13 @@ async function main(): Promise<Report> {
   if (!flag("--live-only")) {
     const original = process.env.ADA_LEXROOM_TIMEOUT_MS;
     process.env.ADA_LEXROOM_TIMEOUT_MS = "1000";
+    // A real Auth0 setting in the shell must not change which sign-in path the mock checks run.
+    const auth0Env = Object.entries(process.env).filter(([name]) =>
+      /^(ADA|VERA)_LEXROOM_AUTH0_/u.test(name),
+    );
+    for (const [name] of auth0Env) {
+      delete process.env[name];
+    }
     const mock = await startMockLexroom();
     try {
       const ctx = { mock, ada, fetchImpl: mockFetch(mock) };
@@ -55,6 +63,9 @@ async function main(): Promise<Report> {
       }
     } finally {
       await mock.close();
+      for (const [name, value] of auth0Env) {
+        process.env[name] = value;
+      }
       if (original === undefined) {
         delete process.env.ADA_LEXROOM_TIMEOUT_MS;
       } else {
@@ -75,18 +86,19 @@ function secretsCheck(mock: Awaited<ReturnType<typeof startMockLexroom>>): Check
     ...capturedLogs.flatMap((box) => box.logs.lines),
     JSON.stringify(mock.requests()),
   ].join("\n");
-  const leaks = [MOCK_PASSWORD, ...mock.issuedTokens()].filter((secret) =>
+  const leaks = [MOCK_PASSWORD, MOCK_CLIENT_SECRET, ...mock.issuedTokens()].filter((secret) =>
     haystack.includes(secret),
   );
   return {
     id: "secrets.no-leak",
-    title: "No password or issued bearer appears in Ada's logs or the mock's request log",
+    title:
+      "No password, client secret or issued bearer appears in Ada's logs or the mock's request log",
     guards: "credentials in logs",
     status: leaks.length === 0 ? "pass" : "fail",
     ms: 0,
     assertions: [
       {
-        label: `scanned ${haystack.split("\n").length} log lines for the saved password and ${mock.issuedTokens().length} issued bearers`,
+        label: `scanned ${haystack.split("\n").length} log lines for the saved password, the client secret and ${mock.issuedTokens().length} issued bearers`,
         ok: leaks.length === 0,
         ...(leaks.length ? { detail: `${leaks.length} secret value(s) found in logs` } : {}),
       },
