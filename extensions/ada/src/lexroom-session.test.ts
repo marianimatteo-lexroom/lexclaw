@@ -129,7 +129,7 @@ describe("the other reasons are unchanged", () => {
       json({ detail: "No active account", code: "authentication_failed" }, 401),
     );
     const result = await renew();
-    expect(result).toMatchObject({ ok: false, reason: "invalid_credentials" });
+    expect(result).toMatchObject({ ok: false, reason: "wrong_password" });
     expect(needsReconnect(result as never)).toBe(true);
     expect(store.clearAccount).toHaveBeenCalledTimes(1);
   });

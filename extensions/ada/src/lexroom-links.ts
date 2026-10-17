@@ -12,7 +12,7 @@ const MAX_TRACKED = 500;
 const roots = new Map<string, string>();
 
 /** `lexroom.ai` and its subdomains (`api.`, a regional `api-eu.`, ...); never a staging host. */
-function isProductionHost(hostname: string): boolean {
+export function isProductionHost(hostname: string): boolean {
   return hostname === "lexroom.ai" || hostname.endsWith(".lexroom.ai");
 }
 

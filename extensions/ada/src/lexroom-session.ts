@@ -9,7 +9,10 @@ const MFA_RETRY_AFTER_MS = 5 * 60 * 1000;
 
 type SilentLogin =
   | { ok: true; accessToken: string; accessExpiresAtMs: number | null }
-  | { ok: false; reason: "invalid_credentials" | "mfa_required" | "unavailable" }
+  | {
+      ok: false;
+      reason: "wrong_password" | "mfa_required" | "captcha_required" | "unavailable";
+    }
   | { ok: false; reason: "forbidden"; status: number; code: string; detail: string }
   | { ok: false; reason: "timeout"; error: string };
 
@@ -42,26 +45,24 @@ async function signInSilently(params: {
       detail: result.detail,
     };
   }
-  return {
-    ok: false,
-    reason: result.reason === "lexroom_error" ? "unavailable" : result.reason,
-  };
+  return { ok: false, reason: result.reason };
 }
 
 export type RenewFailure = {
   reason:
-    | "invalid_credentials"
+    | "wrong_password"
     | "mfa_required"
     | "no_password"
     | "unavailable"
     | "forbidden"
+    | "captcha_required"
     | "timeout";
   /** Text for the agent. The first three mean the lawyer must reconnect. */
   error: string;
 };
 
 const FAILURE_TEXT: Record<Exclude<RenewFailure["reason"], "timeout">, string> = {
-  invalid_credentials:
+  wrong_password:
     "Lexroom no longer accepts the saved email and password. Call ada_lexroom_connect and send that link.",
   mfa_required:
     "This Lexroom account requires a one-time code (MFA) at every sign-in, which Ada cannot enter, so she cannot renew the connection. Use a Lexroom account without MFA.",
@@ -70,6 +71,8 @@ const FAILURE_TEXT: Record<Exclude<RenewFailure["reason"], "timeout">, string> =
     "Ada could not renew the Lexroom sign-in because Lexroom did not answer. Try again shortly.",
   forbidden:
     "Lexroom answered and refused the sign-in for this account, so Ada could not renew it. The saved sign-in is kept. Tell the user, and suggest reconnecting with ada_lexroom_connect or checking the account with Lexroom.",
+  captcha_required:
+    "Lexroom's sign-in asked for a captcha (bot detection), which Ada cannot solve, so she could not renew the sign-in. The saved sign-in is kept. Tell the user to try again later or to sign in on app.lexroom.ai first.",
 };
 
 export function renewFailure(reason: RenewFailure["reason"], timeoutError?: string): RenewFailure {
@@ -87,7 +90,8 @@ export function needsReconnect(failure: RenewFailure): boolean {
   return (
     failure.reason !== "unavailable" &&
     failure.reason !== "timeout" &&
-    failure.reason !== "forbidden"
+    failure.reason !== "forbidden" &&
+    failure.reason !== "captcha_required"
   );
 }
 
@@ -167,8 +171,8 @@ async function renew(account: LexroomAccountRecord, deps: RenewDeps): Promise<Re
     });
     return { ok: true, account: renewed };
   }
-  if (login.reason === "invalid_credentials") {
-    await clearAccountIfStill(store, account.accessToken, log, "relogin_invalid_credentials");
+  if (login.reason === "wrong_password") {
+    await clearAccountIfStill(store, account.accessToken, log, "relogin_wrong_password");
   }
   if (login.reason === "mfa_required") {
     mfaBlockedUntil.set(account.email, deps.now.getTime() + MFA_RETRY_AFTER_MS);

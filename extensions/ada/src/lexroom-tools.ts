@@ -135,8 +135,8 @@ function renewalFailure(failure: RenewFailure): Failure {
   if (failure.reason === "timeout") {
     return { ok: false, reason: "timeout", message: failure.error, error: failure.error };
   }
-  if (failure.reason === "forbidden") {
-    return { ok: false, reason: "forbidden", error: failure.error };
+  if (failure.reason === "forbidden" || failure.reason === "captcha_required") {
+    return { ok: false, reason: failure.reason, error: failure.error };
   }
   return needsReconnect(failure)
     ? { ok: false, reason: "not_connected", error: failure.error }
@@ -182,7 +182,7 @@ async function runWithRecovery<T extends { ok: boolean; reason?: string }>(param
       why: "rejected",
     });
     if (!renewed.ok) {
-      if (needsReconnect(renewed) && renewed.reason !== "invalid_credentials") {
+      if (needsReconnect(renewed) && renewed.reason !== "wrong_password") {
         await clearAccountIfStill(store, account.accessToken, log, "lexroom_rejected");
       }
       return renewalFailure(renewed);
@@ -263,7 +263,7 @@ export async function executeAdaLexroomConnect(
           const renewed = await renewLexroomAccount(account, { ...renewal, why: "rejected" });
           if (!renewed.ok && needsReconnect(renewed)) {
             reconnect = renewed;
-            if (renewed.reason !== "invalid_credentials") {
+            if (renewed.reason !== "wrong_password") {
               await clearAccountIfStill(store, account.accessToken, log, "status_check_rejected");
             }
             account = null;

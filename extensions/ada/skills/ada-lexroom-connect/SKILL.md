@@ -21,6 +21,8 @@ When `ada_research_status`, `ada_research` or `ada_draft` returns `reason: "time
 
 When `ada_research_status`, `ada_research` or `ada_draft` returns `reason: "forbidden"`, Lexroom answered and refused the sign-in for this account; the saved sign-in is kept. Tell the lawyer in their language that Lexroom refused it, and that they can ask for a new connect link (call `ada_lexroom_connect` with `force: true` only if they do) or check the account with Lexroom. Do not say Lexroom did not answer.
 
+When one of those tools returns `reason: "captcha_required"`, Lexroom's sign-in asked for a captcha (bot detection) that Ada cannot solve; the saved sign-in is kept. Tell the lawyer in their language to try again later or to sign in on app.lexroom.ai first.
+
 When the result is any other `ok: false`, the entire reply is exactly `NO_REPLY`. The tool error names the missing connect settings. Do not text that error to the lawyer.
 
 When `connected` is true, do not ask again and do not send the link.

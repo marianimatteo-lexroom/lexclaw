@@ -54,6 +54,7 @@ type Strings = {
   timeout: string;
   notConnected: string;
   refused: string;
+  captcha: string;
   retry: string;
 };
 
@@ -66,6 +67,8 @@ const STRINGS: Record<Language, Strings> = {
     notConnected: "Lexroom non è collegato: chiedimi di collegarlo e ti mando il link.",
     refused:
       "Lexroom ha rifiutato l'accesso per questo account. Chiedimi di ricollegarlo e ti mando il link, oppure controlla l'account su Lexroom.",
+    captcha:
+      "Lexroom ha chiesto un captcha (controllo anti-bot) che non posso risolvere. Riprova più tardi, oppure accedi prima su app.lexroom.ai.",
     retry: "Dimmi se vuoi che riprovi.",
   },
   en: {
@@ -76,6 +79,8 @@ const STRINGS: Record<Language, Strings> = {
     notConnected: "Lexroom is not connected: ask me to connect it and I'll send you the link.",
     refused:
       "Lexroom refused the sign-in for this account. Ask me to reconnect it and I'll send you the link, or check the account with Lexroom.",
+    captcha:
+      "Lexroom asked for a captcha (bot check) that I cannot solve. Try again later, or sign in on app.lexroom.ai first.",
     retry: "Tell me if you want me to try again.",
   },
   es: {
@@ -86,6 +91,8 @@ const STRINGS: Record<Language, Strings> = {
     notConnected: "Lexroom no está conectado: pídeme que lo conecte y te envío el enlace.",
     refused:
       "Lexroom rechazó el inicio de sesión de esta cuenta. Pídeme que la reconecte y te envío el enlace, o revisa la cuenta en Lexroom.",
+    captcha:
+      "Lexroom pidió un captcha (control anti-bot) que no puedo resolver. Inténtalo más tarde, o inicia sesión antes en app.lexroom.ai.",
     retry: "Dime si quieres que lo intente de nuevo.",
   },
   fr: {
@@ -97,6 +104,8 @@ const STRINGS: Record<Language, Strings> = {
       "Lexroom n'est pas connecté : demandez-moi de le connecter et je vous envoie le lien.",
     refused:
       "Lexroom a refusé la connexion pour ce compte. Demandez-moi de le reconnecter et je vous envoie le lien, ou vérifiez le compte sur Lexroom.",
+    captcha:
+      "Lexroom a demandé un captcha (contrôle anti-bot) que je ne peux pas résoudre. Réessayez plus tard, ou connectez-vous d'abord sur app.lexroom.ai.",
     retry: "Dites-moi si vous voulez que je réessaie.",
   },
   de: {
@@ -108,6 +117,8 @@ const STRINGS: Record<Language, Strings> = {
       "Lexroom ist nicht verbunden: Bitten Sie mich, es zu verbinden, dann sende ich den Link.",
     refused:
       "Lexroom hat die Anmeldung für dieses Konto abgelehnt. Bitten Sie mich, es neu zu verbinden, dann sende ich den Link, oder prüfen Sie das Konto bei Lexroom.",
+    captcha:
+      "Lexroom hat ein Captcha (Bot-Prüfung) verlangt, das ich nicht lösen kann. Versuchen Sie es später noch einmal oder melden Sie sich zuerst auf app.lexroom.ai an.",
     retry: "Sagen Sie mir, wenn ich es noch einmal versuchen soll.",
   },
 };
@@ -162,7 +173,9 @@ export async function researchMessages(
         ? strings.notConnected
         : result.reason === "forbidden"
           ? strings.refused
-          : result.error.slice(0, MAX_FAILURE_CHARS);
+          : result.reason === "captcha_required"
+            ? strings.captcha
+            : result.error.slice(0, MAX_FAILURE_CHARS);
   return [`${strings.failed}\n${reason}\n${strings.retry}`];
 }
 
