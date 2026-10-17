@@ -45,6 +45,15 @@ export function resolveKapsoAccount(
 
 /** The Cloud API `/messages` URL for one resolved account. */
 export function kapsoMessagesEndpoint(account: KapsoAccount): KapsoEndpoint {
+  return kapsoEndpoint(account, "messages");
+}
+
+/** The Cloud API `/media` upload URL for one resolved account. */
+export function kapsoMediaEndpoint(account: KapsoAccount): KapsoEndpoint {
+  return kapsoEndpoint(account, "media");
+}
+
+function kapsoEndpoint(account: KapsoAccount, resource: "messages" | "media"): KapsoEndpoint {
   if (!account.apiKey || !account.phoneNumberId) {
     return { ok: false, reason: "missing-credentials" };
   }
@@ -57,14 +66,14 @@ export function kapsoMessagesEndpoint(account: KapsoAccount): KapsoEndpoint {
   }
   return {
     ok: true,
-    url: `${baseUrl}/${KAPSO_GRAPH_VERSION}/${account.phoneNumberId}/messages`,
+    url: `${baseUrl}/${KAPSO_GRAPH_VERSION}/${account.phoneNumberId}/${resource}`,
     apiKey: account.apiKey,
   };
 }
 
 /**
- * POST one JSON body to Kapso with a hard timeout. Never throws; the API key never appears in a
- * result. The limit covers the response body too: with `readJson` the body is read inside it,
+ * POST one JSON body (or a `FormData` upload) to Kapso with a hard timeout. Never throws; the API
+ * key never appears in a result. The limit covers the response body too: with `readJson` the body is read inside it,
  * because the limit stops applying once this returns.
  */
 export async function postKapsoMessage(params: {
@@ -75,6 +84,7 @@ export async function postKapsoMessage(params: {
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
 }): Promise<KapsoPostResult> {
+  const upload = params.body instanceof FormData ? params.body : undefined;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), params.timeoutMs);
   timeout.unref?.();
@@ -87,10 +97,11 @@ export async function postKapsoMessage(params: {
     const response = await (params.fetchImpl ?? fetch)(params.endpoint.url, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
+        // A FormData body sets its own multipart Content-Type, with the boundary.
+        ...(upload ? {} : { "Content-Type": "application/json" }),
         "X-API-Key": params.endpoint.apiKey,
       },
-      body: JSON.stringify(params.body),
+      body: upload ?? JSON.stringify(params.body),
       signal: controller.signal,
     });
     if (!response.ok) {
