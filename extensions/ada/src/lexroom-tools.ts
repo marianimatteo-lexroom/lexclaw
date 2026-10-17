@@ -135,6 +135,9 @@ function renewalFailure(failure: RenewFailure): Failure {
   if (failure.reason === "timeout") {
     return { ok: false, reason: "timeout", message: failure.error, error: failure.error };
   }
+  if (failure.reason === "forbidden") {
+    return { ok: false, reason: "forbidden", error: failure.error };
+  }
   return needsReconnect(failure)
     ? { ok: false, reason: "not_connected", error: failure.error }
     : { ok: false, error: failure.error };

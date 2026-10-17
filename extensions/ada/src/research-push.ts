@@ -53,6 +53,7 @@ type Strings = {
   failed: string;
   timeout: string;
   notConnected: string;
+  refused: string;
   retry: string;
 };
 
@@ -63,6 +64,8 @@ const STRINGS: Record<Language, Strings> = {
     failed: "La ricerca su Lexroom non è andata a buon fine.",
     timeout: "Lexroom non ha risposto in tempo e la richiesta è stata interrotta.",
     notConnected: "Lexroom non è collegato: chiedimi di collegarlo e ti mando il link.",
+    refused:
+      "Lexroom ha rifiutato l'accesso per questo account. Chiedimi di ricollegarlo e ti mando il link, oppure controlla l'account su Lexroom.",
     retry: "Dimmi se vuoi che riprovi.",
   },
   en: {
@@ -71,6 +74,8 @@ const STRINGS: Record<Language, Strings> = {
     failed: "The Lexroom research did not complete.",
     timeout: "Lexroom did not respond in time and the request was abandoned.",
     notConnected: "Lexroom is not connected: ask me to connect it and I'll send you the link.",
+    refused:
+      "Lexroom refused the sign-in for this account. Ask me to reconnect it and I'll send you the link, or check the account with Lexroom.",
     retry: "Tell me if you want me to try again.",
   },
   es: {
@@ -79,6 +84,8 @@ const STRINGS: Record<Language, Strings> = {
     failed: "La investigación en Lexroom no se completó.",
     timeout: "Lexroom no respondió a tiempo y la solicitud se interrumpió.",
     notConnected: "Lexroom no está conectado: pídeme que lo conecte y te envío el enlace.",
+    refused:
+      "Lexroom rechazó el inicio de sesión de esta cuenta. Pídeme que la reconecte y te envío el enlace, o revisa la cuenta en Lexroom.",
     retry: "Dime si quieres que lo intente de nuevo.",
   },
   fr: {
@@ -88,6 +95,8 @@ const STRINGS: Record<Language, Strings> = {
     timeout: "Lexroom n'a pas répondu à temps et la demande a été interrompue.",
     notConnected:
       "Lexroom n'est pas connecté : demandez-moi de le connecter et je vous envoie le lien.",
+    refused:
+      "Lexroom a refusé la connexion pour ce compte. Demandez-moi de le reconnecter et je vous envoie le lien, ou vérifiez le compte sur Lexroom.",
     retry: "Dites-moi si vous voulez que je réessaie.",
   },
   de: {
@@ -97,6 +106,8 @@ const STRINGS: Record<Language, Strings> = {
     timeout: "Lexroom hat nicht rechtzeitig geantwortet und die Anfrage wurde abgebrochen.",
     notConnected:
       "Lexroom ist nicht verbunden: Bitten Sie mich, es zu verbinden, dann sende ich den Link.",
+    refused:
+      "Lexroom hat die Anmeldung für dieses Konto abgelehnt. Bitten Sie mich, es neu zu verbinden, dann sende ich den Link, oder prüfen Sie das Konto bei Lexroom.",
     retry: "Sagen Sie mir, wenn ich es noch einmal versuchen soll.",
   },
 };
@@ -149,7 +160,9 @@ export async function researchMessages(
       ? strings.timeout
       : result.reason === "not_connected"
         ? strings.notConnected
-        : result.error.slice(0, MAX_FAILURE_CHARS);
+        : result.reason === "forbidden"
+          ? strings.refused
+          : result.error.slice(0, MAX_FAILURE_CHARS);
   return [`${strings.failed}\n${reason}\n${strings.retry}`];
 }
 

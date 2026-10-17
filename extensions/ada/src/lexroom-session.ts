@@ -10,6 +10,7 @@ const MFA_RETRY_AFTER_MS = 5 * 60 * 1000;
 type SilentLogin =
   | { ok: true; accessToken: string; accessExpiresAtMs: number | null }
   | { ok: false; reason: "invalid_credentials" | "mfa_required" | "unavailable" }
+  | { ok: false; reason: "forbidden"; status: number; code: string; detail: string }
   | { ok: false; reason: "timeout"; error: string };
 
 /** The same `POST /v1/login` the lexroom-bot client uses, with the saved email and password. */
@@ -32,6 +33,15 @@ async function signInSilently(params: {
   if (result.reason === "timeout") {
     return { ok: false, reason: "timeout", error: result.error };
   }
+  if (result.reason === "forbidden") {
+    return {
+      ok: false,
+      reason: "forbidden",
+      status: result.status,
+      code: result.code,
+      detail: result.detail,
+    };
+  }
   return {
     ok: false,
     reason: result.reason === "lexroom_error" ? "unavailable" : result.reason,
@@ -39,7 +49,13 @@ async function signInSilently(params: {
 }
 
 export type RenewFailure = {
-  reason: "invalid_credentials" | "mfa_required" | "no_password" | "unavailable" | "timeout";
+  reason:
+    | "invalid_credentials"
+    | "mfa_required"
+    | "no_password"
+    | "unavailable"
+    | "forbidden"
+    | "timeout";
   /** Text for the agent. The first three mean the lawyer must reconnect. */
   error: string;
 };
@@ -52,6 +68,8 @@ const FAILURE_TEXT: Record<Exclude<RenewFailure["reason"], "timeout">, string> =
   no_password: "The Lexroom connection expired. Call ada_lexroom_connect and send that link.",
   unavailable:
     "Ada could not renew the Lexroom sign-in because Lexroom did not answer. Try again shortly.",
+  forbidden:
+    "Lexroom answered and refused the sign-in for this account, so Ada could not renew it. The saved sign-in is kept. Tell the user, and suggest reconnecting with ada_lexroom_connect or checking the account with Lexroom.",
 };
 
 export function renewFailure(reason: RenewFailure["reason"], timeoutError?: string): RenewFailure {
@@ -61,9 +79,16 @@ export function renewFailure(reason: RenewFailure["reason"], timeoutError?: stri
   return { reason, error: FAILURE_TEXT[reason] };
 }
 
-/** Neither a silent Lexroom nor an unreachable one says anything about the saved sign-in. */
+/**
+ * Neither a silent Lexroom, an unreachable one nor a refusal (a 403 says nothing about whether
+ * the saved password is right) is a reason to drop the saved sign-in.
+ */
 export function needsReconnect(failure: RenewFailure): boolean {
-  return failure.reason !== "unavailable" && failure.reason !== "timeout";
+  return (
+    failure.reason !== "unavailable" &&
+    failure.reason !== "timeout" &&
+    failure.reason !== "forbidden"
+  );
 }
 
 type RenewDeps = {
@@ -148,7 +173,14 @@ async function renew(account: LexroomAccountRecord, deps: RenewDeps): Promise<Re
   if (login.reason === "mfa_required") {
     mfaBlockedUntil.set(account.email, deps.now.getTime() + MFA_RETRY_AFTER_MS);
   }
-  log("relogin.failed", { why: deps.why, reason: login.reason, ms });
+  log("relogin.failed", {
+    why: deps.why,
+    reason: login.reason,
+    ms,
+    ...(login.reason === "forbidden"
+      ? { status: login.status, code: login.code, detail: login.detail }
+      : {}),
+  });
   return login.reason === "timeout" ? fail("timeout", login.error) : fail(login.reason);
 }
 
@@ -167,14 +199,10 @@ export function renewLexroomAccount(
   }
   // Two login attempts plus the local store writes; past this the renewal is reported, not awaited.
   const deadlineMs = 2 * lexroomTimeoutMs() + 10_000;
-  const running = withDeadline(
-    renew(account, deps),
-    deadlineMs,
-    (): RenewResult => {
-      deps.log("relogin.failed", { why: deps.why, reason: "deadline", ms: deadlineMs });
-      return { ok: false, ...renewFailure("timeout", timeoutFailure(deadlineMs).error) };
-    },
-  )
+  const running = withDeadline(renew(account, deps), deadlineMs, (): RenewResult => {
+    deps.log("relogin.failed", { why: deps.why, reason: "deadline", ms: deadlineMs });
+    return { ok: false, ...renewFailure("timeout", timeoutFailure(deadlineMs).error) };
+  })
     .catch((error: unknown): RenewResult => {
       deps.log("relogin.failed", {
         why: deps.why,
