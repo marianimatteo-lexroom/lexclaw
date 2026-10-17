@@ -297,7 +297,7 @@ function never<T>(): Promise<T> {
 }
 
 describe("a login against a Lexroom that never answers", () => {
-  it.concurrent("ends as a timeout after one retry and closes both connections", () =>
+  it.concurrent("ends as a timeout at the overall limit, after one retry began, and closes both connections", () =>
     withServer(
       () => undefined,
       async (server) => {
@@ -309,9 +309,9 @@ describe("a login against a Lexroom that never answers", () => {
           timeoutMs: 1000,
         });
         const tookMs = Date.now() - startedAt;
-        expect(result).toEqual(timedOut("1s"));
-        expect(tookMs).toBeGreaterThanOrEqual(2400);
-        expect(tookMs).toBeLessThan(4000);
+        expect(result).toEqual(timedOut("2s"));
+        expect(tookMs).toBeGreaterThanOrEqual(1900);
+        expect(tookMs).toBeLessThan(3500);
         expect(server.seen.map((request) => request.url)).toEqual(["/v1/login", "/v1/login"]);
         await server.closed();
       },
