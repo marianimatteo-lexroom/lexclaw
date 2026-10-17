@@ -31,7 +31,12 @@ import { readDigestReadyTemplate, sendDigestReadyNotice } from "./whatsapp-templ
  * and only to the same number. It is an extra: if it cannot be built or sent, the text has
  * already gone out, a warning is logged, and the delivery is unaffected.
  */
-const MAX_MESSAGE_CHARS = 3500;
+/**
+ * WhatsApp's text body holds at most 4096 characters. Counting is by UTF-16 code unit, which is
+ * never fewer than WhatsApp's own count of characters, so an emoji (two units) is counted at its
+ * widest; the margin covers anything the Kapso layer adds.
+ */
+export const RESEARCH_TEXT_LIMIT = 4096 - 96;
 const RETRY_DELAY_MS = 2000;
 const MAX_HELD = 5;
 const HELD_TTL_MS = 72 * 60 * 60 * 1000;
@@ -135,42 +140,80 @@ export function researchAckText(language: Language): string {
   return STRINGS[language].ack;
 }
 
-/** Splits at paragraph, then line, then word boundaries so no message passes the WhatsApp limit. */
-export function chunkMessage(text: string, limit = MAX_MESSAGE_CHARS): string[] {
-  const chunks: string[] = [];
-  let rest = text.trim();
-  while (rest.length > limit) {
-    const window = rest.slice(0, limit);
-    const cut = Math.max(
-      window.lastIndexOf("\n\n"),
-      window.lastIndexOf("\n"),
-      window.lastIndexOf(" "),
-    );
-    const at = cut > limit / 2 ? cut : limit;
-    chunks.push(rest.slice(0, at).trim());
-    rest = rest.slice(at).trim();
-  }
-  if (rest) {
-    chunks.push(rest);
-  }
-  return chunks;
+function isHighSurrogate(unit: number): boolean {
+  return unit >= 0xd800 && unit <= 0xdbff;
 }
 
 /**
- * The messages that carry a finished research: the answer, then the cited sources and the link
- * line, always last. A failed research becomes one short message in the lawyer's language.
+ * `text` cut to at most `max` characters, ending in an ellipsis: at a paragraph, else a sentence,
+ * else a word boundary, and never between the two halves of an emoji.
  */
-export async function researchMessages(
+function cutAtBoundary(text: string, max: number): string {
+  if (text.length <= max) {
+    return text;
+  }
+  const budget = Math.max(0, max - 1);
+  const head = text.slice(0, isHighSurrogate(text.charCodeAt(budget - 1)) ? budget - 1 : budget);
+  const paragraph = head.lastIndexOf("\n\n");
+  let sentence = -1;
+  for (let i = head.length - 1; i > 0 && sentence < 0; i -= 1) {
+    if (".!?".includes(head.charAt(i)) && /\s/u.test(text.charAt(i + 1))) {
+      sentence = i + 1;
+    }
+  }
+  const word = Math.max(head.lastIndexOf(" "), head.lastIndexOf("\n"));
+  const at =
+    paragraph >= head.length * 0.4
+      ? paragraph
+      : sentence >= head.length * 0.4
+        ? sentence
+        : word > 0
+          ? word
+          : head.length;
+  return `${head.slice(0, at).trimEnd()}…`;
+}
+
+/**
+ * The one message that carries a research answer: the answer, the cited sources, then the link
+ * line, always last and always whole. When it does not fit in `limit`, the answer is cut to make
+ * room; the sources stay only if they take up to half of what is left, since the PDF lists them.
+ */
+export function fitResearchText(
+  parts: { answer: string; sources: string; link: string },
+  limit = RESEARCH_TEXT_LIMIT,
+): string {
+  const join = (...texts: string[]) => texts.filter(Boolean).join("\n\n");
+  const whole = join(parts.answer, parts.sources, parts.link);
+  if (whole.length <= limit) {
+    return whole;
+  }
+  const room = limit - (parts.link ? parts.link.length + 2 : 0);
+  const keepSources = parts.sources.length + 2 <= room / 2;
+  const answerRoom = keepSources ? room - parts.sources.length - 2 : room;
+  return join(
+    cutAtBoundary(parts.answer, answerRoom),
+    keepSources ? parts.sources : "",
+    parts.link,
+  );
+}
+
+/**
+ * The message that carries a finished research, always one message: see `fitResearchText`. A
+ * failed research becomes one short message in the lawyer's language.
+ */
+export async function researchMessage(
   result: ResearchOutcome | LexroomFailure,
   deps: Pick<PushDeps, "readProfileLanguage">,
-): Promise<string[]> {
+): Promise<string> {
   if (result.ok) {
     const language = await resolveLanguage(result.answer, deps.readProfileLanguage);
-    const sources = result.sources.length
-      ? `*${STRINGS[language].sources}*\n${formatSources(result.sources)}`
-      : "";
-    const link = result.researchUrl ? researchLinkLine(language, result.researchUrl) : "";
-    return chunkMessage([result.answer, sources, link].filter(Boolean).join("\n\n"));
+    return fitResearchText({
+      answer: result.answer,
+      sources: result.sources.length
+        ? `*${STRINGS[language].sources}*\n${formatSources(result.sources)}`
+        : "",
+      link: result.researchUrl ? researchLinkLine(language, result.researchUrl) : "",
+    });
   }
   const language = await resolveLanguage("", deps.readProfileLanguage);
   const strings = STRINGS[language];
@@ -184,10 +227,10 @@ export async function researchMessages(
           : result.reason === "captcha_required"
             ? strings.captcha
             : result.error.slice(0, MAX_FAILURE_CHARS);
-  return [`${strings.failed}\n${reason}\n${strings.retry}`];
+  return `${strings.failed}\n${reason}\n${strings.retry}`;
 }
 
-type Held = { jobId: string; messages: string[]; document?: ResearchPdf; heldAtMs: number };
+type Held = { jobId: string; text: string; document?: ResearchPdf; heldAtMs: number };
 
 /** Held results by recipient number, oldest first. */
 const held = new Map<string, Held[]>();
@@ -229,24 +272,14 @@ const sleep = (ms: number) =>
     setTimeout(resolve, ms);
   });
 
-/** Sends the messages in order, one retry for the first failure. Returns the error if it gave up. */
-async function sendAll(
-  messages: readonly string[],
-  deps: PushDeps,
-): Promise<{ ok: true } | { ok: false; error: string; sent: number }> {
-  let sent = 0;
-  for (const text of messages) {
-    let result = await deps.send(text);
-    if (!result.ok) {
-      await sleep(deps.retryDelayMs ?? RETRY_DELAY_MS);
-      result = await deps.send(text);
-    }
-    if (!result.ok) {
-      return { ok: false, error: result.error, sent };
-    }
-    sent += 1;
+/** Sends the text, retrying once after a failure. */
+async function sendText(text: string, deps: PushDeps): Promise<SendResult> {
+  const first = await deps.send(text);
+  if (first.ok) {
+    return first;
   }
-  return { ok: true };
+  await sleep(deps.retryDelayMs ?? RETRY_DELAY_MS);
+  return await deps.send(text);
 }
 
 /** Builds the research PDF, or returns undefined and logs a warning. Never throws. */
@@ -337,18 +370,18 @@ export async function pushResearchResult(
   deps: PushDeps,
 ): Promise<"sent" | "held"> {
   const now = deps.now ?? Date.now;
-  const messages = await researchMessages(params.result, deps);
+  const text = await researchMessage(params.result, deps);
   const document = await prepareResearchPdf(params, deps);
   const open = await deps.windowOpen().catch(() => null);
   const outcome = params.result.ok ? "done" : (params.result.reason ?? "failed");
   let reason = "window_closed";
   if (open !== false) {
-    const sent = await sendAll(messages, deps);
+    const sent = await sendText(text, deps);
     if (sent.ok) {
       deps.log("result.pushed", {
         job: params.jobId,
         outcome,
-        chunks: messages.length,
+        chars: text.length,
         via: "live",
         ms: now() - params.startedAtMs,
       });
@@ -359,15 +392,11 @@ export async function pushResearchResult(
     deps.log("result.push_failed", {
       job: params.jobId,
       error: sent.error.slice(0, 120),
-      sent: sent.sent,
-      chunks: messages.length,
     });
-    // Messages already delivered stay delivered; only the rest waits for the window.
-    messages.splice(0, sent.sent);
   }
   pruneHeld(now());
   const queue = held.get(deps.recipient) ?? [];
-  queue.push({ jobId: params.jobId, messages, ...(document ? { document } : {}), heldAtMs: now() });
+  queue.push({ jobId: params.jobId, text, ...(document ? { document } : {}), heldAtMs: now() });
   while (queue.length > MAX_HELD) {
     queue.shift();
   }
@@ -395,9 +424,8 @@ export async function releaseHeldResearch(deps: PushDeps): Promise<number> {
     if (!next) {
       break;
     }
-    const sent = await sendAll(next.messages, deps);
+    const sent = await sendText(next.text, deps);
     if (!sent.ok) {
-      next.messages.splice(0, sent.sent);
       deps.log("result.push_failed", {
         job: next.jobId,
         error: sent.error.slice(0, 120),
@@ -409,7 +437,7 @@ export async function releaseHeldResearch(deps: PushDeps): Promise<number> {
     released += 1;
     deps.log("result.pushed", {
       job: next.jobId,
-      chunks: next.messages.length,
+      chars: next.text.length,
       via: "released",
       heldMs: now() - next.heldAtMs,
     });
