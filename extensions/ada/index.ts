@@ -44,6 +44,7 @@ import {
   executeAdaTodoList,
 } from "./src/memory-tools.js";
 import { openAdaMemoryFromApi } from "./src/memory.js";
+import { ADA_PERSONA } from "./src/persona.js";
 import { registerResearchLinkHooks } from "./src/research-link-outbound.js";
 import { onSenderInbound } from "./src/research-push.js";
 import {
@@ -546,6 +547,8 @@ const entry = definePluginEntry({
       }
       await readReceipt;
     });
+
+    api.on("before_prompt_build", () => ({ prependSystemContext: ADA_PERSONA }));
 
     api.on(
       "before_prompt_build",

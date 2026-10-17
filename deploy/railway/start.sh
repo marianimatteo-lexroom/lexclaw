@@ -183,6 +183,41 @@ migrate_legacy_plugin() {
 }
 migrate_legacy_plugin
 
+# A volume from before the rename can still name the assistant Vera in the workspace identity
+# files and in the agent's configured name, and a deploy never rewrites either. Rename the
+# standalone word in IDENTITY.md and SOUL.md (the first time, a .pre-ada copy of each stays
+# beside it) and in agents.entries.main.identity.name, leaving every other character, other
+# workspace files, paths, domains and VERA_* names alone. Running it again changes nothing.
+migrate_identity_name() {
+  node -e '
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const word = /(?<![\w./@:-])vera(?![\w@/-]|\.\w)/giu;
+    const ada = (found) =>
+      found === found.toUpperCase() ? "ADA" : found === found.toLowerCase() ? "ada" : "Ada";
+    for (const name of ["IDENTITY.md", "SOUL.md"]) {
+      const file = path.join(process.argv[1], name);
+      if (!fs.existsSync(file)) continue;
+      const before = fs.readFileSync(file, "utf8");
+      const after = before.replace(word, ada);
+      if (after === before) continue;
+      try {
+        fs.copyFileSync(file, file + ".pre-ada", fs.constants.COPYFILE_EXCL);
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+      }
+      fs.writeFileSync(file, after);
+      console.log("[start] renamed Vera to Ada in " + name);
+    }
+  ' "${WORKSPACE_DIR}" || log "WARNING: could not update the workspace identity files; the plugin still tells the model its name is Ada"
+  local current
+  current="$(oc config get agents.entries.main.identity.name --json 2>/dev/null || true)"
+  if printf '%s' "${current}" | grep -qiE '(^|[^[:alnum:]])vera([^[:alnum:]]|$)'; then
+    config_set agents.entries.main.identity.name '"Ada"'
+  fi
+}
+migrate_identity_name
+
 # The tool allowlist comes from the manifest bundled with the plugin so it
 # cannot drift from the tools Ada registers.
 ADA_TOOLS_JSON="$(node -e '
