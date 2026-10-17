@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.extensions.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": ".artifacts/tsgo-cache/ada.tsbuildinfo"
+  },
+  "include": ["src/**/*.d.ts", "ui/src/**/*.d.ts", "extensions/ada/**/*"]
+}

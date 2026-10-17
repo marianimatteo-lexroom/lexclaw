@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.extensions.test.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "../../.artifacts/tsgo-cache/ada-test.tsbuildinfo"
+  },
+  "include": [
+    "../../test/types/vitest-codex-attempt-runtime.d.ts",
+    "../../src/**/*.d.ts",
+    "../../ui/**/*.d.ts",
+    "../../extensions/**/*.d.ts",
+    "../../extensions/ada/**/*.test.ts",
+    "../../packages/**/*.d.ts"
+  ]
+}
