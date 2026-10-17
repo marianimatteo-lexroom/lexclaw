@@ -1722,6 +1722,7 @@
     "check:no-conflict-markers": "node scripts/check-no-conflict-markers.mjs",
     "check:no-runtime-action-load-config": "node --import ./scripts/tsx.mjs scripts/check-no-runtime-action-load-config.mts",
     "check:opengrep-rule-metadata": "node security/opengrep/check-rule-metadata.mjs",
+    "check:private-ids": "node scripts/check-private-ids.mjs",
     "check:protocol-coverage": "node scripts/check-protocol-event-coverage.mjs",
     "check:runtime-sidecar-loaders": "node --import ./scripts/tsx.mjs scripts/check-runtime-sidecar-loaders.mts",
     "check:script-erasability": "node --disable-warning=ExperimentalWarning scripts/check-script-erasability.mjs",

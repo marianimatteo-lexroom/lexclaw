@@ -1,0 +1,6 @@
+{
+  "$comment": "Placeholders only. Never add a real phone number, email, token or domain here: replace it in the source instead. domains: reserved or fictional domains (covers subdomains, used for emails and URL hosts). values: exact placeholder strings. paths: fixture files or directories (a trailing slash means a directory prefix) that hold captured or generated data and are exempt as a whole.",
+  "domains": [],
+  "values": [],
+  "paths": []
+}
