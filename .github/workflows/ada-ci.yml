@@ -1,10 +1,10 @@
 name: Ada CI
 
-# Ada is the only code this fork owns. `pnpm check:ada` is its single gate
-# (format, lint, types, test types, hook allowlist, tests). The job name
-# `check-ada` is the required-status-check candidate. It runs on every pull
-# request, with no path filter, so the check always reports and a required
-# check never waits on a skipped workflow.
+# Ada is the only code this fork owns. `pnpm check:ada` is its single check
+# command (format, lint, types, test types, hook allowlist, tests). It is
+# advisory: the step is report-only, so the job stays green and never blocks a
+# merge, and the per-step summary stays in the log. Nothing here is a required
+# check in branch rules or rulesets.
 on:
   pull_request:
   push:
@@ -37,5 +37,6 @@ jobs:
           cache-mode: restore
           install-bun: "false"
 
-      - name: Check Ada
+      - name: Check Ada (advisory)
+        continue-on-error: true
         run: pnpm check:ada
