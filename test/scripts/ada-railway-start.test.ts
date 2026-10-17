@@ -109,8 +109,24 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
     expect(config['channels["kapso-whatsapp"].dmSecurity']).toBe("open");
     expect(config['channels["kapso-whatsapp"].allowFrom']).toEqual(["*"]);
     expect(config['channels["kapso-whatsapp"].defaultTo']).toBe("+390000000000");
+    expect(config["session.dmScope"]).toBe("per-channel-peer");
     expect(config["tools.alsoAllow"]).toContain("ada_lexroom_connect");
     expect(JSON.stringify(config["tools.alsoAllow"])).not.toContain("vera_");
+  });
+
+  it("gives every WhatsApp number its own session, on every boot, over any saved scope", () => {
+    const deploy = boot(
+      { ADA_PUBLIC_ORIGIN: "https://ada.example.com" },
+      { "session.dmScope": "main" },
+    );
+    expect(deploy.run().status).toBe(0);
+    expect(deploy.store()["session.dmScope"]).toBe("per-channel-peer");
+
+    expect(deploy.run().status).toBe(0);
+    expect(deploy.store()["session.dmScope"]).toBe("per-channel-peer");
+    expect(
+      deploy.calls().filter((call) => call === 'config set session.dmScope "per-channel-peer"'),
+    ).toHaveLength(2);
   });
 
   it("lets ADA_* win over VERA_* when both are set", () => {

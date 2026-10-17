@@ -24,32 +24,32 @@ import { senderNumber } from "./research-push.js";
 const WELCOMES: Record<Language, string> = {
   it: [
     "Ciao, sono Ada, l'assistente legale di Lexroom su WhatsApp. 👋",
-    "Posso:\n• rispondere alle tue domande di diritto;\n• avviare una ricerca giuridica su Lexroom in background e scriverti appena è pronta, con il link a Lexroom e un PDF di una pagina.",
-    'Ad esempio, chiedimi:\n• "Entro quanto posso fare opposizione a un decreto ingiuntivo?"\n• "Cerca la giurisprudenza sul recesso dal contratto di locazione"\n• "Che differenza c\'è tra caparra confirmatoria e penitenziale?"',
+    "Cosa posso fare:\n• rispondere alle tue domande di diritto;\n• fare ricerche giuridiche su Lexroom in background e scriverti appena sono pronte, con il link a Lexroom e un PDF di una pagina. Serve un account Lexroom collegato: scrivimi «collega Lexroom» e ti mando il link;\n• leggere la posta Gmail e il calendario Google, e inviare email solo dopo la tua conferma. Per collegarli scrivimi «collega Gmail».",
+    'Ad esempio, chiedimi:\n• "Entro quanto posso fare opposizione a un decreto ingiuntivo?"\n• "Cerca la giurisprudenza sul recesso dal contratto di locazione"\n• "Cosa ho in calendario domani?"',
     "Le mie risposte non sostituiscono quelle di un avvocato. Le chat e i risultati di ogni utente restano privati.",
   ].join("\n\n"),
   en: [
     "Hi, I'm Ada, Lexroom's legal assistant on WhatsApp. 👋",
-    "I can:\n• answer your legal questions;\n• run Lexroom legal research in the background and message you as soon as it's ready, with a link to Lexroom and a one-page PDF.",
-    'For example, ask me:\n• "How long do I have to oppose an order for payment (decreto ingiuntivo)?"\n• "Find case law on terminating a lease"\n• "What is the difference between a confirmatory and a penitential deposit?"',
+    'What I can do:\n• answer your legal questions;\n• run legal research on Lexroom in the background and message you as soon as it\'s ready, with a link to Lexroom and a one-page PDF. It needs a connected Lexroom account: write "connect Lexroom" and I\'ll send you the link;\n• read Gmail and Google Calendar, and send email only after you confirm. To connect them write "connect Gmail".',
+    'For example, ask me:\n• "How long do I have to oppose an order for payment (decreto ingiuntivo)?"\n• "Find case law on terminating a lease"\n• "What\'s on my calendar tomorrow?"',
     "My answers are not a substitute for a lawyer. Each user's chats and results stay private.",
   ].join("\n\n"),
   es: [
     "Hola, soy Ada, la asistente legal de Lexroom en WhatsApp. 👋",
-    "Puedo:\n• responder a tus preguntas jurídicas;\n• iniciar una investigación jurídica en Lexroom en segundo plano y escribirte en cuanto esté lista, con el enlace a Lexroom y un PDF de una página.",
-    'Por ejemplo, pregúntame:\n• "¿Cuánto tiempo tengo para oponerme a un requerimiento de pago (decreto ingiuntivo)?"\n• "Busca jurisprudencia sobre la resolución de un contrato de alquiler"\n• "¿Qué diferencia hay entre arras confirmatorias y penitenciales?"',
+    'Qué puedo hacer:\n• responder a tus preguntas jurídicas;\n• hacer investigación jurídica en Lexroom en segundo plano y escribirte en cuanto esté lista, con el enlace a Lexroom y un PDF de una página. Hace falta una cuenta de Lexroom conectada: escríbeme "conecta Lexroom" y te mando el enlace;\n• leer Gmail y Google Calendar, y enviar correos solo después de tu confirmación. Para conectarlos escríbeme "conecta Gmail".',
+    'Por ejemplo, pregúntame:\n• "¿Cuánto tiempo tengo para oponerme a un requerimiento de pago (decreto ingiuntivo)?"\n• "Busca jurisprudencia sobre la resolución de un contrato de alquiler"\n• "¿Qué tengo mañana en el calendario?"',
     "Mis respuestas no sustituyen a un abogado. Los chats y los resultados de cada usuario son privados.",
   ].join("\n\n"),
   fr: [
     "Bonjour, je suis Ada, l'assistante juridique de Lexroom sur WhatsApp. 👋",
-    "Je peux :\n• répondre à vos questions de droit ;\n• lancer une recherche juridique sur Lexroom en arrière-plan et vous écrire dès qu'elle est prête, avec le lien vers Lexroom et un PDF d'une page.",
-    'Par exemple, demandez-moi :\n• "De combien de temps dispose-t-on pour faire opposition à une injonction de payer (decreto ingiuntivo) ?"\n• "Cherche la jurisprudence sur la résiliation d\'un bail"\n• "Quelle différence entre arrhes confirmatoires et pénitentielles ?"',
+    'Ce que je peux faire :\n• répondre à vos questions de droit ;\n• faire des recherches juridiques sur Lexroom en arrière-plan et vous écrire dès qu\'elles sont prêtes, avec le lien vers Lexroom et un PDF d\'une page. Il faut un compte Lexroom connecté : écrivez-moi "connecte Lexroom" et je vous envoie le lien ;\n• lire Gmail et Google Agenda, et envoyer des e-mails seulement après votre confirmation. Pour les connecter, écrivez-moi "connecte Gmail".',
+    'Par exemple, demandez-moi :\n• "De combien de temps dispose-t-on pour faire opposition à une injonction de payer (decreto ingiuntivo) ?"\n• "Cherche la jurisprudence sur la résiliation d\'un bail"\n• "Qu\'ai-je à l\'agenda demain ?"',
     "Mes réponses ne remplacent pas un avocat. Les conversations et les résultats de chaque utilisateur restent privés.",
   ].join("\n\n"),
   de: [
     "Hallo, ich bin Ada, die juristische Assistentin von Lexroom auf WhatsApp. 👋",
-    "Ich kann:\n• Ihre Rechtsfragen beantworten;\n• im Hintergrund eine juristische Recherche in Lexroom starten und Ihnen schreiben, sobald sie fertig ist, mit dem Link zu Lexroom und einem einseitigen PDF.",
-    'Fragen Sie mich zum Beispiel:\n• "Wie lange kann ich gegen einen Zahlungsbefehl (decreto ingiuntivo) Einspruch einlegen?"\n• "Suche Rechtsprechung zur Kündigung eines Mietvertrags"\n• "Was ist der Unterschied zwischen Bestätigungs- und Reuegeld?"',
+    'Was ich kann:\n• Ihre Rechtsfragen beantworten;\n• im Hintergrund juristische Recherchen in Lexroom durchführen und Ihnen schreiben, sobald sie fertig sind, mit dem Link zu Lexroom und einem einseitigen PDF. Dafür muss ein Lexroom-Konto verbunden sein: Schreiben Sie mir "Lexroom verbinden", dann sende ich Ihnen den Link;\n• Gmail und Google Kalender lesen und E-Mails erst nach Ihrer Bestätigung senden. Zum Verbinden schreiben Sie mir "Gmail verbinden".',
+    'Fragen Sie mich zum Beispiel:\n• "Wie lange kann ich gegen einen Zahlungsbefehl (decreto ingiuntivo) Einspruch einlegen?"\n• "Suche Rechtsprechung zur Kündigung eines Mietvertrags"\n• "Was steht morgen in meinem Kalender?"',
     "Meine Antworten ersetzen keinen Anwalt. Die Chats und Ergebnisse jedes Nutzers bleiben privat.",
   ].join("\n\n"),
 };
@@ -130,9 +130,9 @@ function sessionKeyNamesNumber(sessionKey: string, number: string): boolean {
 }
 
 /**
- * Whether this number already talked to Ada. Only a session of its own can say so: with
- * `session.dmScope: "main"` every DM shares one session that names nobody, so it proves nothing
- * about a single number.
+ * Whether this number already talked to Ada. Only a session of its own can say so, which the
+ * deployment's `session.dmScope: "per-channel-peer"` provides: with the host default `main`
+ * every DM shares one session that names nobody, so it proves nothing about a single number.
  */
 async function hasEarlierConversation(
   api: Pick<OpenClawPluginApi, "runtime">,

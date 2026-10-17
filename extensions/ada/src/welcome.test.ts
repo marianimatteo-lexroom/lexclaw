@@ -315,6 +315,33 @@ describe("welcome text", () => {
     }
   });
 
+  it("tells the user how to connect Lexroom and Gmail with phrases the connect skills answer", () => {
+    const phrases = {
+      it: ["«collega Lexroom»", "«collega Gmail»"],
+      en: ['"connect Lexroom"', '"connect Gmail"'],
+      es: ['"conecta Lexroom"', '"conecta Gmail"'],
+      fr: ['"connecte Lexroom"', '"connecte Gmail"'],
+      de: ['"Lexroom verbinden"', '"Gmail verbinden"'],
+    } as const;
+    for (const language of LANGUAGES) {
+      for (const phrase of phrases[language]) {
+        expect(welcomeText(language), `${language} ${phrase}`).toContain(phrase);
+      }
+    }
+  });
+
+  it("lists legal questions, then Lexroom research, then Gmail and calendar", () => {
+    for (const language of LANGUAGES) {
+      const text = welcomeText(language);
+      const bullets = text.split("\n").filter((line) => line.startsWith("•"));
+      expect(bullets.slice(0, 3).map((line) => /Lexroom|Gmail/u.exec(line)?.[0])).toEqual([
+        undefined,
+        "Lexroom",
+        "Gmail",
+      ]);
+    }
+  });
+
   it("fits one WhatsApp message", () => {
     for (const language of LANGUAGES) {
       expect(welcomeText(language).length, language).toBeLessThan(1200);
