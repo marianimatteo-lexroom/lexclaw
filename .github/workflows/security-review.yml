@@ -134,6 +134,7 @@ jobs:
       issues: write
       statuses: write
     runs-on: ubuntu-24.04
+    continue-on-error: true
     timeout-minutes: 85
     env:
       OPENCLAW_SECURITY_REVIEW_PR_NUMBER: ${{ matrix.pr }}

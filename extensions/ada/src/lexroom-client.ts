@@ -92,7 +92,7 @@ export type DraftOutcome =
     };
 
 export type LexroomFailure =
-  | { ok: false; error: string; reason?: "not_connected" }
+  | { ok: false; error: string; reason?: "not_connected" | "forbidden" | "captcha_required" }
   | LexroomTimeoutFailure;
 
 type FetchLike = typeof fetch;

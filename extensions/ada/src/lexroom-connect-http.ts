@@ -395,7 +395,7 @@ export async function handleAdaLexroomConnect(
     log,
   });
   if (!result.ok) {
-    if (result.reason === "invalid_credentials") {
+    if (result.reason === "wrong_password") {
       writeHtml(
         res,
         401,
