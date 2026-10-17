@@ -6,11 +6,13 @@ import {
   normalizeWhatsAppNumber,
   sendAdaWhatsAppText,
 } from "./google-notify.js";
+import { sendKapsoPdf } from "./kapso-document.js";
 import { formatSources } from "./lexroom-citations.js";
 import type { LexroomFailure, ResearchOutcome } from "./lexroom-client.js";
 import { lexroomLogger, type LexroomLog } from "./lexroom-log.js";
 import { openAdaMemoryFromApi } from "./memory.js";
 import { researchLinkLine, resolveLanguage, type Language } from "./research-link-outbound.js";
+import { buildResearchPdf, type ResearchPdf } from "./research-pdf.js";
 import { readDigestReadyTemplate, sendDigestReadyNotice } from "./whatsapp-template.js";
 
 /**
@@ -24,6 +26,10 @@ import { readDigestReadyTemplate, sendDigestReadyNotice } from "./whatsapp-templ
  * last inbound message. When their window is known to be closed, or a send fails twice, the
  * result is held in this process under their number, the pre-approved template asks them to
  * write, and their next message releases it.
+ *
+ * A finished research also gets a one-page PDF, sent as a WhatsApp document right after the text
+ * and only to the same number. It is an extra: if it cannot be built or sent, the text has
+ * already gone out, a warning is logged, and the delivery is unaffected.
  */
 const MAX_MESSAGE_CHARS = 3500;
 const RETRY_DELAY_MS = 2000;
@@ -37,6 +43,8 @@ export type PushDeps = {
   /** The digits of the number every message goes to. */
   recipient: string;
   send: (text: string) => Promise<SendResult>;
+  /** Sends a PDF as a WhatsApp document; absent when the recipient cannot be sent documents. */
+  sendDocument?: (document: ResearchPdf) => Promise<SendResult>;
   /** Whether the recipient's 24-hour window is open; null when Ada has no inbound from them. */
   windowOpen: () => Promise<boolean | null>;
   /** The ready-template nudge that asks the recipient to write, or why it was not sent. */
@@ -153,7 +161,7 @@ export async function researchMessages(
   return [`${strings.failed}\n${reason}\n${strings.retry}`];
 }
 
-type Held = { jobId: string; messages: string[]; heldAtMs: number };
+type Held = { jobId: string; messages: string[]; document?: ResearchPdf; heldAtMs: number };
 
 /** Held results by recipient number, oldest first. */
 const held = new Map<string, Held[]>();
@@ -215,6 +223,63 @@ async function sendAll(
   return { ok: true };
 }
 
+/** Builds the research PDF, or returns undefined and logs a warning. Never throws. */
+async function prepareResearchPdf(
+  params: { jobId: string; query: string; result: ResearchOutcome | LexroomFailure },
+  deps: Pick<PushDeps, "readProfileLanguage" | "log" | "sendDocument">,
+): Promise<ResearchPdf | undefined> {
+  const { result } = params;
+  if (!deps.sendDocument || !result.ok || !result.answer.trim()) {
+    return undefined;
+  }
+  try {
+    const language = await resolveLanguage(result.answer, deps.readProfileLanguage);
+    return await buildResearchPdf({
+      query: params.query,
+      answer: result.answer,
+      sources: result.sources,
+      researchUrl: result.researchUrl,
+      language,
+    });
+  } catch (error) {
+    deps.log("result.pdf_failed", {
+      job: params.jobId,
+      step: "build",
+      error: error instanceof Error ? error.name : "unknown",
+    });
+    return undefined;
+  }
+}
+
+/** Sends the PDF once, after the text. A failure is logged and never reaches the caller. */
+async function sendResearchPdf(
+  jobId: string,
+  document: ResearchPdf | undefined,
+  deps: PushDeps,
+): Promise<void> {
+  if (!document || !deps.sendDocument) {
+    return;
+  }
+  const startedAt = (deps.now ?? Date.now)();
+  const result = await deps
+    .sendDocument(document)
+    .catch((): SendResult => ({ ok: false, error: "document send threw" }));
+  if (result.ok) {
+    deps.log("result.pdf_sent", {
+      job: jobId,
+      bytes: document.bytes.byteLength,
+      ms: (deps.now ?? Date.now)() - startedAt,
+    });
+  } else {
+    deps.log("result.pdf_failed", {
+      job: jobId,
+      step: "send",
+      bytes: document.bytes.byteLength,
+      error: result.error.slice(0, 120),
+    });
+  }
+}
+
 /** Tells the lawyer the research runs in the background. Never throws. */
 export async function sendResearchAck(
   params: { jobId: string; query: string },
@@ -236,11 +301,18 @@ export async function sendResearchAck(
  * `ada_research_status` that the lawyer already has (or will get) the answer.
  */
 export async function pushResearchResult(
-  params: { jobId: string; startedAtMs: number; result: ResearchOutcome | LexroomFailure },
+  params: {
+    jobId: string;
+    startedAtMs: number;
+    result: ResearchOutcome | LexroomFailure;
+    /** The question asked; the title of the PDF. */
+    query: string;
+  },
   deps: PushDeps,
 ): Promise<"sent" | "held"> {
   const now = deps.now ?? Date.now;
   const messages = await researchMessages(params.result, deps);
+  const document = await prepareResearchPdf(params, deps);
   const open = await deps.windowOpen().catch(() => null);
   const outcome = params.result.ok ? "done" : (params.result.reason ?? "failed");
   let reason = "window_closed";
@@ -254,6 +326,7 @@ export async function pushResearchResult(
         via: "live",
         ms: now() - params.startedAtMs,
       });
+      await sendResearchPdf(params.jobId, document, deps);
       return "sent";
     }
     reason = "send_failed";
@@ -268,7 +341,7 @@ export async function pushResearchResult(
   }
   pruneHeld(now());
   const queue = held.get(deps.recipient) ?? [];
-  queue.push({ jobId: params.jobId, messages, heldAtMs: now() });
+  queue.push({ jobId: params.jobId, messages, ...(document ? { document } : {}), heldAtMs: now() });
   while (queue.length > MAX_HELD) {
     queue.shift();
   }
@@ -314,6 +387,7 @@ export async function releaseHeldResearch(deps: PushDeps): Promise<number> {
       via: "released",
       heldMs: now() - next.heldAtMs,
     });
+    await sendResearchPdf(next.jobId, next.document, deps);
   }
   if (queue.length === 0) {
     held.delete(deps.recipient);
@@ -336,6 +410,13 @@ export function livePushDeps(
   return {
     recipient,
     send: (text) => sendAdaWhatsAppText({ api, to, text }),
+    sendDocument: (document) =>
+      sendKapsoPdf({
+        config: api.config,
+        to,
+        filename: document.filename,
+        bytes: document.bytes,
+      }),
     windowOpen: async () => {
       const seen =
         lastInboundAtMs.get(recipient) ??

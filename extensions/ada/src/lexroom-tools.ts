@@ -511,7 +511,15 @@ export async function startAdaResearch(params: {
     ...(push
       ? {
           deliver: (result, job) =>
-            pushResearchResult({ jobId: job.id, startedAtMs: job.startedAtMs, result }, push),
+            pushResearchResult(
+              {
+                jobId: job.id,
+                startedAtMs: job.startedAtMs,
+                result,
+                query: params.args.query,
+              },
+              push,
+            ),
         }
       : {}),
     run: (signal) =>

@@ -1,5 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LexroomFailure, ResearchOutcome } from "./lexroom-client.js";
+import { extractPdfText } from "./pdf-text.js";
+import { buildResearchPdf, type ResearchPdf } from "./research-pdf.js";
 import {
   chunkMessage,
   clearHeldResearch,
@@ -14,6 +16,16 @@ import {
   senderNumber,
   type PushDeps,
 } from "./research-push.js";
+
+vi.mock("./research-pdf.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./research-pdf.js")>();
+  return { ...actual, buildResearchPdf: vi.fn(actual.buildResearchPdf) };
+});
+
+const isMediaUpload = (url: Parameters<typeof fetch>[0]) =>
+  typeof url === "string" && url.endsWith("/media");
+const jsonBody = (init: RequestInit | undefined) =>
+  JSON.parse(typeof init?.body === "string" ? init.body : "null");
 
 const URL_A = "https://app.lexroom.ai/research/aaa111";
 const ITALIAN =
@@ -169,7 +181,7 @@ describe("sendResearchAck", () => {
 
 describe("pushResearchResult", () => {
   const push = (deps: PushDeps, result: ResearchOutcome | LexroomFailure = outcome()) =>
-    pushResearchResult({ jobId: "rj_1", startedAtMs: 4_000, result }, deps);
+    pushResearchResult({ jobId: "rj_1", startedAtMs: 4_000, query: "q", result }, deps);
 
   it("sends the result as a new message and logs result.pushed", async () => {
     const { deps, sent, log } = makeDeps();
@@ -273,7 +285,7 @@ describe("releaseHeldResearch", () => {
     recipient = "390000000001",
   ) => {
     const closed = makeDeps({ windowOpen: async () => false, recipient });
-    await pushResearchResult({ jobId, startedAtMs: 0, result }, closed.deps);
+    await pushResearchResult({ jobId, startedAtMs: 0, query: "q", result }, closed.deps);
   };
 
   it("sends every held result, oldest first, when the lawyer writes", async () => {
@@ -312,7 +324,12 @@ describe("releaseHeldResearch", () => {
       },
     });
     await pushResearchResult(
-      { jobId: "rj_1", startedAtMs: 0, result: outcome({ answer: `${ITALIAN}\n\n`.repeat(120) }) },
+      {
+        jobId: "rj_1",
+        startedAtMs: 0,
+        query: "q",
+        result: outcome({ answer: `${ITALIAN}\n\n`.repeat(120) }),
+      },
       flaky.deps,
     );
     const rest = makeDeps();
@@ -340,11 +357,21 @@ describe("one queue and one window per number", () => {
 
   it("releases a number's held results to that number only", async () => {
     await pushResearchResult(
-      { jobId: "rj_a", startedAtMs: 0, result: outcome({ answer: `${ITALIAN} per A` }) },
+      {
+        jobId: "rj_a",
+        startedAtMs: 0,
+        query: "q",
+        result: outcome({ answer: `${ITALIAN} per A` }),
+      },
       makeDeps({ windowOpen: async () => false, recipient: A }).deps,
     );
     await pushResearchResult(
-      { jobId: "rj_b", startedAtMs: 0, result: outcome({ answer: `${ITALIAN} per B` }) },
+      {
+        jobId: "rj_b",
+        startedAtMs: 0,
+        query: "q",
+        result: outcome({ answer: `${ITALIAN} per B` }),
+      },
       makeDeps({ windowOpen: async () => false, recipient: B }).deps,
     );
 
@@ -364,7 +391,7 @@ describe("one queue and one window per number", () => {
   it("holds at most five per number without crowding out another number", async () => {
     const holdFor = (jobId: string, recipient: string) =>
       pushResearchResult(
-        { jobId, startedAtMs: 0, result: outcome() },
+        { jobId, startedAtMs: 0, query: "q", result: outcome() },
         makeDeps({ windowOpen: async () => false, recipient }).deps,
       );
     for (let n = 0; n < 7; n += 1) {
@@ -378,7 +405,10 @@ describe("one queue and one window per number", () => {
   it("nudges the number whose result is held", async () => {
     const a = makeDeps({ windowOpen: async () => false, recipient: A });
     const b = makeDeps({ windowOpen: async () => false, recipient: B });
-    await pushResearchResult({ jobId: "rj_a", startedAtMs: 0, result: outcome() }, a.deps);
+    await pushResearchResult(
+      { jobId: "rj_a", startedAtMs: 0, query: "q", result: outcome() },
+      a.deps,
+    );
     expect(a.deps.nudge).toHaveBeenCalledTimes(1);
     expect(b.deps.nudge).not.toHaveBeenCalled();
   });
@@ -452,6 +482,7 @@ describe("the live window check", () => {
         {
           jobId: `rj_${recipient}`,
           startedAtMs: 0,
+          query: "q",
           result: outcome({ answer: `${ITALIAN} ${recipient}` }),
         },
         makeDeps({ windowOpen: async () => false, recipient, now: Date.now }).deps,
@@ -467,5 +498,175 @@ describe("the live window check", () => {
     expect(sendText.mock.calls[0]?.[0]).toMatchObject({ to: `+${B}` });
     expect(sendText.mock.calls[0]?.[0].text).toContain(B);
     expect(sendText.mock.calls[0]?.[0].text).not.toContain(A);
+  });
+});
+
+describe("the research PDF", () => {
+  const SECRET_ANSWER = "contenuto riservato della risposta";
+
+  function pdfDeps(overrides: Partial<PushDeps> = {}) {
+    const events: string[] = [];
+    const documents: ResearchPdf[] = [];
+    const made = makeDeps({
+      send: vi.fn(async (text: string) => {
+        events.push(`text:${text.slice(0, 12)}`);
+        return { ok: true as const };
+      }),
+      sendDocument: vi.fn(async (document: ResearchPdf) => {
+        events.push("document");
+        documents.push(document);
+        return { ok: true as const };
+      }),
+      ...overrides,
+    });
+    return { ...made, events, documents };
+  }
+
+  const push = (deps: PushDeps, result: ResearchOutcome | LexroomFailure = outcome()) =>
+    pushResearchResult(
+      { jobId: "rj_1", startedAtMs: 0, query: "Termine per l'opposizione", result },
+      deps,
+    );
+
+  afterEach(() => {
+    vi.mocked(buildResearchPdf).mockClear();
+  });
+
+  it("follows the text answer as a document with the summary, sources and link", async () => {
+    const { deps, events, documents, log } = pdfDeps();
+    expect(await push(deps)).toBe("sent");
+    expect(events).toEqual([expect.stringMatching(/^text:/), "document"]);
+    expect(documents).toHaveLength(1);
+    const [document] = documents;
+    expect(document?.filename).toMatch(
+      /^lexroom-ricerca-termine-per-lopposizione-\d{4}-\d{2}-\d{2}\.pdf$/,
+    );
+    const text = extractPdfText(document?.bytes ?? new Uint8Array());
+    expect(text).toContain("Termine per l'opposizione");
+    expect(text).toContain("quaranta giorni dalla notifica");
+    expect(text).toContain("[1] Cass. civ. 1/2024");
+    expect(text).toContain(URL_A);
+    expect(log).toHaveBeenCalledWith(
+      "result.pdf_sent",
+      expect.objectContaining({ job: "rj_1", bytes: document?.bytes.byteLength }),
+    );
+  });
+
+  it("still delivers the text, and logs a warning, when the PDF cannot be built", async () => {
+    vi.mocked(buildResearchPdf).mockRejectedValueOnce(new Error(SECRET_ANSWER));
+    const { deps, events, log } = pdfDeps();
+    expect(await push(deps, outcome({ answer: `${ITALIAN} ${SECRET_ANSWER}` }))).toBe("sent");
+    expect(events).toEqual([expect.stringMatching(/^text:/)]);
+    expect(deps.sendDocument).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("result.pdf_failed", {
+      job: "rj_1",
+      step: "build",
+      error: "Error",
+    });
+    expect(JSON.stringify(log.mock.calls)).not.toContain(SECRET_ANSWER);
+  });
+
+  it("still reports the delivery as sent when the document upload fails or throws", async () => {
+    const failing = pdfDeps({
+      sendDocument: async () => ({ ok: false, error: "kapso document upload returned HTTP 400" }),
+    });
+    expect(await push(failing.deps)).toBe("sent");
+    expect(failing.log).toHaveBeenCalledWith(
+      "result.pdf_failed",
+      expect.objectContaining({
+        job: "rj_1",
+        step: "send",
+        error: "kapso document upload returned HTTP 400",
+      }),
+    );
+    expect(failing.log).toHaveBeenCalledWith(
+      "result.pushed",
+      expect.objectContaining({ via: "live" }),
+    );
+
+    const throwing = pdfDeps({
+      sendDocument: async () => {
+        throw new Error(SECRET_ANSWER);
+      },
+    });
+    expect(await push(throwing.deps)).toBe("sent");
+    expect(throwing.log).toHaveBeenCalledWith(
+      "result.pdf_failed",
+      expect.objectContaining({ step: "send" }),
+    );
+    expect(JSON.stringify(throwing.log.mock.calls)).not.toContain(SECRET_ANSWER);
+  });
+
+  it("sends no PDF for a failed or timed-out research, or an empty answer", async () => {
+    const { deps } = pdfDeps();
+    await push(deps, { ok: false, reason: "timeout", message: "m", error: "m" });
+    await push(deps, { ok: false, error: "boom" });
+    await push(deps, outcome({ answer: "  " }));
+    expect(deps.sendDocument).not.toHaveBeenCalled();
+    expect(buildResearchPdf).not.toHaveBeenCalled();
+  });
+
+  it("sends no PDF when the recipient cannot be sent documents", async () => {
+    const { deps, sent } = makeDeps();
+    expect(await push(deps)).toBe("sent");
+    expect(sent).toHaveLength(1);
+    expect(buildResearchPdf).not.toHaveBeenCalled();
+  });
+
+  it("waits with the text for the window, then goes to the same number only", async () => {
+    const A = "390000000001";
+    const B = "390000000002";
+    const forA = pdfDeps({ recipient: A, windowOpen: async () => false });
+    const forB = pdfDeps({ recipient: B });
+    await push(forA.deps);
+    expect(forA.events).toEqual([]);
+    expect(forA.deps.nudge).toHaveBeenCalled();
+    await releaseHeldResearch(forB.deps);
+    expect(forB.events).toEqual([]);
+
+    const reopened = pdfDeps({ recipient: A });
+    expect(await releaseHeldResearch(reopened.deps)).toBe(1);
+    expect(reopened.events).toEqual([expect.stringMatching(/^text:/), "document"]);
+    expect(forA.deps.sendDocument).not.toHaveBeenCalled();
+    expect(forB.deps.sendDocument).not.toHaveBeenCalled();
+  });
+
+  it("sends the document to the number that asked through Kapso", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (url) =>
+      isMediaUpload(url)
+        ? new Response(JSON.stringify({ id: "media-1" }))
+        : new Response(JSON.stringify({ messages: [{ id: "wamid.1" }] })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const api = {
+        config: {
+          channels: {
+            "kapso-whatsapp": {
+              apiKey: "kapso_test_key",
+              phoneNumberId: "100000000000000",
+              defaultTo: "+390000000009",
+            },
+          },
+        },
+        runtime: { channel: { outbound: { loadAdapter: async () => undefined } } },
+        runtimeSource: "/fake/index.ts",
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+        pluginConfig: {},
+      } as unknown as Parameters<typeof livePushDeps>[0];
+      const live = livePushDeps(api, vi.fn(), "390000000001");
+      const document = await buildResearchPdf({
+        query: "q",
+        answer: ITALIAN,
+        sources: [],
+        language: "it",
+      });
+      expect(await live.sendDocument?.(document)).toEqual({ ok: true, messageId: "wamid.1" });
+      const body = jsonBody(fetchMock.mock.calls[1]?.[1]);
+      expect(body).toMatchObject({ to: "390000000001", type: "document" });
+      expect(body.document).toEqual({ id: "media-1", filename: document.filename });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
