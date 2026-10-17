@@ -49,6 +49,8 @@ export type MemoryStore = {
   ): Promise<void>;
   filterUnscannedMessages(ids: string[]): Promise<string[]>;
   markMessagesScanned(ids: string[], atMs: number): Promise<void>;
+  claimWelcome(number: string, atMs: number): Promise<boolean>;
+  releaseWelcome(number: string): Promise<void>;
 };
 
 const stores = new Map<string, Promise<MemoryStore>>();
@@ -130,6 +132,12 @@ export function wrapMemoryWorker(worker: SqliteWorkerStore<AdaMemoryOperations>)
     },
     markMessagesScanned(ids, atMs) {
       return worker.execute({ type: "markMessagesScanned", input: { ids, atMs } });
+    },
+    claimWelcome(number, atMs) {
+      return worker.execute({ type: "claimWelcome", input: { number, atMs } });
+    },
+    releaseWelcome(number) {
+      return worker.execute({ type: "releaseWelcome", input: { number } });
     },
   };
 }

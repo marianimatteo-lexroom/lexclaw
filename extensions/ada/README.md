@@ -117,6 +117,7 @@ With `NODE_ENV=production` the account stores refuse to open without `ADA_TOKEN_
 | Name                         | Where         | Purpose                                                                               |
 | ---------------------------- | ------------- | ------------------------------------------------------------------------------------- |
 | `ADA_TOKEN_KEY`              | environment   | AES-256 key for tokens at rest. Required in production. `VERA_TOKEN_KEY` still works. |
+| `ADA_WELCOME_ENABLED`        | environment   | `false` (also `0`, `off`, `no`) turns the first-message welcome off. Default on.      |
 | `googleNotifyAudience`       | plugin config | Audience of the Pub/Sub push OIDC token. Enables JWT verification.                    |
 | `googleNotifyIssuer`         | plugin config | Expected issuer. Defaults to `https://accounts.google.com` or `accounts.google.com`.  |
 | `googleNotifyServiceAccount` | plugin config | Required `email` claim (verified) of the push subscription service account.           |
@@ -124,6 +125,34 @@ With `NODE_ENV=production` the account stores refuse to open without `ADA_TOKEN_
 | `statusToken`                | plugin config | Bearer token (16+ chars) for `GET /ada/status`.                                       |
 
 Plugin config values can reference environment variables, for example `googleNotifyAudience: "${ADA_GOOGLE_NOTIFY_AUDIENCE}"`.
+
+## First-message welcome
+
+The first time a WhatsApp number ever writes to Ada, code sends it one fixed welcome message before any model turn: who Ada is (Lexroom's legal assistant on WhatsApp), what she does (answers legal questions, and runs Lexroom research in the background and messages the user when it is ready, with a link to Lexroom and a one-page PDF), three example questions, that her answers do not replace a lawyer, and that each user's chats and results are private. The text is deterministic (`src/welcome.ts`, Italian, English, Spanish, French and German) and costs no model call. The language is the greeting's own (`hi`, `hola`, `bonjour`, `hallo`), else the message's (the same stopword detection that picks the research link label), else Italian.
+
+- **Greeting only.** A message that is just a greeting (`ciao`, `ciao Ada`, `salve`, `buongiorno`, `hi`, `hello`, `hey Ada`, ... ignoring case, accents, punctuation and emoji) gets the welcome and nothing else: the `before_dispatch` hook handles it, so no model reply follows.
+- **A question or request.** Any other first message gets the welcome first and is then answered normally.
+- **Once per number.** The marker is a row in `$OPENCLAW_STATE_DIR/vera/memory.sqlite` (table `vera_welcomed`), written before the send so two messages that arrive together send one welcome. It survives restarts and redeploys. If the send fails the marker is removed, the model answers the message as usual, and the next message tries again.
+- **Not for existing users.** A number whose own session already existed before the message is marked without being welcomed. This needs one session per sender (`session.dmScope: "per-channel-peer"`): with the default `main` scope every DM shares one session that names nobody, so Ada cannot tell from sessions who talked to her before the upgrade, and each of those numbers gets the welcome once on its next message.
+- **Not for the lawyer.** The configured `channels["kapso-whatsapp"].defaultTo` number is never welcomed or marked. Groups and other channels are ignored.
+
+Set `ADA_WELCOME_ENABLED=false` to turn it off (the pre-rename `VERA_WELCOME_ENABLED` also works). Nothing is marked while it is off, so turning it back on welcomes numbers that have not been welcomed yet.
+
+### Deep link and QR code
+
+Send new users to Ada with a WhatsApp deep link, `https://wa.me/<number>?text=<urlencoded text>`: `<number>` is Ada's WhatsApp number in international format with digits only (no `+`, spaces or leading zeros), and the text is the message WhatsApp prefills for the user, who can edit it before sending. Ada's link is:
+
+```text
+https://wa.me/12024908196?text=Ciao%20Ada
+```
+
+To encode other text, for example `Ciao Ada, ho una domanda`: `node -p 'encodeURIComponent("Ciao Ada, ho una domanda")'`. To make a QR code of the link, any QR generator works; for a PNG from the command line:
+
+```sh
+npx qrcode "https://wa.me/12024908196?text=Ciao%20Ada" -o ada-whatsapp.png
+```
+
+(or `qrencode -o ada-whatsapp.png "https://wa.me/12024908196?text=Ciao%20Ada"` where `qrencode` is installed). Scan it with the phone camera to check that it opens a chat with Ada and the prefilled `Ciao Ada` before printing it.
 
 ## Lawyer sender check
 

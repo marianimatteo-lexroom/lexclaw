@@ -57,6 +57,7 @@ import { recordLawyerInbound, registerAdaService } from "./src/service.js";
 import { registerStatusReactionHooks } from "./src/status-reactions.js";
 import { handleAdaStatus } from "./src/status.js";
 import { handleAdaGoogleNotify } from "./src/watch.js";
+import { registerWelcomeHook } from "./src/welcome.js";
 import {
   markKapsoMessageRead,
   readInboundChannelId,
@@ -505,6 +506,12 @@ const entry = definePluginEntry({
       api,
       async () => (await (await openAdaMemoryFromApi(api)).readProfile())?.language,
     );
+
+    registerWelcomeHook(api, {
+      onGreetingAnswered: (sessionKey) => {
+        void statusReactions.finished({ sessionKey, success: true });
+      },
+    });
 
     api.on("message_received", async (event, ctx) => {
       const channelId = readInboundChannelId(event, ctx);

@@ -81,6 +81,12 @@ Also needed for a working gateway, but not checked by `start.sh`: `OPENCLAW_GATE
 | `ADA_DEADLINE_INTAKE_ENABLED`       | `deadlineIntake.enabled`       | `true` or `false` (case-insensitive), default `false`. Written on every boot, so removing the variable turns intake off. Any other value fails the boot.                                                                                                                                   |
 | `ADA_DEADLINE_REMINDERS`            | `deadlineIntake.reminders`     | Comma-separated cadence such as `7d,2d,morning-of`. Unset keeps the plugin default (`7d,2d,morning-of`). An invalid value fails the boot, because the plugin would reject it.                                                                                                              |
 
+First-message welcome (read by the plugin from the gateway environment; not validated by `start.sh`):
+
+| Variable              | Effect                                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `ADA_WELCOME_ENABLED` | `false` (also `0`, `off`, `no`) stops Ada from sending the welcome to a number's first message. Default on. See the Ada README. |
+
 WhatsApp status reactions (read from the gateway environment; validated by `start.sh`):
 
 | Variable                 | Effect                                                                                                         |
