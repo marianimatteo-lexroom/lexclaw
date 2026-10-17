@@ -202,6 +202,28 @@ describe("ada_research tells the requester and sends the result", () => {
     expect(wa.to(NUMBER_A).join("\n")).not.toContain("beta");
   });
 
+  it("tells the requester Lexroom refused the sign-in, not that it did not answer", async () => {
+    readAccount.mockResolvedValue({
+      email: "lawyer@example.com",
+      accessToken: "stale-token-aaaaaaaa",
+      password: "correct horse battery staple 9",
+      refreshToken: "",
+      accessExpiresAtMs: Date.now() - 10_000,
+      connectedAtMs: 1,
+    } satisfies LexroomAccountRecord);
+    const server = lexroom({
+      "/v1/login": () =>
+        json({ detail: "You do not have permission to perform this action." }, 403),
+    });
+    const wa = whatsapp();
+    await start(A, wa, server);
+    await vi.waitFor(() => expect(wa.to(NUMBER_A)).toHaveLength(2));
+    expect(wa.to(NUMBER_A)[1]).toBe(
+      "La ricerca su Lexroom non è andata a buon fine.\nLexroom ha rifiutato l'accesso per questo account. Chiedimi di ricollegarlo e ti mando il link, oppure controlla l'account su Lexroom.\nDimmi se vuoi che riprovi.",
+    );
+    expect(wa.to(NUMBER_A)[1]).not.toContain("did not answer");
+  });
+
   it("logs ack.sent and result.pushed", async () => {
     const server = lexroom({ "/v1/ask_me_anything": () => answerStream("r1", "ok") });
     const wa = whatsapp();

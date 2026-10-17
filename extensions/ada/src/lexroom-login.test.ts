@@ -114,7 +114,7 @@ describe("loginLexroomAccount", () => {
     );
     await expect(signIn({ email: "a@b.it", password: "wrong", fetchImpl })).resolves.toEqual({
       ok: false,
-      reason: "invalid_credentials",
+      reason: "wrong_password",
       error: "Those Lexroom credentials were not accepted.",
     });
   });
@@ -132,17 +132,17 @@ describe("loginLexroomAccount", () => {
     const run = (fetchImpl: typeof fetch) => signIn({ email: "a@b.it", password: "x", fetchImpl });
     await expect(run(vi.fn(async () => jsonResponse({}, 503)))).resolves.toEqual({
       ok: false,
-      reason: "lexroom_error",
+      reason: "unavailable",
       error: "Lexroom returned 503",
     });
     await expect(run(vi.fn(async () => jsonResponse({ ok: true }, 200)))).resolves.toMatchObject({
       ok: false,
-      reason: "lexroom_error",
+      reason: "unavailable",
       error: "Lexroom login did not return an access token.",
     });
     await expect(run(vi.fn(async () => new Response("", { status: 200 })))).resolves.toMatchObject({
       ok: false,
-      reason: "lexroom_error",
+      reason: "unavailable",
     });
     await expect(
       run(
@@ -150,18 +150,18 @@ describe("loginLexroomAccount", () => {
           throw new Error("network");
         }),
       ),
-    ).resolves.toMatchObject({ ok: false, reason: "lexroom_error" });
+    ).resolves.toMatchObject({ ok: false, reason: "unavailable" });
   });
 
   it("does not call Lexroom without an email and password", async () => {
     const fetchImpl = vi.fn();
     await expect(signIn({ email: "", password: "x", fetchImpl })).resolves.toMatchObject({
       ok: false,
-      reason: "invalid_credentials",
+      reason: "wrong_password",
     });
     await expect(signIn({ email: "a@b.it", password: "", fetchImpl })).resolves.toMatchObject({
       ok: false,
-      reason: "invalid_credentials",
+      reason: "wrong_password",
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -198,12 +198,13 @@ describe("loginLexroomAccount timeouts and retries", () => {
       });
     });
     const pending = login(fetchImpl as unknown as typeof fetch);
-    await vi.advanceTimersByTimeAsync(1000 + 500 + 1000);
+    // One step is limited to 1s and the whole sign-in to twice that, so the retry is cut short.
+    await vi.advanceTimersByTimeAsync(2000);
     await expect(pending).resolves.toEqual({
       ok: false,
       reason: "timeout",
-      message: "Lexroom did not respond within 1s; the request was abandoned.",
-      error: "Lexroom did not respond within 1s; the request was abandoned.",
+      message: "Lexroom did not respond within 2s; the request was abandoned.",
+      error: "Lexroom did not respond within 2s; the request was abandoned.",
     });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(signals.every((signal) => signal.aborted)).toBe(true);
@@ -243,9 +244,9 @@ describe("loginLexroomAccount timeouts and retries", () => {
   });
 
   it.each([
-    [401, { detail: "No active account", code: "authentication_failed" }, "invalid_credentials"],
-    [403, { detail: "You do not have permission to perform this action." }, "lexroom_error"],
-    [500, { detail: "boom" }, "lexroom_error"],
+    [401, { detail: "No active account", code: "authentication_failed" }, "wrong_password"],
+    [403, { detail: "You do not have permission to perform this action." }, "forbidden"],
+    [500, { detail: "boom" }, "unavailable"],
   ])("answers a %i at once, with no retry", async (status, body, reason) => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(body, status));
     const result = await login(fetchImpl);
@@ -253,17 +254,83 @@ describe("loginLexroomAccount timeouts and retries", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("surfaces Lexroom's 403 detail clearly", async () => {
-    const fetchImpl = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(
-        jsonResponse({ detail: "You do not have permission to perform this action." }, 403),
-      );
+  it("tells a refusal from silence: a 403 is forbidden, with what Lexroom said", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse(
+        {
+          detail: "You do not have permission to perform this action.",
+          code: "permission_denied",
+        },
+        403,
+      ),
+    );
     await expect(login(fetchImpl)).resolves.toEqual({
       ok: false,
-      reason: "lexroom_error",
-      error: "Lexroom returned 403: You do not have permission to perform this action.",
+      reason: "forbidden",
+      error:
+        "Lexroom refused the sign-in for this account (HTTP 403): You do not have permission to perform this action.",
+      status: 403,
+      code: "permission_denied",
+      detail: "You do not have permission to perform this action.",
     });
+  });
+
+  it.each([400, 402, 403, 404, 409, 410, 422])(
+    "treats a %i as a refusal Lexroom gave on purpose, and never retries it",
+    async (status) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({}, status));
+      await expect(login(fetchImpl)).resolves.toMatchObject({
+        ok: false,
+        reason: "forbidden",
+        status,
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([408, 429, 500, 502, 503, 504])(
+    "keeps a %i as Lexroom being unavailable, not a refusal",
+    async (status) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({}, status));
+      await expect(login(fetchImpl)).resolves.toMatchObject({ ok: false, reason: "unavailable" });
+    },
+  );
+
+  it("logs login.rejected with Lexroom's code and detail, and no email, password or token", async () => {
+    const events: Array<{ event: string; fields: Record<string, string | number | boolean> }> = [];
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse(
+        {
+          code: "account_blocked",
+          detail:
+            "User a@b.it blocked\n for secret-password via token abcdefghijklmnopqrstuvwxyz0123456789",
+        },
+        403,
+      ),
+    );
+    await login(fetchImpl, { log: (event, fields) => events.push({ event, fields }) });
+    const rejected = events.find((entry) => entry.event === "login.rejected");
+    expect(rejected?.fields).toMatchObject({
+      status: 403,
+      code: "account_blocked",
+      detail: "User [redacted] blocked for [redacted] via token [redacted]",
+    });
+    expect(rejected?.fields.cid).toBe(events[0]?.fields.cid);
+    const logged = JSON.stringify(events);
+    expect(logged).not.toContain("a@b.it");
+    expect(logged).not.toContain("secret-password");
+    expect(logged).not.toContain("abcdefghijklmnopqrstuvwxyz");
+  });
+
+  it("bounds a long detail", async () => {
+    const events: Array<{ event: string; fields: Record<string, string | number | boolean> }> = [];
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse({ detail: "no ".repeat(200) }, 403));
+    await login(fetchImpl, { log: (event, fields) => events.push({ event, fields }) });
+    const detail = String(events.find((entry) => entry.event === "login.rejected")?.fields.detail);
+    expect(detail.length).toBeLessThanOrEqual(160);
+    expect(detail.length).toBeGreaterThan(100);
   });
 
   it("logs the login with a correlation id and endpoint, never the password or the address", async () => {
@@ -272,7 +339,7 @@ describe("loginLexroomAccount timeouts and retries", () => {
       .fn<typeof fetch>()
       .mockResolvedValue(jsonResponse({ access_token: "tok-secret" }, 200));
     await login(fetchImpl, { log: (event, fields) => events.push({ event, fields }) });
-    expect(events.map((entry) => entry.event)).toEqual(["login.response", "login.done"]);
+    expect(events.map((entry) => entry.event)).toEqual(["login.response", "login.done", "login.path"]);
     const cids = new Set(events.map((entry) => entry.fields.cid));
     expect(cids.size).toBe(1);
     expect(events[1]?.fields).toMatchObject({ endpoint: "POST /v1/login", status: 200 });

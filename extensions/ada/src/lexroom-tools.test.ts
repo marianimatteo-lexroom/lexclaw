@@ -673,7 +673,7 @@ describe("silent sign-in with the saved email and password", () => {
       error: expect.stringContaining("no longer accepts the saved email and password"),
     });
     expect(live.store.clearAccount).toHaveBeenCalledTimes(1);
-    expect(loggedText()).toContain("relogin.failed why=rejected reason=invalid_credentials");
+    expect(loggedText()).toContain("relogin.failed why=rejected reason=wrong_password");
     expect(loggedText()).not.toContain(PASSWORD);
   });
 
@@ -871,7 +871,7 @@ describe("a Lexroom that goes silent", () => {
       fetchImpl: server.fetchImpl,
     });
     await vi.advanceTimersByTimeAsync(1000 + 500 + 1000);
-    await expect(pending).resolves.toEqual(timedOut("1s"));
+    await expect(pending).resolves.toEqual(timedOut("2s"));
     expect(server.calls.map((call) => call.path)).toEqual(["/v1/login", "/v1/login"]);
     expect(live.store.clearAccount).not.toHaveBeenCalled();
     expect(live.store.upsertAccount).not.toHaveBeenCalled();
@@ -908,7 +908,7 @@ describe("a Lexroom that goes silent", () => {
       fetchImpl: server.fetchImpl,
     });
     await vi.advanceTimersByTimeAsync(2600);
-    await expect(pending).resolves.toEqual(timedOut("1s"));
+    await expect(pending).resolves.toEqual(timedOut("2s"));
     expect(live.store.clearAccount).not.toHaveBeenCalled();
   });
 

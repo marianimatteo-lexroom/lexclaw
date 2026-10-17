@@ -18,6 +18,8 @@ export type LexroomRequest = {
   method: "GET" | "POST";
   headers: Headers;
   body?: string;
+  /** `manual` hands back a redirect instead of following it, for a flow that must read each hop. */
+  redirect?: "manual";
 };
 
 const RETRY_BACKOFF_MS = 500;
@@ -125,6 +127,7 @@ export async function fetchGuarded(params: {
           method: params.init.method,
           headers: params.init.headers,
           ...(params.init.body === undefined ? {} : { body: params.init.body }),
+          ...(params.init.redirect ? { redirect: params.init.redirect } : {}),
           signal: guard.signal,
         }),
       );
@@ -156,13 +159,15 @@ export async function fetchGuarded(params: {
 }
 
 /**
- * Reads a JSON body under the guard, through a reader of its own so that a timeout or abort can
- * close it. A body that is not JSON is `undefined`; a timeout or abort is thrown.
+ * Reads a body as text under the guard, through a reader of its own so that a timeout or abort
+ * can close it. A body that cannot be read is `undefined`; a timeout or abort is thrown. Text
+ * past `maxChars` is cut, so a hostile or broken page cannot fill memory.
  */
-export async function readJsonGuarded(
+export async function readTextGuarded(
   response: Response,
   guard: LexroomGuard,
-): Promise<unknown> {
+  maxChars = 2_000_000,
+): Promise<string | undefined> {
   const reader = response.body?.getReader();
   if (!reader) {
     return undefined;
@@ -177,6 +182,10 @@ export async function readJsonGuarded(
       }
       guard.touch();
       text += decoder.decode(value, { stream: true });
+      if (text.length > maxChars) {
+        text = text.slice(0, maxChars);
+        break;
+      }
     }
     text += decoder.decode();
   } catch (error) {
@@ -186,6 +195,15 @@ export async function readJsonGuarded(
     return undefined;
   } finally {
     void reader.cancel().catch(() => undefined);
+  }
+  return text;
+}
+
+/** Reads a JSON body under the guard. A body that is not JSON is `undefined`; a timeout is thrown. */
+export async function readJsonGuarded(response: Response, guard: LexroomGuard): Promise<unknown> {
+  const text = await readTextGuarded(response, guard);
+  if (text === undefined) {
+    return undefined;
   }
   try {
     return JSON.parse(text) as unknown;

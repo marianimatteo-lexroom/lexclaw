@@ -124,6 +124,16 @@ describe("researchMessages", () => {
       "Lexroom non è collegato: chiedimi di collegarlo e ti mando il link.",
     ],
     [
+      "a refused sign-in, in words the lawyer can act on",
+      { ok: false, reason: "forbidden", error: "Lexroom answered and refused the sign-in." },
+      "Lexroom ha rifiutato l'accesso per questo account. Chiedimi di ricollegarlo e ti mando il link, oppure controlla l'account su Lexroom.",
+    ],
+    [
+      "a captcha Ada cannot solve",
+      { ok: false, reason: "captcha_required", error: "Lexroom asked for a captcha." },
+      "Lexroom ha chiesto un captcha (controllo anti-bot) che non posso risolvere. Riprova più tardi, oppure accedi prima su app.lexroom.ai.",
+    ],
+    [
       "another failure",
       { ok: false, error: "Lexroom ha negato la richiesta (403): permessi." },
       "Lexroom ha negato la richiesta (403): permessi.",
