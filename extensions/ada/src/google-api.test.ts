@@ -86,7 +86,7 @@ describe("google oauth", () => {
           refresh_token: "test-refresh-token",
           expires_in: 3600,
           scope:
-            "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.readonly",
+            "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events",
         });
       }
       return jsonResponse({ email: "lawyer@example.com" });
@@ -107,7 +107,7 @@ describe("google oauth", () => {
         accessToken: "test-access-token",
         accessExpiresAtMs: NOW.getTime() + 3_600_000,
         scopes:
-          "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.readonly",
+          "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events",
       },
     });
   });
@@ -118,7 +118,7 @@ describe("google oauth", () => {
         access_token: "test-access-token",
         expires_in: 3600,
         scope:
-          "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.readonly",
+          "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events",
       }),
     );
     expect(

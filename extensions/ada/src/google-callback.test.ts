@@ -89,6 +89,7 @@ describe("handleAdaGoogleCallback", () => {
     expect(first.statusCode).toBe(200);
     expect(first.body).toContain("lawyer@example.com");
     expect(first.body).toContain("Gmail and Google Calendar");
+    expect(first.body).toContain("<span>Google Calendar</span><span>Read and edit</span>");
     expect(first.body).toContain("You can close this page and return to WhatsApp.");
     expect(first.body).toContain('name="viewport"');
     expect(first.body).not.toContain("<script");

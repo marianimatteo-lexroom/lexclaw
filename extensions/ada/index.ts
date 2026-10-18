@@ -7,6 +7,7 @@ import {
 } from "openclaw/plugin-sdk/tool-plugin";
 import { Type } from "typebox";
 import {
+  adaCreateCalendarEventDefinition,
   adaDeadlineListDefinition,
   adaDeadlineReplyDefinition,
   adaDraftDefinition,
@@ -21,6 +22,7 @@ import {
   adaSendEmailDefinition,
   adaTodoGetDefinition,
   adaTodoListDefinition,
+  adaUpdateCalendarEventDefinition,
 } from "./src/account-tool-definitions.js";
 import { buildInjectedBrief } from "./src/brief.js";
 import { connectOfferNote, takeConnectOffers } from "./src/connect-offers.js";
@@ -32,6 +34,7 @@ import { handleAdaGoogleCallback, writeAdaConnectPage } from "./src/google-callb
 import { googleConnectConfigFrom } from "./src/google-connect.js";
 import { sendGoogleConnectedNotice } from "./src/google-notify.js";
 import {
+  executeAdaCalendarEvent,
   executeAdaGoogleConnect,
   executeAdaReadCalendar,
   executeAdaReadInbox,
@@ -324,6 +327,24 @@ const tools = defineToolPlugin({
       optional: true,
       factory: ownerToolFactory(adaSendEmailDefinition, (args, { owner, api, config, signal }) =>
         executeAdaSendEmail(owner, config, api, args, signal),
+      ),
+    }),
+    tool({
+      ...adaCreateCalendarEventDefinition,
+      optional: true,
+      factory: ownerToolFactory(
+        adaCreateCalendarEventDefinition,
+        (args, { owner, api, config, signal }) =>
+          executeAdaCalendarEvent(owner, config, api, args, signal),
+      ),
+    }),
+    tool({
+      ...adaUpdateCalendarEventDefinition,
+      optional: true,
+      factory: ownerToolFactory(
+        adaUpdateCalendarEventDefinition,
+        (args, { owner, api, config, signal }) =>
+          executeAdaCalendarEvent(owner, config, api, args, signal),
       ),
     }),
     tool({
