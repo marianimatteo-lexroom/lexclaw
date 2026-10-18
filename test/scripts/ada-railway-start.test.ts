@@ -18,6 +18,7 @@ const store = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : 
 const save = () => fs.writeFileSync(file, JSON.stringify(store));
 const [cmd, sub, ...rest] = process.argv.slice(2);
 fs.appendFileSync(process.env.STUB_LOG, [cmd, sub, ...rest.filter((a) => !a.startsWith("--"))].join(" ") + "\\n");
+if (process.env.STUB_FAIL && [cmd, sub, ...rest].join(" ").startsWith(process.env.STUB_FAIL)) process.exit(1);
 const exists = (p) => p in store || Object.keys(store).some((k) => k.startsWith(p + "."));
 if (cmd === "config" && sub === "get") {
   const p = rest[0];
@@ -25,6 +26,9 @@ if (cmd === "config" && sub === "get") {
   console.log(p in store ? JSON.stringify(store[p]) : "{}");
 } else if (cmd === "config" && sub === "set") {
   store[rest[0]] = JSON.parse(rest[1]);
+  save();
+} else if (cmd === "config" && sub === "unset") {
+  delete store[rest[0]];
   save();
 } else if (cmd === "plugins" && sub === "uninstall") {
   const id = rest[0];
@@ -278,6 +282,103 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
       const none = boot(ENV);
       expect(none.run().status).toBe(0);
       expect(none.store()).not.toHaveProperty("agents.entries.main.identity.name");
+    });
+  });
+  describe("Voyage memory search", () => {
+    const KEY = "pa-voyage-secret-key-value";
+    const ENV = { ADA_PUBLIC_ORIGIN: "https://ada.example.com" };
+    const memoryCalls = (deploy: ReturnType<typeof boot>) =>
+      deploy
+        .calls()
+        .filter((call) =>
+          /^(plugins install npm:@openclaw\/voyage|memory|config (set|unset) memory)/u.test(call),
+        );
+
+    it("installs the pinned provider, selects voyage-law-2 and rebuilds the index, hiding the key", () => {
+      const deploy = boot({ ...ENV, VOYAGE_API_KEY: KEY });
+      const result = deploy.run();
+      expect(result.status).toBe(0);
+      expect(`${result.stdout}${result.stderr}`).not.toContain(KEY);
+      expect(deploy.store()["memory.search.provider"]).toBe("voyage");
+      expect(deploy.store()["memory.search.model"]).toBe("voyage-law-2");
+      expect(JSON.stringify(deploy.store())).not.toContain(KEY);
+      expect(memoryCalls(deploy)).toEqual([
+        "plugins install npm:@openclaw/voyage-provider@2026.9.9",
+        'config set memory.search.provider "voyage"',
+        'config set memory.search.model "voyage-law-2"',
+        "memory index main",
+      ]);
+    });
+
+    it("takes the plugin version and model from the environment", () => {
+      const deploy = boot({
+        ...ENV,
+        VOYAGE_API_KEY: KEY,
+        VOYAGE_PLUGIN_VERSION: "2026.9.33",
+        ADA_MEMORY_EMBEDDING_MODEL: "voyage-3",
+      });
+      expect(deploy.run().status).toBe(0);
+      expect(deploy.store()["memory.search.model"]).toBe("voyage-3");
+      expect(memoryCalls(deploy)[0]).toBe(
+        "plugins install npm:@openclaw/voyage-provider@2026.9.33",
+      );
+    });
+
+    it("boots with keyword search when the plugin cannot be installed", () => {
+      const deploy = boot({
+        ...ENV,
+        VOYAGE_API_KEY: KEY,
+        STUB_FAIL: "plugins install npm:@openclaw/voyage-provider",
+      });
+      const result = deploy.run();
+      expect(result.status).toBe(0);
+      expect(`${result.stdout}${result.stderr}`).toContain("using keyword-only search");
+      expect(deploy.store()).not.toHaveProperty("memory.search.provider");
+      expect(memoryCalls(deploy)).toEqual([
+        "plugins install npm:@openclaw/voyage-provider@2026.9.9",
+      ]);
+    });
+
+    it("returns to keyword search when a saved voyage config has lost its plugin", () => {
+      const deploy = boot(
+        { ...ENV, VOYAGE_API_KEY: KEY, STUB_FAIL: "plugins install npm:@openclaw/voyage-provider" },
+        { "memory.search.provider": "voyage", "memory.search.model": "voyage-law-2" },
+      );
+      expect(deploy.run().status).toBe(0);
+      expect(deploy.store()).not.toHaveProperty("memory.search.provider");
+      expect(deploy.store()).not.toHaveProperty("memory.search.model");
+      expect(deploy.calls()).toContain("memory index main");
+    });
+
+    it("keeps booting when the index rebuild fails", () => {
+      const deploy = boot({ ...ENV, VOYAGE_API_KEY: KEY, STUB_FAIL: "memory index" });
+      const result = deploy.run();
+      expect(result.status).toBe(0);
+      expect(`${result.stdout}${result.stderr}`).toContain("memory index rebuild failed");
+      expect(deploy.store()["memory.search.provider"]).toBe("voyage");
+    });
+
+    it("turns voyage off and re-indexes once the key is removed", () => {
+      const deploy = boot(ENV, {
+        "memory.search.provider": "voyage",
+        "memory.search.model": "voyage-law-2",
+      });
+      expect(deploy.run().status).toBe(0);
+      expect(deploy.store()).not.toHaveProperty("memory.search.provider");
+      expect(deploy.store()).not.toHaveProperty("memory.search.model");
+      expect(memoryCalls(deploy)).toEqual([
+        "config unset memory.search.provider",
+        "config unset memory.search.model",
+        "memory index main",
+      ]);
+    });
+
+    it("does nothing for memory search without a key or a saved voyage config", () => {
+      const deploy = boot(ENV);
+      const result = deploy.run();
+      expect(result.status).toBe(0);
+      expect(`${result.stdout}${result.stderr}`).toContain("skip voyage memory search");
+      expect(memoryCalls(deploy)).toEqual([]);
     });
   });
 });

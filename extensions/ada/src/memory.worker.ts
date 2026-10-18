@@ -39,6 +39,8 @@ import {
   type DeadlinePatch,
   type DeadlineSource,
   type DeadlineUpsertResult,
+  type EmbeddingCandidate,
+  type EmbeddingItem,
   type GmailSnapshotRow,
   type LawyerProfile,
   type MemoryFolder,
@@ -49,6 +51,13 @@ import {
   type AdaMemoryOperations,
   type WakeState,
 } from "./memory-contract.js";
+import {
+  EMBEDDING_DIMS,
+  embeddingText,
+  packVector,
+  rankHybridHits,
+  unpackVector,
+} from "./memory-embeddings.js";
 import { rankMemoryHits } from "./memory-render.js";
 
 async function importOpenClawSdk(specifier: string): Promise<Record<string, unknown>> {
@@ -149,6 +158,12 @@ CREATE TABLE IF NOT EXISTS vera_records (
   valid_from_ms INTEGER NOT NULL,
   valid_to_ms INTEGER,
   superseded_by TEXT
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS vera_record_embeddings (
+  record_id TEXT PRIMARY KEY,
+  model TEXT NOT NULL,
+  vector BLOB NOT NULL
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS vera_revisions (
@@ -266,6 +281,11 @@ type AdaMemoryDatabase = {
     valid_from_ms: number;
     valid_to_ms: number | null;
     superseded_by: string | null;
+  };
+  vera_record_embeddings: {
+    record_id: string;
+    model: string;
+    vector: Uint8Array;
   };
   vera_revisions: {
     id: number;
@@ -648,6 +668,10 @@ class AdaMemoryDatabaseStore {
         }
         executeSqliteQuerySync(
           this.db,
+          this.query.deleteFrom("vera_record_embeddings").where("record_id", "=", record.id),
+        );
+        executeSqliteQuerySync(
+          this.db,
           this.query.insertInto("vera_records").values({
             id: record.id,
             matter_id: record.matterId,
@@ -685,11 +709,95 @@ class AdaMemoryDatabaseStore {
     );
   }
 
-  searchRecords(query: string, matterId: string): MemoryRecord[] {
+  searchRecords(
+    query: string,
+    matterId: string,
+    queryVector?: number[],
+    model?: string,
+  ): MemoryRecord[] {
     if (matterId !== "" && !ID.test(matterId)) {
       throw new Error("matterId is invalid");
     }
-    return rankMemoryHits(this.currentRecordsForMatter(matterId), query).slice(0, 20);
+    const records = this.currentRecordsForMatter(matterId);
+    if (!queryVector || queryVector.length !== EMBEDDING_DIMS || !model) {
+      return rankMemoryHits(records, query).slice(0, 20);
+    }
+    const vectors = new Map<string, Float32Array>();
+    for (const row of iterateSqliteQuerySync(
+      this.db,
+      this.query
+        .selectFrom("vera_record_embeddings as e")
+        .innerJoin("vera_records as r", "r.id", "e.record_id")
+        .select(["e.record_id as id", "e.vector as vector"])
+        .where("r.matter_id", "=", matterId)
+        .where("r.valid_to_ms", "is", null)
+        .where("e.model", "=", model),
+    )) {
+      vectors.set(row.id, unpackVector(row.vector));
+    }
+    return rankHybridHits(records, query, vectors, queryVector).slice(0, 20);
+  }
+
+  listUnembedded(model: string, limit: number): EmbeddingCandidate[] {
+    return Array.from(
+      iterateSqliteQuerySync(
+        this.db,
+        this.query
+          .selectFrom("vera_records as r")
+          .leftJoin("vera_record_embeddings as e", (join) =>
+            join.onRef("e.record_id", "=", "r.id").on("e.model", "=", model),
+          )
+          .selectAll("r")
+          .where("r.valid_to_ms", "is", null)
+          .where("e.record_id", "is", null)
+          .orderBy("r.valid_from_ms", "desc")
+          .orderBy("r.id")
+          .limit(Math.max(0, Math.min(limit, 128))),
+      ),
+      (row) => ({ id: row.id, text: embeddingText(rowToRecord(row)) }),
+    );
+  }
+
+  storeEmbeddings(model: string, items: EmbeddingItem[]): number {
+    let stored = 0;
+    runSqliteImmediateTransactionSync(
+      this.db,
+      () => {
+        for (const item of items) {
+          const row = executeSqliteQueryTakeFirstSync(
+            this.db,
+            this.query.selectFrom("vera_records").selectAll().where("id", "=", item.id),
+          );
+          if (
+            !row ||
+            row.valid_to_ms !== null ||
+            item.vector.length !== EMBEDDING_DIMS ||
+            embeddingText(rowToRecord(row)) !== item.text
+          ) {
+            continue;
+          }
+          executeSqliteQuerySync(
+            this.db,
+            this.query.deleteFrom("vera_record_embeddings").where("record_id", "=", item.id),
+          );
+          executeSqliteQuerySync(
+            this.db,
+            this.query.insertInto("vera_record_embeddings").values({
+              record_id: item.id,
+              model,
+              vector: packVector(item.vector),
+            }),
+          );
+          stored += 1;
+        }
+      },
+      {
+        busyTimeoutMs: 5000,
+        databaseLabel: "ada memory",
+        operationLabel: "ada.memory.embeddings.store",
+      },
+    );
+    return stored;
   }
 
   listRecords(folder: MemoryFolder, matterId: string): MemoryRecord[] {
@@ -1415,7 +1523,16 @@ export function createSqliteWorkerBackend(
             command.input.atMs,
           );
         case "searchRecords":
-          return database.searchRecords(command.input.query, command.input.matterId);
+          return database.searchRecords(
+            command.input.query,
+            command.input.matterId,
+            command.input.queryVector,
+            command.input.model,
+          );
+        case "listUnembedded":
+          return database.listUnembedded(command.input.model, command.input.limit);
+        case "storeEmbeddings":
+          return database.storeEmbeddings(command.input.model, command.input.items);
         case "listRecords":
           return database.listRecords(command.input.folder, command.input.matterId);
         case "getRecord":
