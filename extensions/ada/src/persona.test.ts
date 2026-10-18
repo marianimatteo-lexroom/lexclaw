@@ -27,6 +27,9 @@ describe("Ada's persona", () => {
   it("uses Italian only when there is no message to go by, and never as a default for an English writer", () => {
     expect(ADA_PERSONA).toMatch(/Use Italian only when there is no message from them to go by/u);
     expect(ADA_PERSONA).toMatch(/Never answer in Italian just because Lexroom/u);
+    expect(ADA_PERSONA).toMatch(
+      /Italian message that contains borrowed English legal or business terms .* is Italian/u,
+    );
     expect(ADA_PERSONA).not.toMatch(/when (it is )?not clear[^.]*Italian|Italian when unclear/iu);
   });
 
