@@ -1,17 +1,22 @@
 ---
 name: ada-google-connect
-description: "Ask the person on WhatsApp to connect Gmail and Google Calendar, and send the one Google account link."
+description: "Offer to connect the person's own Gmail and Google Calendar in plain conversation, and send the one Google account link when they want it."
 ---
 
 # Ada Google connect
 
 Ada reads a person's own Gmail and Google Calendar only after that person connects them. One link covers both. Reply in the language the person writes in, Italian when unclear. Copy the URL unchanged.
 
-## When to ask
+## When to offer, and when to send the link
 
-Follow this skill when the person mentions email, calendar, or connecting Google, and when `ada_read_inbox` or `ada_read_calendar` returns `reason: "not_connected"`.
+Never tell the person to type a command, a keyword or a special phrase; talk like a person.
 
-Call `ada_google_connect`. Do not invent a URL. Do not use another mail or calendar login.
+- When a request needs their mail or calendar and it is not connected (`ada_read_inbox`, `ada_read_calendar` or `ada_send_email` returns `reason: "not_connected"`, or the connection expired or was refused), say so naturally in one sentence and ask whether they want to connect it, for example "Per farlo devo collegarmi al tuo Gmail, ti mando il link?". Do not call `ada_google_connect` yet.
+- When they say yes in any form (sì, ok, certo, vai, yes, 👍, ...), call `ada_google_connect` and send the link. The model reads the answer in context; there is no keyword list. When they say no, carry on without it and do not ask again.
+- When the person says on their own that they want to connect Gmail or Google Calendar, call `ada_google_connect` and send the link straight away.
+- A note headed "Question you just asked" in your context means Ada's code asked that question in a message that is not in the conversation: read their reply as the answer to it.
+
+Do not invent a URL. Do not use another mail or calendar login.
 
 When the result has `reason: "private_chat_required"`, tell the person kindly, in their language, that you can only use their accounts in a private chat with them, and to write to you directly. When the result is any other `ok: false`, reply with one short, warm line in the person's language saying that connecting is not available right now, and nothing technical: never go silent on a message. The tool error names the missing Google OAuth settings; do not text that error to the person.
 

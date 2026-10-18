@@ -25,31 +25,31 @@ import { senderNumber } from "./research-push.js";
 const WELCOMES: Record<Language, string> = {
   it: [
     "Ciao, sono Ada, l'assistente legale di Lexroom su WhatsApp. 👋",
-    "Cosa posso fare:\n• rispondere alle tue domande di diritto;\n• fare ricerche giuridiche su Lexroom in background e scriverti appena sono pronte, con il link a Lexroom e un PDF di una pagina. Collega il tuo account Lexroom: scrivimi «collega Lexroom» e ti mando il link;\n• leggere la tua posta Gmail e il tuo calendario Google, e inviare email solo dopo la tua conferma. Collega il tuo Gmail: scrivimi «collega Gmail».",
+    "Cosa posso fare:\n• rispondere alle tue domande di diritto;\n• fare ricerche giuridiche su Lexroom in background e scriverti appena sono pronte, con il link a Lexroom e un PDF di una pagina;\n• leggere la tua posta Gmail e il tuo calendario Google, e inviare email solo dopo la tua conferma.\n\nPer ricerche, posta e calendario serve il tuo account: quando mi servirà ti chiederò se vuoi collegarlo e ti manderò il link.",
     'Ad esempio, chiedimi:\n• "Entro quanto posso fare opposizione a un decreto ingiuntivo?"\n• "Cerca la giurisprudenza sul recesso dal contratto di locazione"\n• "Cosa ho in calendario domani?"',
     "Le mie risposte non sostituiscono quelle di un avvocato. Le chat e i risultati di ogni utente restano privati.",
   ].join("\n\n"),
   en: [
     "Hi, I'm Ada, Lexroom's legal assistant on WhatsApp. 👋",
-    'What I can do:\n• answer your legal questions;\n• run legal research on Lexroom in the background and message you as soon as it\'s ready, with a link to Lexroom and a one-page PDF. Connect your own Lexroom account: write "connect Lexroom" and I\'ll send you the link;\n• read your Gmail and Google Calendar, and send email only after you confirm. Connect your Gmail: write "connect Gmail".',
+    "What I can do:\n• answer your legal questions;\n• run legal research on Lexroom in the background and message you as soon as it's ready, with a link to Lexroom and a one-page PDF;\n• read your Gmail and Google Calendar, and send email only after you confirm.\n\nResearch, mail and calendar need your own account: when I need it, I'll ask whether you want to connect it and send you the link.",
     'For example, ask me:\n• "How long do I have to oppose an order for payment (decreto ingiuntivo)?"\n• "Find case law on terminating a lease"\n• "What\'s on my calendar tomorrow?"',
     "My answers are not a substitute for a lawyer. Each user's chats and results stay private.",
   ].join("\n\n"),
   es: [
     "Hola, soy Ada, la asistente legal de Lexroom en WhatsApp. 👋",
-    'Qué puedo hacer:\n• responder a tus preguntas jurídicas;\n• hacer investigación jurídica en Lexroom en segundo plano y escribirte en cuanto esté lista, con el enlace a Lexroom y un PDF de una página. Conecta tu cuenta de Lexroom: escríbeme "conecta Lexroom" y te mando el enlace;\n• leer tu Gmail y tu Google Calendar, y enviar correos solo después de tu confirmación. Conecta tu Gmail: escríbeme "conecta Gmail".',
+    "Qué puedo hacer:\n• responder a tus preguntas jurídicas;\n• hacer investigación jurídica en Lexroom en segundo plano y escribirte en cuanto esté lista, con el enlace a Lexroom y un PDF de una página;\n• leer tu Gmail y tu Google Calendar, y enviar correos solo después de tu confirmación.\n\nPara la investigación, el correo y el calendario hace falta tu cuenta: cuando la necesite, te preguntaré si quieres conectarla y te enviaré el enlace.",
     'Por ejemplo, pregúntame:\n• "¿Cuánto tiempo tengo para oponerme a un requerimiento de pago (decreto ingiuntivo)?"\n• "Busca jurisprudencia sobre la resolución de un contrato de alquiler"\n• "¿Qué tengo mañana en el calendario?"',
     "Mis respuestas no sustituyen a un abogado. Los chats y los resultados de cada usuario son privados.",
   ].join("\n\n"),
   fr: [
     "Bonjour, je suis Ada, l'assistante juridique de Lexroom sur WhatsApp. 👋",
-    'Ce que je peux faire :\n• répondre à vos questions de droit ;\n• faire des recherches juridiques sur Lexroom en arrière-plan et vous écrire dès qu\'elles sont prêtes, avec le lien vers Lexroom et un PDF d\'une page. Connectez votre compte Lexroom : écrivez-moi "connecte Lexroom" et je vous envoie le lien ;\n• lire votre Gmail et votre Google Agenda, et envoyer des e-mails seulement après votre confirmation. Connectez votre Gmail : écrivez-moi "connecte Gmail".',
+    "Ce que je peux faire :\n• répondre à vos questions de droit ;\n• faire des recherches juridiques sur Lexroom en arrière-plan et vous écrire dès qu'elles sont prêtes, avec le lien vers Lexroom et un PDF d'une page ;\n• lire votre Gmail et votre Google Agenda, et envoyer des e-mails seulement après votre confirmation.\n\nPour les recherches, la messagerie et l'agenda, il faut votre compte : quand j'en aurai besoin, je vous demanderai si vous voulez le connecter et je vous enverrai le lien.",
     'Par exemple, demandez-moi :\n• "De combien de temps dispose-t-on pour faire opposition à une injonction de payer (decreto ingiuntivo) ?"\n• "Cherche la jurisprudence sur la résiliation d\'un bail"\n• "Qu\'ai-je à l\'agenda demain ?"',
     "Mes réponses ne remplacent pas un avocat. Les conversations et les résultats de chaque utilisateur restent privés.",
   ].join("\n\n"),
   de: [
     "Hallo, ich bin Ada, die juristische Assistentin von Lexroom auf WhatsApp. 👋",
-    'Was ich kann:\n• Ihre Rechtsfragen beantworten;\n• im Hintergrund juristische Recherchen in Lexroom durchführen und Ihnen schreiben, sobald sie fertig sind, mit dem Link zu Lexroom und einem einseitigen PDF. Verbinden Sie Ihr eigenes Lexroom-Konto: Schreiben Sie mir "Lexroom verbinden", dann sende ich Ihnen den Link;\n• Ihr Gmail und Ihren Google Kalender lesen und E-Mails erst nach Ihrer Bestätigung senden. Verbinden Sie Ihr Gmail: Schreiben Sie mir "Gmail verbinden".',
+    "Was ich kann:\n• Ihre Rechtsfragen beantworten;\n• im Hintergrund juristische Recherchen in Lexroom durchführen und Ihnen schreiben, sobald sie fertig sind, mit dem Link zu Lexroom und einem einseitigen PDF;\n• Ihr Gmail und Ihren Google Kalender lesen und E-Mails erst nach Ihrer Bestätigung senden.\n\nFür Recherchen, E-Mails und Kalender brauche ich Ihr eigenes Konto: Wenn es nötig ist, frage ich Sie, ob ich es verbinden soll, und sende Ihnen den Link.",
     'Fragen Sie mich zum Beispiel:\n• "Wie lange kann ich gegen einen Zahlungsbefehl (decreto ingiuntivo) Einspruch einlegen?"\n• "Suche Rechtsprechung zur Kündigung eines Mietvertrags"\n• "Was steht morgen in meinem Kalender?"',
     "Meine Antworten ersetzen keinen Anwalt. Die Chats und Ergebnisse jedes Nutzers bleiben privat.",
   ].join("\n\n"),

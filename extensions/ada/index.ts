@@ -22,6 +22,7 @@ import {
   adaTodoListDefinition,
 } from "./src/account-tool-definitions.js";
 import { buildInjectedBrief } from "./src/brief.js";
+import { connectOfferNote, takeConnectOffers } from "./src/connect-offers.js";
 import { executeAdaDeadlineList, executeAdaDeadlineReply } from "./src/deadline-tools.js";
 import { planDigest, type DigestSignal } from "./src/digest.js";
 import { openAdaGoogleAccountFromApi } from "./src/google-account.js";
@@ -459,7 +460,17 @@ const entry = definePluginEntry({
       await readReceipt;
     });
 
-    api.on("before_prompt_build", () => ({ prependSystemContext: ADA_PERSONA }));
+    api.on("before_prompt_build", (_event, ctx) => {
+      const turn = resolveTurnOwner({
+        requesterSenderId: ctx?.senderId,
+        messageChannel: ctx?.channelId,
+        sessionKey: ctx?.sessionKey,
+      });
+      const note = connectOfferNote(turn.ok ? takeConnectOffers(turn.owner) : []);
+      return note
+        ? { prependSystemContext: ADA_PERSONA, prependContext: note }
+        : { prependSystemContext: ADA_PERSONA };
+    });
 
     api.on(
       "before_prompt_build",

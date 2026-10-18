@@ -259,7 +259,9 @@ describe("sender B cannot use or learn about sender A's Lexroom", () => {
     })) as { jobId: string };
     await vi.waitFor(() => expect(pushed.length).toBeGreaterThanOrEqual(2));
     expect(pushed.every((entry) => entry.to === `+${BRUNO}`)).toBe(true);
-    expect(pushed.at(-1)?.text).toContain("Lexroom non è collegato");
+    expect(pushed.at(-1)?.text).toContain(
+      "Lexroom non è ancora collegato al tuo numero: vuoi che ti mandi il link",
+    );
     expect(fetchMock).not.toHaveBeenCalled();
     expect(new Set(openAdaLexroomAccountFromApi.mock.calls.map(([, owner]) => owner))).toEqual(
       new Set([BRUNO]),

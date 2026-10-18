@@ -1,4 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { noteConnectOffer } from "./connect-offers.js";
 import { openAdaGoogleAccountDbFromApi } from "./google-account.js";
 import { sendAdaWhatsAppText } from "./google-notify.js";
 import { maskNumber } from "./inbound-log.js";
@@ -6,11 +7,11 @@ import { openAdaMemoryIfExistsFromApi } from "./memory.js";
 import { resolveLanguage, type Language } from "./research-link-outbound.js";
 
 const MOVED: Record<Language, string> = {
-  it: "Il tuo Gmail e il tuo calendario Google sono stati scollegati: questa casella è stata collegata da un altro numero. Per ricollegarla scrivimi «collega Gmail».",
-  en: 'Your Gmail and Google Calendar were disconnected: this mailbox was connected from another number. To connect it again write "connect Gmail".',
-  es: 'Tu Gmail y tu Google Calendar se desconectaron: este buzón se conectó desde otro número. Para volver a conectarlo escríbeme "conecta Gmail".',
-  fr: 'Votre Gmail et votre Google Agenda ont été déconnectés : cette boîte a été connectée depuis un autre numéro. Pour la reconnecter, écrivez-moi "connecte Gmail".',
-  de: 'Ihr Gmail und Ihr Google Kalender wurden getrennt: Dieses Postfach wurde von einer anderen Nummer verbunden. Zum erneuten Verbinden schreiben Sie mir "Gmail verbinden".',
+  it: "Il tuo Gmail e il tuo calendario Google sono stati scollegati: questa casella è stata collegata da un altro numero. Vuoi che ti mandi il link per ricollegarla?",
+  en: "Your Gmail and Google Calendar were disconnected: this mailbox was connected from another number. Do you want me to send you the link to connect it again?",
+  es: "Tu Gmail y tu Google Calendar se desconectaron: este buzón se conectó desde otro número. ¿Quieres que te envíe el enlace para volver a conectarlo?",
+  fr: "Votre Gmail et votre Google Agenda ont été déconnectés : cette boîte a été connectée depuis un autre numéro. Voulez-vous que je vous envoie le lien pour la reconnecter ?",
+  de: "Ihr Gmail und Ihr Google Kalender wurden getrennt: Dieses Postfach wurde von einer anderen Nummer verbunden. Soll ich Ihnen den Link zum erneuten Verbinden senden?",
 };
 
 /**
@@ -34,7 +35,9 @@ export async function releaseMailboxFromOtherOwners(
     const profile = await (await openAdaMemoryIfExistsFromApi(api, other))?.readProfile();
     const language = await resolveLanguage("", async () => profile?.language);
     const sent = await sendAdaWhatsAppText({ api, to: `+${other}`, text: MOVED[language] });
-    if (!sent.ok) {
+    if (sent.ok) {
+      noteConnectOffer(other, "google");
+    } else {
       api.logger.warn(`ada mailbox moved note not sent to=${maskNumber(other)}: ${sent.error}`);
     }
   }

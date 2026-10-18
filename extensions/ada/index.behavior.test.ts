@@ -568,7 +568,7 @@ describe("ada_research", () => {
       ok: true,
       state: "delivered",
     });
-    expect(await researchResult()).toContain("Lexroom non è collegato");
+    expect(await researchResult()).toContain("Lexroom non è ancora collegato al tuo numero: vuoi che ti mandi il link");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
