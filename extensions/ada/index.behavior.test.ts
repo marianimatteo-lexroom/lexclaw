@@ -13,7 +13,7 @@ vi.mock("./src/google-account.js", () => ({
   openAdaGoogleAccountDbFromApi: vi.fn(),
 }));
 vi.mock("./src/memory.js", () => ({
-  openAdaMemoryIfExistsFromApi: vi.fn(),
+  openAdaMemoryFromApi: vi.fn(),
   openAdaMemoryIfExistsFromApi,
   openAdaRegistryFromApi: vi.fn(),
 }));
@@ -900,7 +900,7 @@ describe("before_prompt_build hook", () => {
     expect(memory.readProfile).toHaveBeenCalledTimes(1);
     const { prependContext } = result as { prependContext: string };
     const blocks = prependContext.split("\n\n");
-    expect(blocks[0]).toMatch(/^# Lawyer profile/u);
+    expect(blocks[0]).toMatch(/^# Profile/u);
     expect(blocks[1]).toBe(
       "# Open loops\n- [todo-1] matter-a / lawyer / pending: Confirm hearing date",
     );

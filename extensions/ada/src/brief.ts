@@ -16,7 +16,7 @@ export function renderLawyerProfile(profile: LawyerProfile): string {
   const generated = new Date(profile.generatedAtMs).toISOString().slice(0, 10);
   return clip(
     [
-      "# Lawyer profile",
+      "# Profile",
       `- Name: ${profile.name}`,
       `- Timezone: ${profile.timezone}`,
       profile.email ? `- Email: ${profile.email}` : null,

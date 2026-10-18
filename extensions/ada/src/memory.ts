@@ -159,18 +159,30 @@ const REGISTRY_FILE = "memory.sqlite";
 const ADOPTED_MARKER = "memory/legacy-adopted";
 const memoryFile = (owner: string) => `memory/${owner}.sqlite`;
 
-type MemoryLocation = { runtimeSource: string; stateDir: string };
+type MemoryLocation = {
+  runtimeSource: string;
+  stateDir: string;
+  /** How a database file becomes a store; the SQLite worker unless a test supplies one. */
+  open?: (databasePath: string) => Promise<MemoryStore>;
+};
+
+function createStore(location: MemoryLocation, databasePath: string): Promise<MemoryStore> {
+  return (
+    location.open?.(databasePath) ??
+    openSqliteWorkerStore<AdaMemoryOperations>({
+      moduleUrl: adaMemoryWorkerUrl(location.runtimeSource),
+      databasePath,
+      input: undefined,
+    }).then(wrapMemoryWorker)
+  );
+}
 
 function openStoreAt(location: MemoryLocation, databasePath: string): Promise<MemoryStore> {
   const cached = stores.get(databasePath);
   if (cached) {
     return cached;
   }
-  const opening = openSqliteWorkerStore<AdaMemoryOperations>({
-    moduleUrl: adaMemoryWorkerUrl(location.runtimeSource),
-    databasePath,
-    input: undefined,
-  }).then(wrapMemoryWorker);
+  const opening = createStore(location, databasePath);
   stores.set(databasePath, opening);
   opening.catch(() => {
     stores.delete(databasePath);
@@ -238,7 +250,7 @@ export function openAdaMemory(
     if (params.owner === params.lawyer) {
       await adoptLegacyMemory(params, params.owner);
     }
-    return await openStoreAt(params, databasePath);
+    return await createStore(params, databasePath);
   })();
   stores.set(databasePath, opening);
   opening.catch(() => {

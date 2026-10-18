@@ -371,6 +371,17 @@ describe("welcome text", () => {
     }
   });
 
+  it("tells the user to connect their own Lexroom account and Gmail", () => {
+    expect(welcomeText("it")).toContain(
+      "Collega il tuo account Lexroom: scrivimi «collega Lexroom»",
+    );
+    expect(welcomeText("it")).toContain("Collega il tuo Gmail: scrivimi «collega Gmail»");
+    expect(welcomeText("en")).toContain("Connect your own Lexroom account");
+    expect(welcomeText("es")).toContain("Conecta tu cuenta de Lexroom");
+    expect(welcomeText("fr")).toContain("Connectez votre compte Lexroom");
+    expect(welcomeText("de")).toContain("Verbinden Sie Ihr eigenes Lexroom-Konto");
+  });
+
   it("fits one WhatsApp message", () => {
     for (const language of LANGUAGES) {
       expect(welcomeText(language).length, language).toBeLessThan(1200);

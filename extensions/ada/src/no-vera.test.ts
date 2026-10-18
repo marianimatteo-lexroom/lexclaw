@@ -4,6 +4,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, expect, it, vi } from "vitest";
 import plugin from "../index.js";
+import { renderDigestText, renderGoogleConnectText } from "./digest-text.js";
 import { extractPdfText } from "./pdf-text.js";
 import { ADA_PERSONA } from "./persona.js";
 import type { Language } from "./research-link-outbound.js";
@@ -18,6 +19,31 @@ import { welcomeText } from "./welcome.js";
  */
 const OLD_NAME = /(?<![\w/.-])vera(?![\w/-]|\.\w)/iu;
 const ROOT = join(import.meta.dirname, "..");
+const DIGEST = {
+  deliver: true as const,
+  items: [
+    {
+      matterId: "m",
+      matterLabel: "Rossi",
+      kind: "deadline" as const,
+      summary: "memoria",
+      cost: 100,
+      dueAt: "2026-10-12T15:00:00.000Z",
+    },
+  ],
+  nextSteps: [
+    { action: "research" as const, matterId: "m", matterLabel: "Rossi", instruction: "Research" },
+    {
+      action: "draft_if_confirmed" as const,
+      matterId: "m",
+      matterLabel: "Rossi",
+      instruction: "Draft",
+    },
+  ] as [
+    { action: "research"; matterId: string; matterLabel: string; instruction: string },
+    { action: "draft_if_confirmed"; matterId: string; matterLabel: string; instruction: string },
+  ],
+};
 const LANGUAGES: Language[] = ["it", "en", "es", "fr", "de"];
 
 function readTree(dir: string, keep: (file: string) => boolean): string[] {
@@ -74,7 +100,12 @@ describe("the assistant's name", () => {
 
     const messages: string[] = [];
     for (const language of LANGUAGES) {
-      messages.push(researchAckText(language), welcomeText(language));
+      messages.push(
+        researchAckText(language),
+        welcomeText(language),
+        renderGoogleConnectText(language, "https://example.com/connect"),
+        renderDigestText(DIGEST, language, "Europe/Rome"),
+      );
       for (const failure of [
         { ok: false as const, reason: "timeout" as const, message: "m", error: "m" },
         { ok: false as const, reason: "not_connected" as const, error: "e" },

@@ -75,3 +75,30 @@ describe("runCollectExclusive", () => {
     await expect(runCollectExclusive(async () => "next")).resolves.toBe("next");
   });
 });
+
+describe("runCollectExclusive keys", () => {
+  it("coalesces polls per number, so one number's waiting pass never swallows another's", async () => {
+    const first = gate();
+    const ran: string[] = [];
+    const running = runCollectExclusive(async () => {
+      await first.opened;
+    });
+    const annaA = runCollectExclusive(async () => ran.push("anna"), {
+      coalesce: true,
+      key: "anna",
+    });
+    const annaB = runCollectExclusive(async () => ran.push("anna-again"), {
+      coalesce: true,
+      key: "anna",
+    });
+    const bruno = runCollectExclusive(async () => ran.push("bruno"), {
+      coalesce: true,
+      key: "bruno",
+    });
+    expect(annaB).toBe(annaA);
+    expect(bruno).not.toBe(annaA);
+    first.open();
+    await Promise.all([running, annaA, bruno]);
+    expect(ran).toEqual(["anna", "bruno"]);
+  });
+});
