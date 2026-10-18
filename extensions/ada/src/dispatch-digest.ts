@@ -59,7 +59,7 @@ export async function dispatchDigest(
   }
   const memory = await openAdaMemoryIfExistsFromApi(api, request.owner);
   const profile = await memory?.readProfile();
-  const language = await resolveLanguage("", async () => profile?.language);
+  const language = await resolveLanguage("", async () => profile?.language, request.owner);
   let text: string;
   if (request.connectOnly) {
     const connect = await executeAdaGoogleConnect(

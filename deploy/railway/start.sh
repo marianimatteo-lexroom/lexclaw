@@ -183,21 +183,24 @@ migrate_legacy_plugin() {
 }
 migrate_legacy_plugin
 
-# A volume from before the rename can still name the assistant Vera in the workspace identity
-# files and in the agent's configured name, and describe her as working for one lawyer only; a
-# deploy never rewrites any of it. In IDENTITY.md and SOUL.md: rename the standalone word Vera,
-# turn the known "one lawyer / one person only" phrases into "everyone who writes to her", and
-# append one marked section that says she serves every sender (once; the marker makes a second
-# run a no-op). The first change keeps a .pre-ada copy of each file beside it. Every other
-# character, other workspace files, paths, domains and VERA_* names are left alone. The plugin's
+# A volume from before the rename can still name the assistant Vera in the workspace files the
+# model reads and in the agent's configured name, and describe her as working for one lawyer
+# only or answering in Italian; a deploy never rewrites any of it. In IDENTITY.md and SOUL.md:
+# rename the standalone word Vera or VERA (case-sensitive, so the Italian adjective vera stays),
+# turn the known "one lawyer / one person only" phrases into
+# "everyone who writes to her", and append one marked section that says she serves every sender.
+# SOUL.md also gets a marked section that says she answers in the language of the latest message.
+# Each section is appended once; its marker makes a second run a no-op. In AGENTS.md, TOOLS.md,
+# HEARTBEAT.md and BOOTSTRAP.md only the standalone word is renamed. The first change keeps a
+# .pre-ada copy of each file beside it. Every other character, USER.md, MEMORY.md and memory/ (a
+# client can be called Vera), paths, domains and VERA_* names are left alone. The plugin's
 # per-turn persona says the same and overrides these files either way.
 migrate_identity_name() {
   node -e '
     const fs = require("node:fs");
     const path = require("node:path");
-    const word = /(?<![\w./@:-])vera(?![\w@/-]|\.\w)/giu;
-    const ada = (found) =>
-      found === found.toUpperCase() ? "ADA" : found === found.toLowerCase() ? "ada" : "Ada";
+    const word = /(?<![\w./@:-])(?:Vera|VERA)(?![\w@/-]|\.\w)/gu;
+    const ada = (found) => (found === "VERA" ? "ADA" : "Ada");
     const onePerson = [
       [/\b(for|to|with) (?:one|a single|just one) (?:lawyer|person|user|client)(?: only)?\b/giu, "$1 everyone who writes to her"],
       [/\bper (?:una|un) (?:sola persona|solo avvocato|persona sola|avvocato solo)\b/giu, "per chiunque le scriva"],
@@ -206,16 +209,33 @@ migrate_identity_name() {
     const block =
       MARK +
       "\n## Who Ada serves\n\nAda serves everyone who writes to her on WhatsApp, each in a private chat, with their own Lexroom, Gmail and Calendar connections. She never says she works for one person only. Any older line saying she works for one lawyer or one person is out of date.\n<!-- /ada:multi-user -->\n";
-    for (const name of ["IDENTITY.md", "SOUL.md"]) {
+    const LANG_MARK = "<!-- ada:language -->";
+    const langBlock =
+      LANG_MARK +
+      "\n## Language\n\nAda always replies in the language of the most recent message from the person she is talking to, and switches when they switch. That overrides any older line that names a language or says to answer in Italian, and the language of earlier messages, profiles, notes and tool output.\n<!-- /ada:language -->\n";
+    const files = [
+      { name: "IDENTITY.md", serves: true },
+      { name: "SOUL.md", serves: true, language: true },
+      { name: "AGENTS.md" },
+      { name: "TOOLS.md" },
+      { name: "HEARTBEAT.md" },
+      { name: "BOOTSTRAP.md" },
+    ];
+    for (const { name, serves, language } of files) {
       const file = path.join(process.argv[1], name);
       if (!fs.existsSync(file)) continue;
       const before = fs.readFileSync(file, "utf8");
       let after = before.replace(word, ada);
-      const at = after.indexOf(MARK);
-      let head = at < 0 ? after : after.slice(0, at);
-      const tail = at < 0 ? "" : after.slice(at);
-      for (const [pattern, text] of onePerson) head = head.replace(pattern, text);
-      after = at < 0 ? head.replace(/\s*$/u, "") + "\n\n" + block : head + tail;
+      if (serves) {
+        const at = after.indexOf(MARK);
+        let head = at < 0 ? after : after.slice(0, at);
+        const tail = at < 0 ? "" : after.slice(at);
+        for (const [pattern, text] of onePerson) head = head.replace(pattern, text);
+        after = at < 0 ? head.replace(/\s*$/u, "") + "\n\n" + block : head + tail;
+      }
+      if (language && !after.includes(LANG_MARK)) {
+        after = after.replace(/\s*$/u, "") + "\n\n" + langBlock;
+      }
       if (after === before) continue;
       try {
         fs.copyFileSync(file, file + ".pre-ada", fs.constants.COPYFILE_EXCL);
@@ -225,10 +245,10 @@ migrate_identity_name() {
       fs.writeFileSync(file, after);
       console.log("[start] updated the assistant identity in " + name);
     }
-  ' "${WORKSPACE_DIR}" || log "WARNING: could not update the workspace identity files; the plugin still tells the model its name is Ada and that she serves everyone"
+  ' "${WORKSPACE_DIR}" || log "WARNING: could not update the workspace identity files; the plugin still tells the model its name is Ada, that she serves everyone and that she answers in the language of the latest message"
   local current
   current="$(oc config get agents.entries.main.identity.name --json 2>/dev/null || true)"
-  if printf '%s' "${current}" | grep -qiE '(^|[^[:alnum:]])vera([^[:alnum:]]|$)'; then
+  if printf '%s' "${current}" | grep -qE '(^|[^[:alnum:]])(Vera|VERA)([^[:alnum:]]|$)'; then
     config_set agents.entries.main.identity.name '"Ada"'
   fi
 }

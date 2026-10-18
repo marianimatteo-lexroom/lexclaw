@@ -10,6 +10,7 @@ vi.mock("./google-tools.js", () => ({ executeAdaGoogleConnect }));
 
 import { takeConnectOffers } from "./connect-offers.js";
 import { clearSentDigests, dispatchDigest } from "./dispatch-digest.js";
+import { clearInboundLanguages, recordInboundLanguage } from "./research-link-outbound.js";
 
 const ANNA = "393331111111";
 const BRUNO = "393332222222";
@@ -70,6 +71,7 @@ function setup(profiles: Record<string, { language: string; timezone: string } |
 beforeEach(() => {
   vi.clearAllMocks();
   clearSentDigests();
+  clearInboundLanguages();
 });
 
 describe("dispatchDigest", () => {
@@ -92,6 +94,33 @@ describe("dispatchDigest", () => {
     expect(sent[0]?.text).toContain("Buongiorno. Questo non può aspettare:");
     expect(sent[0]?.text).toContain("Rossi SRL");
     expect(sent[0]?.text).toContain("Posso fare subito:");
+  });
+
+  it("writes the digest and the reconnect note in the language of the latest message, over the profile", async () => {
+    const { api, sent } = setup({ [ANNA]: { language: "Italian", timezone: "Europe/Rome" } });
+    recordInboundLanguage(ANNA, "Run a digest for me now");
+    recordInboundLanguage(ANNA, "ok");
+    await dispatchDigest(api, { owner: ANNA, plan: PLAN, idempotencyKey: "lang-1" });
+    expect(sent[0]?.text).toContain("Good morning. This one should not wait:");
+
+    executeAdaGoogleConnect.mockResolvedValue({
+      ok: true,
+      connected: false,
+      ask: { url: "https://ada.example.com/g/abc", message: "m" },
+    });
+    await dispatchDigest(api, {
+      owner: ANNA,
+      plan: NO_PLAN,
+      idempotencyKey: "lang-2",
+      connectOnly: true,
+      reconnect: true,
+    });
+    expect(sent[1]?.text).toContain("https://ada.example.com/g/abc");
+    expect(sent[1]?.text).not.toMatch(/\b(collega|scaduto|Gmail e)\b/u);
+
+    recordInboundLanguage(ANNA, "Ok e Google?");
+    await dispatchDigest(api, { owner: ANNA, plan: PLAN, idempotencyKey: "lang-3" });
+    expect(sent[2]?.text).toContain("Buongiorno. Questo non può aspettare:");
   });
 
   it("sends a different owner's digest to that owner, never to the previous one", async () => {

@@ -1,4 +1,4 @@
-import { normalizeWhatsAppNumber } from "./google-notify.js";
+import { normalizeWhatsAppNumber } from "./whatsapp-number.js";
 
 /** `+39…4567`: enough to tell two senders apart in a log, never the whole number. */
 export function maskNumber(...senders: unknown[]): string {

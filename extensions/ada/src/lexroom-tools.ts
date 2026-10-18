@@ -34,6 +34,7 @@ import {
 } from "./lexroom-timeout.js";
 import type { DeadlineItem } from "./memory-contract.js";
 import { lawyerOwner } from "./owner.js";
+import { resolveLanguage, type Language } from "./research-link-outbound.js";
 import {
   livePushDeps,
   pushResearchResult,
@@ -64,8 +65,16 @@ async function openStore(api: StoreApi, owner: string): Promise<LexroomAccountSt
   }
 }
 
-export function lexroomConnectedText(_email: string): string {
-  return "Lexroom is connected. I can run research and drafts when you ask.";
+const LEXROOM_CONNECTED: Record<Language, string> = {
+  it: "Lexroom è collegato. Posso fare ricerche e redigere bozze quando me lo chiedi.",
+  en: "Lexroom is connected. I can run research and drafts when you ask.",
+  es: "Lexroom está conectado. Puedo hacer investigaciones y borradores cuando me lo pidas.",
+  fr: "Lexroom est connecté. Je peux faire des recherches et des brouillons quand vous me le demandez.",
+  de: "Lexroom ist verbunden. Ich kann Recherchen und Entwürfe erstellen, wenn Sie mich darum bitten.",
+};
+
+export function lexroomConnectedText(language: Language): string {
+  return LEXROOM_CONNECTED[language];
 }
 
 export async function sendLexroomConnectedNotice(params: {
@@ -112,7 +121,7 @@ export async function sendLexroomConnectedNotice(params: {
     await send({
       cfg: params.config,
       to,
-      text: lexroomConnectedText(params.email),
+      text: lexroomConnectedText(await resolveLanguage("", undefined, params.owner)),
     });
   } catch (error) {
     return {

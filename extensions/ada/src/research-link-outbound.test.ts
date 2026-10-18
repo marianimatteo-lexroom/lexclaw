@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  clearInboundLanguages,
   detectLanguage,
+  inboundLanguage,
   markResearchLinkReady,
+  recordInboundLanguage,
   registerResearchLinkHooks,
+  resolveLanguage,
   takeResearchLinks,
   withResearchLinks,
 } from "./research-link-outbound.js";
@@ -19,6 +23,7 @@ const ENGLISH =
 
 beforeEach(() => {
   takeResearchLinks("", OWNER);
+  clearInboundLanguages();
 });
 
 describe("ready research links", () => {
@@ -75,6 +80,96 @@ describe("detectLanguage", () => {
   it("does not guess from a short or neutral text", () => {
     expect(detectLanguage("Ok")).toBeUndefined();
     expect(detectLanguage("Cass. 1/2024 [1]")).toBeUndefined();
+    expect(detectLanguage("👍")).toBeUndefined();
+    expect(detectLanguage("https://app.lexroom.ai/research/aaa111")).toBeUndefined();
+  });
+
+  it.each([
+    ["Give me a new link", "en"],
+    ["Run a digest for me now", "en"],
+    ["Ok e Google?", "it"],
+    ["Ciao chi sei?", "it"],
+    ["Mandami un nuovo link", "it"],
+    ["Dame un enlace nuevo, gracias", "es"],
+    ["Bonjour, envoie-moi un nouveau lien", "fr"],
+    ["Schick mir bitte einen neuen Link", "de"],
+    ["In tribunale", "it"],
+    ["in udienza", "it"],
+    ["In ufficio", "it"],
+    ["in arrivo", "it"],
+    ["Ok in ritardo", "it"],
+    ["In bocca al lupo", "it"],
+    ["Do atto", "it"],
+    ["Prima udienza in Corte d'Appello", "it"],
+    ["fai il recap del meeting", "it"],
+    ["controlla la governing law del contratto", "it"],
+    ["Check the SPA", "en"],
+  ])("tells the short message %j", (text, language) => {
+    expect(detectLanguage(text)).toBe(language);
+  });
+
+  it.each([
+    ["File a lien", undefined],
+    ["Lien release deadline?", undefined],
+    ["Do me a favor", undefined],
+    ["Any hearings Mon?", undefined],
+    ["E-mail him", undefined],
+    ["Dove Ltd contract", undefined],
+    ["Was will er?", undefined],
+    ["Manda una e-mail al cliente", undefined],
+  ])("never takes the wrong language from the single word in %j", (text, language) => {
+    expect(detectLanguage(text)).toBe(language);
+  });
+
+  it("still tells a short message that carries real evidence next to those words", () => {
+    expect(detectLanguage("E-mail him the new link please")).toBe("en");
+    expect(detectLanguage("Mandami una e-mail con il nuovo link")).toBe("it");
+  });
+
+  it.each(["in", "In", "do", "ok in", "on", "am", "has", "me", "a", "la", "il", "una", "corte"])(
+    "does not take the word %j that other languages use for evidence of any language",
+    (text) => {
+      expect(detectLanguage(text)).toBeUndefined();
+    },
+  );
+});
+
+describe("the language of a number's latest message", () => {
+  it("follows the latest message that carries a language, and keeps it through one that does not", () => {
+    expect(inboundLanguage(OWNER)).toBeUndefined();
+    recordInboundLanguage(OWNER, "Give me a new link");
+    expect(inboundLanguage(OWNER)).toBe("en");
+    for (const ambiguous of ["ok", "👍", "https://example.com/neu", "1"]) {
+      recordInboundLanguage(OWNER, ambiguous);
+    }
+    expect(inboundLanguage(OWNER)).toBe("en");
+    recordInboundLanguage(OWNER, "Ok e Google?");
+    expect(inboundLanguage(OWNER)).toBe("it");
+    recordInboundLanguage(OWNER, "Run a digest for me now");
+    expect(inboundLanguage(OWNER)).toBe("en");
+  });
+
+  it("is kept per number", () => {
+    recordInboundLanguage(OWNER, "Give me a new link");
+    expect(inboundLanguage(OTHER)).toBeUndefined();
+  });
+
+  it("wins over the answer's words and the profile language, and those still apply to a number never heard from", async () => {
+    const profile = async () => "Spanish";
+    expect(await resolveLanguage(ITALIAN, profile, OWNER)).toBe("it");
+    recordInboundLanguage(OWNER, "Run a digest for me now");
+    expect(await resolveLanguage(ITALIAN, profile, OWNER)).toBe("en");
+    expect(await resolveLanguage("", profile, OWNER)).toBe("en");
+    expect(await resolveLanguage("", profile, OTHER)).toBe("es");
+    expect(await resolveLanguage("", undefined, OTHER)).toBe("it");
+  });
+
+  it("sets the language of the link label appended to a reply", async () => {
+    recordInboundLanguage(OWNER, "Give me a new link");
+    markResearchLinkReady(URL_A, OWNER);
+    expect(await withResearchLinks(ITALIAN, { owner: OWNER })).toBe(
+      `${ITALIAN}\n\nContinue in Lexroom: ${URL_A}`,
+    );
   });
 });
 

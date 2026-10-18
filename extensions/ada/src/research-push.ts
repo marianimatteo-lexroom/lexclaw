@@ -1,11 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { whatsappWindowOpen } from "./collector.js";
 import { noteConnectOffer, type ConnectOfferKind } from "./connect-offers.js";
-import {
-  ADA_WHATSAPP_CHANNEL,
-  normalizeWhatsAppNumber,
-  sendAdaWhatsAppText,
-} from "./google-notify.js";
+import { ADA_WHATSAPP_CHANNEL, sendAdaWhatsAppText } from "./google-notify.js";
 import { logInboundSkip } from "./inbound-log.js";
 import { sendKapsoPdf } from "./kapso-document.js";
 import { formatSources } from "./lexroom-citations.js";
@@ -14,6 +10,7 @@ import { lexroomLogger, type LexroomLog } from "./lexroom-log.js";
 import { openAdaMemoryIfExistsFromApi } from "./memory.js";
 import { researchLinkLine, resolveLanguage, type Language } from "./research-link-outbound.js";
 import { buildResearchPdf, type ResearchPdf } from "./research-pdf.js";
+import { normalizeWhatsAppNumber } from "./whatsapp-number.js";
 import { readDigestReadyTemplate, sendDigestReadyNotice } from "./whatsapp-template.js";
 
 /**
@@ -222,10 +219,10 @@ function connectOffer(result: ResearchOutcome | LexroomFailure): ConnectOfferKin
 
 export async function researchMessage(
   result: ResearchOutcome | LexroomFailure,
-  deps: Pick<PushDeps, "readProfileLanguage">,
+  deps: Pick<PushDeps, "readProfileLanguage"> & Partial<Pick<PushDeps, "recipient">>,
 ): Promise<string> {
   if (result.ok) {
-    const language = await resolveLanguage(result.answer, deps.readProfileLanguage);
+    const language = await resolveLanguage(result.answer, deps.readProfileLanguage, deps.recipient);
     return fitResearchText({
       answer: result.answer,
       sources: result.sources.length
@@ -234,7 +231,7 @@ export async function researchMessage(
       link: result.researchUrl ? researchLinkLine(language, result.researchUrl) : "",
     });
   }
-  const language = await resolveLanguage("", deps.readProfileLanguage);
+  const language = await resolveLanguage("", deps.readProfileLanguage, deps.recipient);
   const strings = STRINGS[language];
   const reason =
     result.reason === "timeout"
@@ -318,14 +315,14 @@ async function sendText(text: string, deps: PushDeps): Promise<SendResult> {
 /** Builds the research PDF, or returns undefined and logs a warning. Never throws. */
 async function prepareResearchPdf(
   params: { jobId: string; query: string; result: ResearchOutcome | LexroomFailure },
-  deps: Pick<PushDeps, "readProfileLanguage" | "log" | "sendDocument">,
+  deps: Pick<PushDeps, "readProfileLanguage" | "recipient" | "log" | "sendDocument">,
 ): Promise<ResearchPdf | undefined> {
   const { result } = params;
   if (!deps.sendDocument || !result.ok || !result.answer.trim()) {
     return undefined;
   }
   try {
-    const language = await resolveLanguage(result.answer, deps.readProfileLanguage);
+    const language = await resolveLanguage(result.answer, deps.readProfileLanguage, deps.recipient);
     return await buildResearchPdf({
       query: params.query,
       answer: result.answer,
@@ -378,7 +375,7 @@ export async function sendResearchAck(
   deps: PushDeps,
 ): Promise<boolean> {
   const startedAt = (deps.now ?? Date.now)();
-  const language = await resolveLanguage(params.query, deps.readProfileLanguage);
+  const language = await resolveLanguage(params.query, deps.readProfileLanguage, deps.recipient);
   const result = await deps.send(researchAckText(language));
   if (result.ok) {
     deps.log("ack.sent", { job: params.jobId, language, ms: (deps.now ?? Date.now)() - startedAt });

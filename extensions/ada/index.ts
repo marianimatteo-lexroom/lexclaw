@@ -66,7 +66,7 @@ import { openAdaMemoryIfExistsFromApi } from "./src/memory.js";
 import { ownerToolFactory } from "./src/owner-tool.js";
 import { lawyerOwner, resolveTurnOwner } from "./src/owner.js";
 import { ADA_PERSONA } from "./src/persona.js";
-import { registerResearchLinkHooks } from "./src/research-link-outbound.js";
+import { recordInboundLanguage, registerResearchLinkHooks } from "./src/research-link-outbound.js";
 import {
   lastSenderInboundAt,
   onSenderInbound,
@@ -447,6 +447,8 @@ const entry = definePluginEntry({
         // Before any await: the run for this message must see when it arrived, so it does not
         // read a question that this very message caused to be sent.
         recordInboundArrival(arrivedFrom, arrivedAtMs);
+        // Also before any await: the held reconnect note released below is written in this language.
+        recordInboundLanguage(arrivedFrom, typeof event.content === "string" ? event.content : "");
       }
       const messageId = readInboundMessageId(event, ctx);
       const accountId = typeof ctx.accountId === "string" ? ctx.accountId : undefined;

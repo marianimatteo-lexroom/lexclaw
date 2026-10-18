@@ -5,6 +5,8 @@ import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, expect, it, vi } from "vitest";
 import plugin from "../index.js";
 import { renderDigestText, renderGoogleConnectText } from "./digest-text.js";
+import { googleConnectedText } from "./google-notify.js";
+import { lexroomConnectedText } from "./lexroom-tools.js";
 import { extractPdfText } from "./pdf-text.js";
 import { ADA_PERSONA } from "./persona.js";
 import type { Language } from "./research-link-outbound.js";
@@ -104,6 +106,10 @@ describe("the assistant's name", () => {
         researchAckText(language),
         welcomeText(language),
         renderGoogleConnectText(language, "https://example.com/connect"),
+        renderGoogleConnectText(language, "https://example.com/connect", "expired"),
+        renderGoogleConnectText(language, "https://example.com/connect", "send"),
+        googleConnectedText(language),
+        lexroomConnectedText(language),
         renderDigestText(DIGEST, language, "Europe/Rome"),
       );
       for (const failure of [
@@ -130,6 +136,24 @@ describe("the assistant's name", () => {
       text.replace(ADA_PERSONA, ""),
     );
     expect(texts.filter((text) => OLD_NAME.test(text))).toEqual([]);
+  });
+
+  it("is renamed by the boot script in every workspace file the model reads, except those that hold client facts", () => {
+    const script = readFileSync(join(ROOT, "..", "..", "deploy", "railway", "start.sh"), "utf8");
+    const migrated = [...script.matchAll(/\{ name: "([A-Z]+\.md)"/gu)].map((match) => match[1]);
+    expect(migrated.toSorted()).toEqual(
+      [
+        "AGENTS.md",
+        "BOOTSTRAP.md",
+        "HEARTBEAT.md",
+        "IDENTITY.md",
+        "SOUL.md",
+        "TOOLS.md",
+      ].toSorted(),
+    );
+    expect(migrated).not.toContain("USER.md");
+    expect(migrated).not.toContain("MEMORY.md");
+    expect(script).toContain("config_set agents.entries.main.identity.name '\"Ada\"'");
   });
 
   it("is not written as the capitalized word in any non-comment source line", () => {

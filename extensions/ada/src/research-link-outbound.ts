@@ -70,21 +70,111 @@ const STOPWORDS: Record<Language, ReadonlySet<string>> = {
   de: new Set("der die das und nicht ist mit für ein eine den dem von zu auf im".split(" ")),
 };
 
-/** The language of a reply by its stopwords; undefined when the text is too short to tell. */
+/**
+ * Words that settle the language of a short message, where the stopwords above rarely match: a
+ * request such as "give me a new link" has none of them. Only words that belong to one of the
+ * five languages are listed, so a hit is evidence and an ambiguous word ("no", "me", "ok") is not.
+ */
+const SHORT_HINTS: Record<Language, ReadonlySet<string>> = {
+  it: new Set(
+    "e ciao buongiorno buonasera grazie sì voglio vorrei mandami dammi fammi dimmi nuovo nuova nuovi quando domani oggi vai certo perfetto ricerca puoi ti chi ecco avvocato fai controlla prepara scrivi inviami aggiorna ricordami leggi riassumi traduci perché tribunale udienza ufficio arrivo ritardo bocca lupo atto appello prima contratto sentenza giudice fascicolo scadenza ricorso".split(
+      " ",
+    ),
+  ),
+  en: new Set(
+    "give new run now please thanks thank yes my what how can could would send show want need hello hi again today tomorrow morning your do does when who why where am there have has some about from just get let tell".split(
+      " ",
+    ),
+  ),
+  es: new Set(
+    "hola gracias quiero dame envía envia enviar nuevo enlace ahora puedes qué cómo mañana hoy sí necesito dime buscar correo usted tengo está estoy".split(
+      " ",
+    ),
+  ),
+  fr: new Set(
+    "bonjour merci voudrais veux nouveau maintenant peux pouvez demain oui je moi donne envoie plaît vous aujourd hui très être était".split(
+      " ",
+    ),
+  ),
+  de: new Set(
+    "hallo danke bitte ich mir neu neue neuen neuer jetzt kannst kann gib ja nein heute morgen wie wann möchte brauche schick schicke mein meine mich habe zeig".split(
+      " ",
+    ),
+  ),
+};
+
+/**
+ * Everyday words of each language that are not evidence of it but exist in it ("in", "do" and "il"
+ * are Italian, "has" is Spanish, "on" is French, "am" is German). They are never counted, and they
+ * make any stopword or hint of another language that spells the same ambiguous.
+ */
+const EVERYDAY_WORDS: Record<Language, ReadonlySet<string>> = {
+  it: new Set(
+    "in do a da su ma se mi ci vi lo la le gli un uno al del nel col dal sul tra fra no si ho hai ha è me te ne so corte".split(
+      " ",
+    ),
+  ),
+  en: new Set(
+    "a an in on at do me we he so no to be by it is as or if my us am go up of".split(" "),
+  ),
+  es: new Set(
+    "a de en el la lo me mi no se si te un una y o es su al del con por para he has ha cerca corte causa decreto cosa cliente prima".split(
+      " ",
+    ),
+  ),
+  fr: new Set("a de en le la un une me ne ni on ou se si te tu y du et est il elle au".split(" ")),
+  de: new Set("in im am an da so ob wo zu es er du die der das was".split(" ")),
+};
+
+const LANGUAGES = Object.keys(STOPWORDS) as Language[];
+
+const wordsOf = (language: Language): string[] => [
+  ...STOPWORDS[language],
+  ...SHORT_HINTS[language],
+  ...EVERYDAY_WORDS[language],
+];
+
+/** Words that belong to more than one supported language, so say nothing about a short message. */
+const AMBIGUOUS_WORDS: ReadonlySet<string> = (() => {
+  const seen = new Map<string, number>();
+  for (const language of LANGUAGES) {
+    for (const word of new Set(wordsOf(language))) {
+      seen.set(word, (seen.get(word) ?? 0) + 1);
+    }
+  }
+  return new Set([...seen].filter(([, count]) => count > 1).map(([word]) => word));
+})();
+
+const SHORT_MESSAGE_WORDS = 10;
+
+/**
+ * The language of a text; undefined when it is too short or too neutral to tell ("ok", a link, an
+ * emoji, a case citation). A long text is told by its stopwords. A short message has too few of
+ * them, so its hint words count as well, but only those no other supported language also uses.
+ */
 export function detectLanguage(text: string): Language | undefined {
   const words =
     text
       .slice(0, 3000)
       .toLowerCase()
+      .replace(/\be-?mail/gu, "email")
       .match(/[\p{L}]+/gu) ?? [];
-  const scores = (Object.keys(STOPWORDS) as Language[])
-    .map((language) => ({
-      language,
-      score: words.filter((word) => STOPWORDS[language].has(word)).length,
-    }))
-    .toSorted((a, b) => b.score - a.score);
+  const short = words.length <= SHORT_MESSAGE_WORDS;
+  const scores = LANGUAGES.map((language) => ({
+    language,
+    score: words.filter((word) =>
+      short
+        ? !AMBIGUOUS_WORDS.has(word) &&
+          (STOPWORDS[language].has(word) || SHORT_HINTS[language].has(word))
+        : STOPWORDS[language].has(word),
+    ).length,
+  })).toSorted((a, b) => b.score - a.score);
   const [best, second] = scores;
-  return best && best.score >= 3 && best.score >= (second?.score ?? 0) + 2
+  if (!best) {
+    return undefined;
+  }
+  const margin = best.score - (second?.score ?? 0);
+  return (short ? best.score >= 1 && margin >= 1 : best.score >= 3 && margin >= 2)
     ? best.language
     : undefined;
 }
@@ -114,14 +204,52 @@ export function researchLinkLine(language: Language, url: string): string {
   return `${LABELS[language]} ${url}`;
 }
 
+const MAX_TRACKED_LANGUAGES = 1000;
+
+/** The language of each number's latest message that carried one. In memory, like the other per-number state. */
+const inboundLanguages = new Map<string, Language>();
+
 /**
- * The language of a message: its own words when there are enough of them, else the lawyer's
- * profile language, else Italian. A failed profile read never fails the caller.
+ * A number wrote `text`. Its language becomes the one every code-sent message to that number uses,
+ * until a later message says otherwise. A message that does not carry a language ("ok", a link,
+ * an emoji) leaves the previous one in place instead of flipping it.
+ */
+export function recordInboundLanguage(owner: string, text: string): void {
+  const language = detectLanguage(text.replace(/https?:\/\/\S+/giu, " "));
+  if (!language) {
+    return;
+  }
+  inboundLanguages.delete(owner);
+  inboundLanguages.set(owner, language);
+  if (inboundLanguages.size > MAX_TRACKED_LANGUAGES) {
+    inboundLanguages.delete(inboundLanguages.keys().next().value ?? owner);
+  }
+}
+
+/** The language `owner` last wrote in, if this process saw it. */
+export function inboundLanguage(owner: string): Language | undefined {
+  return inboundLanguages.get(owner);
+}
+
+/** Forgets every tracked language. For tests: this state is shared by the whole process. */
+export function clearInboundLanguages(): void {
+  inboundLanguages.clear();
+}
+
+/**
+ * The language a message to `owner` is written in: the language of their latest message when
+ * known, else (a restart, or a number that never wrote) the words of `text`, then the saved
+ * profile language, then Italian. A failed profile read never fails the caller.
  */
 export async function resolveLanguage(
   text: string,
   readProfileLanguage?: () => Promise<string | undefined>,
+  owner?: string,
 ): Promise<Language> {
+  const known = owner ? inboundLanguage(owner) : undefined;
+  if (known) {
+    return known;
+  }
   const detected = detectLanguage(text);
   if (detected) {
     return detected;
@@ -150,7 +278,11 @@ export async function withResearchLinks(
   if (urls.length === 0) {
     return text;
   }
-  const language = await resolveLanguage(text, options.readProfileLanguage);
+  const language = await resolveLanguage(
+    text,
+    options.readProfileLanguage,
+    options.owner ?? undefined,
+  );
   return `${text.trimEnd()}\n\n${urls.map((url) => researchLinkLine(language, url)).join("\n")}`;
 }
 

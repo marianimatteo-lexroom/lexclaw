@@ -23,7 +23,12 @@ vi.mock("./src/service.js", async (importOriginal) => ({
 }));
 
 import plugin from "./index.js";
-import { markResearchLinkReady, takeResearchLinks } from "./src/research-link-outbound.js";
+import {
+  clearInboundLanguages,
+  inboundLanguage,
+  markResearchLinkReady,
+  takeResearchLinks,
+} from "./src/research-link-outbound.js";
 
 const GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send";
 const KAPSO_URL = "https://api.kapso.ai/meta/whatsapp/v23.0/100000000000000/messages";
@@ -828,6 +833,30 @@ describe("message_received hook", () => {
     });
     expect(logger.warn).not.toHaveBeenCalled();
     expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it("records the language of each WhatsApp number's latest message before the wake record runs", async () => {
+    clearInboundLanguages();
+    fetchMock.mockImplementation(async () => json({ success: true }));
+    let seenWhenRecorded: string | undefined;
+    recordSenderInbound.mockImplementation(async () => {
+      seenWhenRecorded = inboundLanguage("393331111111");
+    });
+    const { hook } = registerAda();
+    const write = (content: string, channelId = "kapso-whatsapp") =>
+      hook("message_received")(
+        { from: "+393331111111", content },
+        { channelId, messageId: MESSAGE_ID, senderId: "393331111111" },
+      );
+    await write("Give me a new link");
+    expect(seenWhenRecorded).toBe("en");
+    await write("ok");
+    expect(inboundLanguage("393331111111")).toBe("en");
+    await write("Ok e Google?");
+    expect(inboundLanguage("393331111111")).toBe("it");
+    await write("Run a digest for me now", "telegram");
+    expect(inboundLanguage("393331111111")).toBe("it");
+    clearInboundLanguages();
   });
 
   it("reads channel and message ids from the event when the context has none", async () => {

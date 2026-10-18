@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LexroomFailure, ResearchOutcome } from "./lexroom-client.js";
 import { extractPdfText } from "./pdf-text.js";
+import { clearInboundLanguages, recordInboundLanguage } from "./research-link-outbound.js";
 import { buildResearchPdf, type ResearchPdf } from "./research-pdf.js";
 import {
   clearHeldResearch,
@@ -68,6 +69,7 @@ function makeDeps(overrides: Partial<PushDeps> = {}) {
 
 beforeEach(() => {
   clearHeldResearch();
+  clearInboundLanguages();
 });
 
 describe("researchMessage", () => {
@@ -251,6 +253,23 @@ describe("researchMessage", () => {
       { readProfileLanguage: async () => "English" },
     );
     expect(text).toContain("The Lexroom research did not complete.");
+  });
+});
+
+describe("the language of the number's latest message", () => {
+  it("writes the framing, the failure notes and the ack in that language, over the answer and the profile", async () => {
+    recordInboundLanguage("393331111111", "Run a digest for me now");
+    const profile = { readProfileLanguage: async () => "Italian", recipient: "393331111111" };
+    expect(await researchMessage(outcome(), profile)).toContain("*Sources*");
+    expect(await researchMessage(outcome(), profile)).toContain(`Continue in Lexroom: ${URL_A}`);
+    expect(
+      await researchMessage({ ok: false, reason: "not_connected", error: "e" }, profile),
+    ).toContain("Lexroom is not connected to your number yet");
+    const { deps, sent } = makeDeps({ readProfileLanguage: async () => "Italian" });
+    recordInboundLanguage(deps.recipient, "Give me a new link");
+    recordInboundLanguage(deps.recipient, "ok");
+    await sendResearchAck({ jobId: "rj_1", query: ITALIAN }, deps);
+    expect(sent).toEqual([researchAckText("en")]);
   });
 });
 
