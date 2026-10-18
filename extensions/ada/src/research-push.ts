@@ -1,5 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { whatsappWindowOpen } from "./collector.js";
+import { noteConnectOffer, type ConnectOfferKind } from "./connect-offers.js";
 import {
   ADA_WHATSAPP_CHANNEL,
   normalizeWhatsAppNumber,
@@ -55,6 +56,8 @@ export type PushDeps = {
   /** The ready-template nudge that asks the recipient to write, or why it was not sent. */
   nudge: () => Promise<"sent" | "unset" | "failed">;
   readProfileLanguage?: () => Promise<string | undefined>;
+  /** The delivered message asked the person whether to (re)connect Lexroom; remember it for their next turn. */
+  offerConnect?: (kind: ConnectOfferKind) => void;
   log: LexroomLog;
   now?: () => number;
   retryDelayMs?: number;
@@ -77,9 +80,10 @@ const STRINGS: Record<Language, Strings> = {
     sources: "Fonti",
     failed: "La ricerca su Lexroom non è andata a buon fine.",
     timeout: "Lexroom non ha risposto in tempo e la richiesta è stata interrotta.",
-    notConnected: "Lexroom non è collegato: chiedimi di collegarlo e ti mando il link.",
+    notConnected:
+      "Lexroom non è ancora collegato al tuo numero: vuoi che ti mandi il link per collegarlo?",
     refused:
-      "Lexroom ha rifiutato l'accesso per questo account. Chiedimi di ricollegarlo e ti mando il link, oppure controlla l'account su Lexroom.",
+      "Lexroom ha rifiutato l'accesso per questo account. Vuoi che ti mandi un nuovo link per ricollegarlo?",
     captcha:
       "Lexroom ha chiesto un captcha (controllo anti-bot) che non posso risolvere. Riprova più tardi, oppure accedi prima su app.lexroom.ai.",
     retry: "Dimmi se vuoi che riprovi.",
@@ -89,9 +93,10 @@ const STRINGS: Record<Language, Strings> = {
     sources: "Sources",
     failed: "The Lexroom research did not complete.",
     timeout: "Lexroom did not respond in time and the request was abandoned.",
-    notConnected: "Lexroom is not connected: ask me to connect it and I'll send you the link.",
+    notConnected:
+      "Lexroom is not connected to your number yet: do you want me to send you the link to connect it?",
     refused:
-      "Lexroom refused the sign-in for this account. Ask me to reconnect it and I'll send you the link, or check the account with Lexroom.",
+      "Lexroom refused the sign-in for this account. Do you want me to send you a new link to reconnect it?",
     captcha:
       "Lexroom asked for a captcha (bot check) that I cannot solve. Try again later, or sign in on app.lexroom.ai first.",
     retry: "Tell me if you want me to try again.",
@@ -101,9 +106,10 @@ const STRINGS: Record<Language, Strings> = {
     sources: "Fuentes",
     failed: "La investigación en Lexroom no se completó.",
     timeout: "Lexroom no respondió a tiempo y la solicitud se interrumpió.",
-    notConnected: "Lexroom no está conectado: pídeme que lo conecte y te envío el enlace.",
+    notConnected:
+      "Lexroom todavía no está conectado a tu número: ¿quieres que te envíe el enlace para conectarlo?",
     refused:
-      "Lexroom rechazó el inicio de sesión de esta cuenta. Pídeme que la reconecte y te envío el enlace, o revisa la cuenta en Lexroom.",
+      "Lexroom rechazó el inicio de sesión de esta cuenta. ¿Quieres que te envíe un enlace nuevo para reconectarlo?",
     captcha:
       "Lexroom pidió un captcha (control anti-bot) que no puedo resolver. Inténtalo más tarde, o inicia sesión antes en app.lexroom.ai.",
     retry: "Dime si quieres que lo intente de nuevo.",
@@ -114,9 +120,9 @@ const STRINGS: Record<Language, Strings> = {
     failed: "La recherche sur Lexroom n'a pas abouti.",
     timeout: "Lexroom n'a pas répondu à temps et la demande a été interrompue.",
     notConnected:
-      "Lexroom n'est pas connecté : demandez-moi de le connecter et je vous envoie le lien.",
+      "Lexroom n'est pas encore connecté à votre numéro : voulez-vous que je vous envoie le lien pour le connecter ?",
     refused:
-      "Lexroom a refusé la connexion pour ce compte. Demandez-moi de le reconnecter et je vous envoie le lien, ou vérifiez le compte sur Lexroom.",
+      "Lexroom a refusé la connexion pour ce compte. Voulez-vous que je vous envoie un nouveau lien pour le reconnecter ?",
     captcha:
       "Lexroom a demandé un captcha (contrôle anti-bot) que je ne peux pas résoudre. Réessayez plus tard, ou connectez-vous d'abord sur app.lexroom.ai.",
     retry: "Dites-moi si vous voulez que je réessaie.",
@@ -127,9 +133,9 @@ const STRINGS: Record<Language, Strings> = {
     failed: "Die Lexroom-Recherche ist nicht abgeschlossen worden.",
     timeout: "Lexroom hat nicht rechtzeitig geantwortet und die Anfrage wurde abgebrochen.",
     notConnected:
-      "Lexroom ist nicht verbunden: Bitten Sie mich, es zu verbinden, dann sende ich den Link.",
+      "Lexroom ist noch nicht mit Ihrer Nummer verbunden: Soll ich Ihnen den Link zum Verbinden senden?",
     refused:
-      "Lexroom hat die Anmeldung für dieses Konto abgelehnt. Bitten Sie mich, es neu zu verbinden, dann sende ich den Link, oder prüfen Sie das Konto bei Lexroom.",
+      "Lexroom hat die Anmeldung für dieses Konto abgelehnt. Soll ich Ihnen einen neuen Link zum erneuten Verbinden senden?",
     captcha:
       "Lexroom hat ein Captcha (Bot-Prüfung) verlangt, das ich nicht lösen kann. Versuchen Sie es später noch einmal oder melden Sie sich zuerst auf app.lexroom.ai an.",
     retry: "Sagen Sie mir, wenn ich es noch einmal versuchen soll.",
@@ -201,6 +207,19 @@ export function fitResearchText(
  * The message that carries a finished research, always one message: see `fitResearchText`. A
  * failed research becomes one short message in the lawyer's language.
  */
+/** A failure whose message asks the person whether to connect or reconnect Lexroom. */
+function connectOffer(result: ResearchOutcome | LexroomFailure): ConnectOfferKind | undefined {
+  if (result.ok) {
+    return undefined;
+  }
+  // "forbidden" keeps the saved sign-in, so only a forced link actually reconnects.
+  return result.reason === "not_connected"
+    ? "lexroom"
+    : result.reason === "forbidden"
+      ? "lexroom_reconnect"
+      : undefined;
+}
+
 export async function researchMessage(
   result: ResearchOutcome | LexroomFailure,
   deps: Pick<PushDeps, "readProfileLanguage">,
@@ -227,10 +246,19 @@ export async function researchMessage(
           : result.reason === "captcha_required"
             ? strings.captcha
             : result.error.slice(0, MAX_FAILURE_CHARS);
-  return `${strings.failed}\n${reason}\n${strings.retry}`;
+  // A connection to offer is a question of its own; "try again" would not answer it.
+  return connectOffer(result)
+    ? `${strings.failed}\n${reason}`
+    : `${strings.failed}\n${reason}\n${strings.retry}`;
 }
 
-type Held = { jobId: string; text: string; document?: ResearchPdf; heldAtMs: number };
+type Held = {
+  jobId: string;
+  text: string;
+  document?: ResearchPdf;
+  heldAtMs: number;
+  offer?: ConnectOfferKind;
+};
 
 /** Held results by recipient number, oldest first. */
 const held = new Map<string, Held[]>();
@@ -248,6 +276,11 @@ export function recordSenderInbound(recipient: string, atMs: number): void {
   if (lastInboundAtMs.size > MAX_TRACKED_INBOUND) {
     lastInboundAtMs.delete(lastInboundAtMs.keys().next().value ?? recipient);
   }
+}
+
+/** When `recipient` last wrote to Ada, if this process saw it. */
+export function lastSenderInboundAt(recipient: string): number | undefined {
+  return lastInboundAtMs.get(recipient);
 }
 
 function pruneHeld(nowMs: number): void {
@@ -371,6 +404,7 @@ export async function pushResearchResult(
 ): Promise<"sent" | "held"> {
   const now = deps.now ?? Date.now;
   const text = await researchMessage(params.result, deps);
+  const offer = connectOffer(params.result);
   const document = await prepareResearchPdf(params, deps);
   const open = await deps.windowOpen().catch(() => null);
   const outcome = params.result.ok ? "done" : (params.result.reason ?? "failed");
@@ -378,6 +412,9 @@ export async function pushResearchResult(
   if (open !== false) {
     const sent = await sendText(text, deps);
     if (sent.ok) {
+      if (offer) {
+        deps.offerConnect?.(offer);
+      }
       deps.log("result.pushed", {
         job: params.jobId,
         outcome,
@@ -396,7 +433,13 @@ export async function pushResearchResult(
   }
   pruneHeld(now());
   const queue = held.get(deps.recipient) ?? [];
-  queue.push({ jobId: params.jobId, text, ...(document ? { document } : {}), heldAtMs: now() });
+  queue.push({
+    jobId: params.jobId,
+    text,
+    ...(document ? { document } : {}),
+    ...(offer ? { offer } : {}),
+    heldAtMs: now(),
+  });
   while (queue.length > MAX_HELD) {
     queue.shift();
   }
@@ -435,6 +478,9 @@ export async function releaseHeldResearch(deps: PushDeps): Promise<number> {
     }
     queue.shift();
     released += 1;
+    if (next.offer) {
+      deps.offerConnect?.(next.offer);
+    }
     deps.log("result.pushed", {
       job: next.jobId,
       chars: next.text.length,
@@ -490,6 +536,7 @@ export function livePushDeps(
       return result.ok ? "sent" : "failed";
     },
     readProfileLanguage: async () => (await (await memory())?.readProfile())?.language,
+    offerConnect: (kind) => noteConnectOffer(recipient, kind),
     log,
   };
 }

@@ -1,19 +1,22 @@
 ---
 name: ada-lexroom-connect
-description: "Ask the person on WhatsApp to connect Lexroom for research and drafts, and send the one Ada-hosted sign-in link."
+description: "Offer to connect the person's own Lexroom account in plain conversation, and send the one Ada-hosted sign-in link when they want it."
 ---
 
 # Ada Lexroom connect
 
 Ada runs Lexroom research and drafts only after that person connects their own Lexroom account. Reply in the language the person writes in, Italian when unclear. Copy the URL unchanged.
 
-## When to ask
+## When to offer, and when to send the link
 
-Follow this skill before research or draft when Lexroom is not connected, when the person mentions Lexroom, research, or connecting Lexroom, and when `ada_research` or `ada_draft` returns `reason: "not_connected"`.
+Never tell the person to type a command, a keyword or a special phrase; talk like a person.
 
-When the person says they already have a Lexroom account, or asks to use Lexroom, call `ada_lexroom_connect` and send them the link: never tell them to find, sign up for or set up Lexroom themselves.
+- When a request needs Lexroom and it is not connected (the research or draft tool returns `reason: "not_connected"`, or the connection expired or was refused), say so naturally in one sentence and ask whether they want to connect it, for example "Per farlo devo collegarmi al tuo Lexroom, ti mando il link?". Do not call `ada_lexroom_connect` yet.
+- When they say yes in any form (sì, ok, certo, vai, yes, 👍, ...), call `ada_lexroom_connect` and send the link. The model reads the answer in context; there is no keyword list. When they say no, carry on without Lexroom and do not ask again.
+- When the person says on their own that they want to connect Lexroom, that they already have a Lexroom account, or asks to use Lexroom, call `ada_lexroom_connect` and send the link straight away: never tell them to find, sign up for or set up Lexroom themselves.
+- A note headed "Question you just asked" in your context means Ada's code asked that question in a message that is not in the conversation: read their reply as the answer to it.
 
-Call `ada_lexroom_connect`. Do not invent a URL. Do not ask for the Lexroom password in WhatsApp.
+Do not invent a URL. Do not ask for the Lexroom password in WhatsApp.
 
 Ada keeps each person's own Lexroom email and password (encrypted) and signs in again by herself when the session expires, so a `connected: true` result is normally all that is needed and the person is not asked again. Only when the saved password is wrong, or the account needs a one-time code at every sign-in, does `ada_research` or `ada_draft` return `reason: "not_connected"`, and `ada_lexroom_connect` then returns an `ask`. When its text says the account needs a one-time code, keep that explanation in your message. If the person says a link did not help, call `ada_lexroom_connect` again with `force: true` to discard the saved sign-in and get a fresh link. Never ask for the Lexroom password in WhatsApp; it is entered only on the Ada-hosted page.
 

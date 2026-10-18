@@ -1,5 +1,10 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import type { GoogleAccountStore } from "./google-account-contract.js";
+import type {
+  GoogleAccountRecord,
+  GoogleAccountStamp,
+  GoogleAccountStore,
+  GoogleRefreshedTokens,
+} from "./google-account-contract.js";
 import { openAdaGoogleAccountFromApi } from "./google-account.js";
 import {
   listInboxMessages,
@@ -16,6 +21,7 @@ import {
   type GoogleConnectConfig,
   type GoogleConnectResult,
 } from "./google-connect.js";
+import { maskNumber } from "./inbound-log.js";
 
 type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger" | "config">;
 
@@ -52,13 +58,31 @@ export async function executeAdaGoogleConnect(
   config: GoogleConnectConfig,
   api: StoreApi,
   now = new Date(),
+  options: { fetchImpl?: typeof fetch } = {},
 ): Promise<GoogleConnectResult | ToolFailure> {
   const store = await openStore(api, owner);
   if (isStoreFailure(store)) {
     return store;
   }
   try {
-    const account = await store.readAccount();
+    let account = await store.readAccount();
+    const settings = readGoogleConnectConfig(config);
+    if (account && settings.ok) {
+      // A saved account Google no longer accepts is not a connection: drop it and issue a link.
+      const token = await loadAccessToken({
+        account,
+        clientId: settings.settings.clientId,
+        clientSecret: settings.settings.clientSecret,
+        now,
+        fetchImpl: options.fetchImpl,
+        log: (message) => api.logger.warn(`${message} owner=${maskNumber(owner)}`),
+      });
+      if (token.ok) {
+        await saveRefreshedAccount(store, account, token);
+      } else if (token.reason === "reconnect") {
+        account = (await store.clearAccountIfStill(account)) ? null : await store.readAccount();
+      }
+    }
     return await prepareGoogleConnect({
       owner,
       config,
@@ -74,19 +98,46 @@ export async function executeAdaGoogleConnect(
   }
 }
 
+/**
+ * Keeps a refreshed access token, and a refresh token Google rotated, so the next call need not
+ * refresh. Written only while the saved row is still the one that was refreshed: a reconnect or a
+ * move to another number during the refresh is never overwritten. Returns the stamp the row has
+ * now (the rotated refresh token, when one was saved).
+ */
+export async function saveRefreshedAccount(
+  store: GoogleAccountStore,
+  account: GoogleAccountRecord,
+  token: GoogleRefreshedTokens,
+): Promise<GoogleAccountStamp> {
+  const refreshToken = token.refreshToken ?? account.refreshToken;
+  if (
+    token.accessToken === account.accessToken &&
+    token.accessExpiresAtMs === account.accessExpiresAtMs &&
+    refreshToken === account.refreshToken
+  ) {
+    return account;
+  }
+  const saved = await store.updateTokensIfStill(account, token);
+  return saved ? { refreshToken, connectedAtMs: account.connectedAtMs } : account;
+}
+
 async function accessForRead(params: {
   config: GoogleConnectConfig;
   store: GoogleAccountStore;
   now: Date;
   signal?: AbortSignal;
-}): Promise<{ ok: true; accessToken: string; email: string } | ToolFailure> {
+  fetchImpl?: typeof fetch;
+  log?: (message: string) => void;
+}): Promise<
+  { ok: true; accessToken: string; email: string; stamp: GoogleAccountStamp } | ToolFailure
+> {
   const account = await params.store.readAccount();
   if (!account) {
     return {
       ok: false,
       reason: "not_connected",
       error:
-        "Gmail and Google Calendar are not connected. Call ada_google_connect and send that link.",
+        "Gmail and Google Calendar are not connected. Ask whether they want to connect; call ada_google_connect and send the link only after they agree (or if they asked to connect).",
     };
   }
   const config = readGoogleConnectConfig(params.config);
@@ -99,29 +150,23 @@ async function accessForRead(params: {
     clientSecret: config.settings.clientSecret,
     now: params.now,
     signal: params.signal,
+    fetchImpl: params.fetchImpl,
+    log: params.log,
   });
   if (!token.ok) {
     if (token.reason === "reconnect") {
-      await params.store.clearAccount();
+      await params.store.clearAccountIfStill(account);
       return {
         ok: false,
         reason: "not_connected",
-        error: "The Google connection expired. Call ada_google_connect and send the new link.",
+        error:
+          "The Google connection expired. Ask whether they want to reconnect; call ada_google_connect and send the new link only after they agree (or if they asked to connect).",
       };
     }
     return { ok: false, error: "Ada could not reach Google. Try again shortly." };
   }
-  if (
-    token.accessToken !== account.accessToken ||
-    token.accessExpiresAtMs !== account.accessExpiresAtMs
-  ) {
-    await params.store.upsertAccount({
-      ...account,
-      accessToken: token.accessToken,
-      accessExpiresAtMs: token.accessExpiresAtMs,
-    });
-  }
-  return { ok: true, accessToken: token.accessToken, email: account.email };
+  const stamp = await saveRefreshedAccount(params.store, account, token);
+  return { ok: true, accessToken: token.accessToken, email: account.email, stamp };
 }
 
 export async function readConnectedInbox(params: {
@@ -130,6 +175,7 @@ export async function readConnectedInbox(params: {
   max?: number;
   now?: Date;
   signal?: AbortSignal;
+  log?: (message: string) => void;
 }): Promise<{ ok: true; email: string; messages: InboxMessage[] } | ToolFailure> {
   const now = params.now ?? new Date();
   const access = await accessForRead({ ...params, now });
@@ -143,12 +189,12 @@ export async function readConnectedInbox(params: {
   });
   if (!listed.ok) {
     if (listed.status === 401) {
-      await params.store.clearAccount();
+      await params.store.clearAccountIfStill(access.stamp);
       return {
         ok: false,
         reason: "not_connected",
         error:
-          "Google rejected the saved connection. Call ada_google_connect and send the new link.",
+          "Google rejected the saved connection. Ask whether they want to reconnect; call ada_google_connect and send the new link only after they agree (or if they asked to connect).",
       };
     }
     return { ok: false, error: "Ada could not read Gmail. Try again shortly." };
@@ -162,6 +208,7 @@ export async function readConnectedCalendar(params: {
   hours?: number;
   now?: Date;
   signal?: AbortSignal;
+  log?: (message: string) => void;
 }): Promise<{ ok: true; email: string; events: CalendarEvent[] } | ToolFailure> {
   const now = params.now ?? new Date();
   const access = await accessForRead({ ...params, now });
@@ -176,12 +223,12 @@ export async function readConnectedCalendar(params: {
   });
   if (!listed.ok) {
     if (listed.status === 401) {
-      await params.store.clearAccount();
+      await params.store.clearAccountIfStill(access.stamp);
       return {
         ok: false,
         reason: "not_connected",
         error:
-          "Google rejected the saved connection. Call ada_google_connect and send the new link.",
+          "Google rejected the saved connection. Ask whether they want to reconnect; call ada_google_connect and send the new link only after they agree (or if they asked to connect).",
       };
     }
     return { ok: false, error: "Ada could not read Google Calendar. Try again shortly." };
@@ -201,6 +248,7 @@ export async function sendConnectedEmail(params: {
   now?: Date;
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
+  log?: (message: string) => void;
 }): Promise<{ ok: true; email: string; id: string } | ToolFailure> {
   if (!params.confirmed) {
     return {
@@ -227,7 +275,8 @@ export async function sendConnectedEmail(params: {
     return {
       ok: false,
       reason: "not_connected",
-      error: "Gmail is not connected. Call ada_google_connect and send that link.",
+      error:
+        "Gmail is not connected. Ask whether they want to connect; call ada_google_connect and send the link only after they agree (or if they asked to connect).",
     };
   }
   if (!canSendMail(account.scopes)) {
@@ -235,7 +284,7 @@ export async function sendConnectedEmail(params: {
       ok: false,
       reason: "needs_send_scope",
       error:
-        "Ada cannot send mail with the current Google connection. Call ada_google_connect and send the new link.",
+        "Ada cannot send mail with the current Google connection. Ask whether they want to allow sending; call ada_google_connect and send the new link only after they agree (or if they asked to connect).",
     };
   }
   const now = params.now ?? new Date();
@@ -254,19 +303,20 @@ export async function sendConnectedEmail(params: {
   });
   if (!sent.ok) {
     if (sent.status === 401) {
-      await params.store.clearAccount();
+      await params.store.clearAccountIfStill(access.stamp);
       return {
         ok: false,
         reason: "not_connected",
         error:
-          "Google rejected the saved connection. Call ada_google_connect and send the new link.",
+          "Google rejected the saved connection. Ask whether they want to reconnect; call ada_google_connect and send the new link only after they agree (or if they asked to connect).",
       };
     }
     if (sent.status === 403) {
       return {
         ok: false,
         reason: "needs_send_scope",
-        error: "Google did not allow sending. Call ada_google_connect and send the new link.",
+        error:
+          "Google did not allow sending. Ask whether they want to allow it; call ada_google_connect and send the new link only after they agree (or if they asked to connect).",
       };
     }
     return { ok: false, error: "Ada could not send the email. Try again shortly." };
@@ -285,7 +335,13 @@ export async function executeAdaSendEmail(
   if (isStoreFailure(store)) {
     return store;
   }
-  return await sendConnectedEmail({ config, store, ...input, signal });
+  return await sendConnectedEmail({
+    config,
+    store,
+    ...input,
+    signal,
+    log: (message) => api.logger.warn(`${message} owner=${maskNumber(owner)}`),
+  });
 }
 
 export async function executeAdaReadInbox(
@@ -299,7 +355,13 @@ export async function executeAdaReadInbox(
   if (isStoreFailure(store)) {
     return store;
   }
-  return await readConnectedInbox({ config, store, max, signal });
+  return await readConnectedInbox({
+    config,
+    store,
+    max,
+    signal,
+    log: (message) => api.logger.warn(`${message} owner=${maskNumber(owner)}`),
+  });
 }
 
 export async function executeAdaReadCalendar(
@@ -313,5 +375,11 @@ export async function executeAdaReadCalendar(
   if (isStoreFailure(store)) {
     return store;
   }
-  return await readConnectedCalendar({ config, store, hours, signal });
+  return await readConnectedCalendar({
+    config,
+    store,
+    hours,
+    signal,
+    log: (message) => api.logger.warn(`${message} owner=${maskNumber(owner)}`),
+  });
 }

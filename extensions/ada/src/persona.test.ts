@@ -21,11 +21,25 @@ describe("Ada's persona", () => {
       /Answer general legal questions right away, for anyone, without needing any account/u,
     );
     expect(ADA_PERSONA).toMatch(/does not replace a lawyer/u);
-    expect(ADA_PERSONA).toMatch(/ada_lexroom_connect or ada_google_connect and send the link/u);
-    expect(ADA_PERSONA).toMatch(/already have a Lexroom account.* send them the connect link/u);
+    expect(ADA_PERSONA).toMatch(/already have a Lexroom account.* send the link straight away/u);
     expect(ADA_PERSONA).toMatch(
       /Never tell anyone to find, sign up for or set up Lexroom themselves/u,
     );
+  });
+
+  it("asks naturally before connecting, understands yes in any form, and never teaches a command", () => {
+    expect(ADA_PERSONA).toMatch(
+      /Never tell anyone to type a command, a keyword or a special phrase/u,
+    );
+    expect(ADA_PERSONA).toMatch(/ask whether they want to connect it/u);
+    expect(ADA_PERSONA).toMatch(/do not call the connect tool yet/u);
+    expect(ADA_PERSONA).toMatch(/yes in any form \(sì, ok, certo, vai, yes, 👍/u);
+    expect(ADA_PERSONA).toMatch(
+      /call ada_lexroom_connect or ada_google_connect and send the link it returns/u,
+    );
+    expect(ADA_PERSONA).toMatch(/When they say no, carry on without it and do not ask again/u);
+    expect(ADA_PERSONA).toMatch(/Question you just asked/u);
+    expect(ADA_PERSONA).not.toMatch(/collega|«/iu);
   });
 
   it("is warm, and names the dismissive phrasing it forbids", () => {

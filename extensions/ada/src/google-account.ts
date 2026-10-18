@@ -38,6 +38,12 @@ function wrap(worker: SqliteWorkerStore<AdaGoogleOperations>): GoogleAccountDb {
     clearAccount(owner) {
       return worker.execute({ type: "clearAccount", input: { owner } });
     },
+    updateTokensIfStill(owner, expected, tokens) {
+      return worker.execute({ type: "updateTokensIfStill", input: { owner, expected, tokens } });
+    },
+    clearAccountIfStill(owner, expected) {
+      return worker.execute({ type: "clearAccountIfStill", input: { owner, expected } });
+    },
     listOwners() {
       return worker.execute({ type: "listOwners", input: undefined });
     },
@@ -55,6 +61,8 @@ export function bindGoogleOwner(db: GoogleAccountDb, owner: string): GoogleAccou
     upsertAccount: (account) => db.upsertAccount(owner, account),
     readAccount: () => db.readAccount(owner),
     clearAccount: () => db.clearAccount(owner),
+    updateTokensIfStill: (expected, tokens) => db.updateTokensIfStill(owner, expected, tokens),
+    clearAccountIfStill: (expected) => db.clearAccountIfStill(owner, expected),
   };
 }
 

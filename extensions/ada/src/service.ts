@@ -27,6 +27,8 @@ import {
   watchGmailInbox,
 } from "./google-api.js";
 import { googleConnectConfigFrom, readGoogleConnectConfig } from "./google-connect.js";
+import { saveRefreshedAccount } from "./google-tools.js";
+import { holdReconnectNote, takeHeldReconnectNote } from "./held-reconnect.js";
 import { maskNumber, logInboundSkip } from "./inbound-log.js";
 import { abortResearchJobs } from "./lexroom-jobs.js";
 import { openAdaMemoryFromApi, openAdaMemoryIfExistsFromApi, type MemoryStore } from "./memory.js";
@@ -110,6 +112,16 @@ function dayKey(now: Date, timeZone: string): string {
   }).format(now);
 }
 
+function reconnectNoteRequest(params: { owner: string; now: Date }) {
+  return {
+    owner: params.owner,
+    plan: { deliver: false, reason: "nothing_cleared_the_bar" } as const,
+    idempotencyKey: `reconnect:${params.owner}:${dayKey(params.now, DEFAULT_TZ)}`,
+    connectOnly: true,
+    reconnect: true,
+  };
+}
+
 async function loadGoogleReads(api: OpenClawPluginApi, owner: string, now: Date) {
   const config = readGoogleConnectConfig(googleConnectConfigFrom(api.pluginConfig));
   if (!config.ok) {
@@ -125,10 +137,21 @@ async function loadGoogleReads(api: OpenClawPluginApi, owner: string, now: Date)
     clientId: config.settings.clientId,
     clientSecret: config.settings.clientSecret,
     now,
+    log: (message) => api.logger.warn(`${message} owner=${maskNumber(owner)}`),
   });
   if (!token.ok) {
+    if (token.reason === "reconnect") {
+      // Google no longer accepts this sign-in: it is not a connection, so every path sees none.
+      // Only the row that failed: a reconnect during the refresh is a new sign-in.
+      await store.clearAccountIfStill(account);
+    }
     return { ok: false as const, error: token.reason };
   }
+  await saveRefreshedAccount(store, account, token).catch((error: unknown) => {
+    api.logger.warn(
+      `ada google refreshed token not saved owner=${maskNumber(owner)}: ${error instanceof Error ? error.message : "unknown"}`,
+    );
+  });
   const inbox = await listInboxMessages({ accessToken: token.accessToken, max: 10 });
   if (!inbox.ok) {
     return { ok: false as const, error: `gmail_${inbox.status}` };
@@ -303,6 +326,25 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
 
   const google = await loadGoogleReads(params.api, params.owner, params.now);
   if (!google.ok) {
+    if (google.error === "reconnect") {
+      // The dead row is gone, so nothing would retry: a note that cannot go out is held for the
+      // number's next message. Free text outside the 24-hour window can be accepted by WhatsApp
+      // and fail later, so a closed window holds it without trying.
+      const windowOpen = whatsappWindowOpen(earlyWake.lastLawyerInboundAtMs, nowMs);
+      const dispatch = windowOpen
+        ? await dispatchSafely(dispatchDigestTurn, reconnectNoteRequest(params))
+        : { ok: false };
+      if (!dispatch.ok) {
+        holdReconnectNote(params.owner, nowMs);
+      }
+      return {
+        collected: false,
+        delivered: dispatch.ok,
+        held: false,
+        reason: dispatch.ok ? "reconnect_dispatched" : "reconnect_held",
+        decision: "connect",
+      };
+    }
     if (params.forceMorning && !params.catchUp && google.error === "not_connected") {
       const day = dayKey(params.now, DEFAULT_TZ);
       const dispatch = await dispatchSafely(dispatchDigestTurn, {
@@ -872,6 +914,28 @@ export async function openWakeWindow(
 }
 
 /**
+ * The number just wrote, so the window is open: sends the expired-Google note that could not go
+ * out before, with a link made now. Kept for the next message when the send fails again.
+ */
+async function releaseHeldReconnectNote(
+  api: OpenClawPluginApi,
+  owner: string,
+  nowMs: number,
+): Promise<void> {
+  if (!takeHeldReconnectNote(owner, nowMs)) {
+    return;
+  }
+  const now = new Date(nowMs);
+  const result = await dispatchSafely(
+    (request) => dispatchDigest(api, { ...request, afterLawyerReply: true }),
+    reconnectNoteRequest({ owner, now }),
+  );
+  if (!result.ok && result.reason !== "already_connected") {
+    holdReconnectNote(owner, nowMs);
+  }
+}
+
+/**
  * Records that a number wrote, which opens its paid WhatsApp window and releases a digest held
  * for that number, and only that number's. A number with no memory yet has no digest to release,
  * so nothing is created for it: its window starts when it first connects an account.
@@ -901,6 +965,7 @@ export async function recordSenderInbound(params: {
     });
     return;
   }
+  await releaseHeldReconnectNote(params.api, owner, params.atMs);
   const memory = await openAdaMemoryIfExistsFromApi(params.api, owner);
   if (!memory) {
     logInboundSkip(params.api.logger, {

@@ -303,8 +303,6 @@ describe("collectDigest with deadline intake", () => {
         expect.objectContaining({
           id: "dl-1",
           no: 1,
-          replyHint: "reply 1 to run research",
-          skipHint: "reply skip 1 to dismiss",
         }),
       ]);
     }

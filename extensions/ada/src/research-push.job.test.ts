@@ -216,7 +216,7 @@ describe("ada_research tells the requester and sends the result", () => {
     await start(A, wa, server);
     await vi.waitFor(() => expect(wa.to(NUMBER_A)).toHaveLength(2));
     expect(wa.to(NUMBER_A)[1]).toBe(
-      "La ricerca su Lexroom non è andata a buon fine.\nLexroom ha rifiutato l'accesso per questo account. Chiedimi di ricollegarlo e ti mando il link, oppure controlla l'account su Lexroom.\nDimmi se vuoi che riprovi.",
+      "La ricerca su Lexroom non è andata a buon fine.\nLexroom ha rifiutato l'accesso per questo account. Vuoi che ti mandi un nuovo link per ricollegarlo?",
     );
     expect(wa.to(NUMBER_A)[1]).not.toContain("did not answer");
   });

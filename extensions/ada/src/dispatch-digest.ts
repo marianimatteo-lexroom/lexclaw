@@ -1,5 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import { renderDigestText, renderGoogleConnectText } from "./digest-text.js";
+import { noteConnectOffer } from "./connect-offers.js";
+import { digestOfferDetail, renderDigestText, renderGoogleConnectText } from "./digest-text.js";
 import type { DigestPlan } from "./digest.js";
 import { googleConnectConfigFrom } from "./google-connect.js";
 import { sendAdaWhatsAppText } from "./google-notify.js";
@@ -14,6 +15,8 @@ export type DigestDispatchRequest = {
   idempotencyKey: string;
   /** Ask the owner to connect Google instead of sending a digest. */
   connectOnly?: boolean;
+  /** With `connectOnly`: the saved Google sign-in expired, so the ask says so. */
+  reconnect?: boolean;
   /** The owner just texted, so the WhatsApp window is open for this send. */
   afterLawyerReply?: boolean;
 };
@@ -67,7 +70,11 @@ export async function dispatchDigest(
     if (!connect.ok || connect.connected) {
       return { ok: false, reason: connect.ok ? "already_connected" : "connect_unavailable" };
     }
-    text = renderGoogleConnectText(language, connect.ask.url);
+    text = renderGoogleConnectText(
+      language,
+      connect.ask.url,
+      request.reconnect ? "expired" : "connect",
+    );
   } else if (request.plan.deliver) {
     text = renderDigestText(request.plan, language, profile?.timezone ?? DEFAULT_TIME_ZONE);
   } else {
@@ -78,5 +85,8 @@ export async function dispatchDigest(
     return { ok: false, reason: result.error };
   }
   sent.set(key, nowMs);
+  if (!request.connectOnly && request.plan.deliver) {
+    noteConnectOffer(request.owner, "digest", Date.now(), digestOfferDetail(request.plan));
+  }
   return { ok: true };
 }

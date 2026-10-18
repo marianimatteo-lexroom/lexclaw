@@ -22,6 +22,7 @@ import {
   adaTodoListDefinition,
 } from "./src/account-tool-definitions.js";
 import { buildInjectedBrief } from "./src/brief.js";
+import { connectOfferNote, takeConnectOffers } from "./src/connect-offers.js";
 import { executeAdaDeadlineList, executeAdaDeadlineReply } from "./src/deadline-tools.js";
 import { planDigest, type DigestSignal } from "./src/digest.js";
 import { openAdaGoogleAccountFromApi } from "./src/google-account.js";
@@ -62,7 +63,12 @@ import { ownerToolFactory } from "./src/owner-tool.js";
 import { lawyerOwner, resolveTurnOwner } from "./src/owner.js";
 import { ADA_PERSONA } from "./src/persona.js";
 import { registerResearchLinkHooks } from "./src/research-link-outbound.js";
-import { onSenderInbound } from "./src/research-push.js";
+import {
+  lastSenderInboundAt,
+  onSenderInbound,
+  recordSenderInbound as recordInboundArrival,
+  senderNumber,
+} from "./src/research-push.js";
 import {
   createResearchStatusTool,
   createResearchTool,
@@ -408,7 +414,17 @@ const entry = definePluginEntry({
     });
 
     api.on("message_received", async (event, ctx) => {
+      const arrivedAtMs = Date.now();
       const channelId = readInboundChannelId(event, ctx);
+      const arrivedFrom =
+        channelId === undefined || channelId === "kapso-whatsapp"
+          ? senderNumber(event.from, ctx.senderId)
+          : null;
+      if (arrivedFrom) {
+        // Before any await: the run for this message must see when it arrived, so it does not
+        // read a question that this very message caused to be sent.
+        recordInboundArrival(arrivedFrom, arrivedAtMs);
+      }
       const messageId = readInboundMessageId(event, ctx);
       const accountId = typeof ctx.accountId === "string" ? ctx.accountId : undefined;
       api.logger.info(
@@ -441,7 +457,7 @@ const entry = definePluginEntry({
       try {
         await recordSenderInbound({
           api,
-          atMs: Date.now(),
+          atMs: arrivedAtMs,
           channelId,
           senders: [event.from, ctx.senderId],
         });
@@ -449,7 +465,7 @@ const entry = definePluginEntry({
           api,
           channelId,
           senders: [event.from, ctx.senderId],
-          atMs: Date.now(),
+          atMs: arrivedAtMs,
         });
       } catch (error) {
         api.logger.error(
@@ -459,7 +475,25 @@ const entry = definePluginEntry({
       await readReceipt;
     });
 
-    api.on("before_prompt_build", () => ({ prependSystemContext: ADA_PERSONA }));
+    api.on("before_prompt_build", (_event, ctx) => {
+      const turn = resolveTurnOwner({
+        requesterSenderId: ctx?.senderId,
+        messageChannel: ctx?.channelId,
+        sessionKey: ctx?.sessionKey,
+      });
+      const personTurn = ctx?.trigger === undefined || ctx.trigger === "user";
+      const note = connectOfferNote(
+        turn.ok && personTurn
+          ? takeConnectOffers(turn.owner, {
+              runId: ctx?.runId,
+              inboundAtMs: lastSenderInboundAt(turn.owner),
+            })
+          : [],
+      );
+      return note
+        ? { prependSystemContext: ADA_PERSONA, prependContext: note }
+        : { prependSystemContext: ADA_PERSONA };
+    });
 
     api.on(
       "before_prompt_build",

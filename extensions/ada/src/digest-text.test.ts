@@ -46,8 +46,6 @@ const PLAN: Extract<DigestPlan, { deliver: true }> = {
       source: "PEC",
       moved: true,
       briefReady: false,
-      replyHint: "reply 1 to run research",
-      skipHint: "reply skip 1 to dismiss",
     },
   ],
 };
@@ -70,7 +68,9 @@ describe("renderDigestText", () => {
     const text = renderDigestText(PLAN, "it", "Europe/Rome");
     expect(text).toContain("La data è cambiata.");
     expect(text).toContain("Non sono sicura della data");
-    expect(text).toContain('Rispondi 1 per avviare la ricerca su Lexroom, oppure "salta 1"');
+    expect(text).toContain(
+      "Rispondimi con 1 se vuoi che avvii la ricerca su Lexroom, o dimmi se preferisci saltare la 1.",
+    );
   });
 
   it("offers the stored brief for a tracked item whose research is ready", () => {
@@ -86,7 +86,21 @@ describe("renderDigestText", () => {
       "Europe/Rome",
     );
     expect(text).toContain("It is on your watch list.");
-    expect(text).toContain('write "brief 1"');
+    expect(text).toContain("tell me if you want me to send the brief for 1 again");
+  });
+
+  it("teaches no command phrase in any language", () => {
+    const [line] = PLAN.deadlines ?? [];
+    for (const language of LANGUAGES) {
+      for (const status of ["candidate", "tracked"] as const) {
+        const text = renderDigestText(
+          { ...PLAN, deadlines: [{ ...line!, status, briefReady: status === "tracked" }] },
+          language,
+          "Europe/Rome",
+        );
+        expect(text).not.toMatch(/["«“]/u);
+      }
+    }
   });
 
   it("is a single message that fits WhatsApp", () => {
@@ -99,7 +113,7 @@ describe("renderDigestText", () => {
 describe("renderGoogleConnectText", () => {
   it.each(LANGUAGES)("carries the link on its own line in %s", (language) => {
     const url = "https://accounts.google.com/o/oauth2/v2/auth?state=abc";
-    for (const purpose of ["connect", "send"] as const) {
+    for (const purpose of ["connect", "send", "expired"] as const) {
       const text = renderGoogleConnectText(language, url, purpose);
       expect(text.split("\n")).toContain(url);
       expect(text).not.toMatch(/vera/iu);

@@ -161,20 +161,6 @@ describe("researchMessage", () => {
       "Lexroom non ha risposto in tempo e la richiesta è stata interrotta.",
     ],
     [
-      "a missing connection, without the instruction meant for the model",
-      {
-        ok: false,
-        reason: "not_connected",
-        error: "Lexroom is not connected. Call ada_lexroom_connect and send that link.",
-      },
-      "Lexroom non è collegato: chiedimi di collegarlo e ti mando il link.",
-    ],
-    [
-      "a refused sign-in, in words the lawyer can act on",
-      { ok: false, reason: "forbidden", error: "Lexroom answered and refused the sign-in." },
-      "Lexroom ha rifiutato l'accesso per questo account. Chiedimi di ricollegarlo e ti mando il link, oppure controlla l'account su Lexroom.",
-    ],
-    [
       "a captcha Ada cannot solve",
       { ok: false, reason: "captcha_required", error: "Lexroom asked for a captcha." },
       "Lexroom ha chiesto un captcha (controllo anti-bot) che non posso risolvere. Riprova più tardi, oppure accedi prima su app.lexroom.ai.",
@@ -188,6 +174,75 @@ describe("researchMessage", () => {
     expect(await researchMessage(failure, {})).toBe(
       `La ricerca su Lexroom non è andata a buon fine.\n${reason}\nDimmi se vuoi che riprovi.`,
     );
+  });
+
+  it("asks, as a question, whether to connect Lexroom, with no keyword and no try-again line", async () => {
+    const notConnected = await researchMessage(
+      {
+        ok: false,
+        reason: "not_connected",
+        error:
+          "Lexroom is not connected. Ask whether they want to connect; call ada_lexroom_connect and send the link only after they agree (or if they asked to connect).",
+      },
+      {},
+    );
+    expect(notConnected).toBe(
+      "La ricerca su Lexroom non è andata a buon fine.\nLexroom non è ancora collegato al tuo numero: vuoi che ti mandi il link per collegarlo?",
+    );
+    const refused = await researchMessage(
+      { ok: false, reason: "forbidden", error: "Lexroom answered and refused the sign-in." },
+      {},
+    );
+    expect(refused).toBe(
+      "La ricerca su Lexroom non è andata a buon fine.\nLexroom ha rifiutato l'accesso per questo account. Vuoi che ti mandi un nuovo link per ricollegarlo?",
+    );
+    for (const text of [notConnected, refused]) {
+      expect(text).not.toMatch(/«|chiedimi|scrivimi|collega Lexroom/iu);
+      expect(text).not.toContain("Dimmi se vuoi che riprovi");
+    }
+  });
+
+  it("remembers the connect question for the next turn, only when it was asked", async () => {
+    const { deps } = makeDeps({ offerConnect: vi.fn() });
+    const base = { jobId: "rj_1", startedAtMs: 0, query: "q" };
+    await pushResearchResult(
+      { ...base, result: { ok: false, reason: "not_connected", error: "x" } },
+      deps,
+    );
+    await pushResearchResult(
+      { ...base, result: { ok: false, reason: "forbidden", error: "x" } },
+      deps,
+    );
+    await pushResearchResult(
+      { ...base, result: { ok: false, reason: "timeout", message: "x", error: "x" } },
+      deps,
+    );
+    await pushResearchResult({ ...base, result: outcome() }, deps);
+    expect(deps.offerConnect).toHaveBeenCalledTimes(2);
+    expect(deps.offerConnect).toHaveBeenNthCalledWith(1, "lexroom");
+    expect(deps.offerConnect).toHaveBeenNthCalledWith(2, "lexroom_reconnect");
+  });
+
+  it("remembers the question only once it is delivered: not when held, not when both sends fail", async () => {
+    const notConnected = { ok: false as const, reason: "not_connected" as const, error: "x" };
+    const base = { jobId: "rj_1", startedAtMs: 0, query: "q", result: notConnected };
+
+    const closed = makeDeps({ windowOpen: async () => false, offerConnect: vi.fn() });
+    await pushResearchResult(base, closed.deps);
+    const failing = makeDeps({
+      send: async () => ({ ok: false, error: "down" }),
+      offerConnect: vi.fn(),
+    });
+    await pushResearchResult(base, failing.deps);
+    expect(closed.deps.offerConnect).not.toHaveBeenCalled();
+    expect(failing.deps.offerConnect).not.toHaveBeenCalled();
+
+    const released = makeDeps({ offerConnect: vi.fn() });
+    expect(await releaseHeldResearch({ ...released.deps, recipient: closed.deps.recipient })).toBe(
+      2,
+    );
+    expect(released.deps.offerConnect).toHaveBeenCalledTimes(2);
+    expect(released.deps.offerConnect).toHaveBeenCalledWith("lexroom");
   });
 
   it("uses the profile language when there is no text to tell it from", async () => {

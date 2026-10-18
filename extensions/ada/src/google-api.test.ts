@@ -169,7 +169,87 @@ describe("google oauth", () => {
         now: NOW,
         fetchImpl,
       }),
-    ).toEqual({ ok: false, reason: "reconnect" });
+    ).toMatchObject({ ok: false, reason: "reconnect" });
+  });
+
+  const staleAccount = {
+    email: "lawyer@example.com",
+    refreshToken: "test-refresh-token",
+    accessToken: null,
+    accessExpiresAtMs: null,
+    connectedAtMs: 1,
+    scopes: null,
+  };
+  const refresh = (fetchImpl: ReturnType<typeof vi.fn>, log?: (message: string) => void) =>
+    loadAccessToken({
+      account: staleAccount,
+      clientId: "test-client",
+      clientSecret: "test-client-secret-value",
+      now: NOW,
+      fetchImpl: fetchImpl as never,
+      log,
+    });
+
+  it("logs Google's own error and description, one clipped line, never the tokens", async () => {
+    const log = vi.fn();
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(
+        { error: "invalid_grant", error_description: "Token has been expired\nor revoked." },
+        400,
+      ),
+    );
+    expect(await refresh(fetchImpl, log)).toEqual({
+      ok: false,
+      reason: "reconnect",
+      googleError: "invalid_grant",
+      description: "Token has been expired or revoked.",
+    });
+    expect(log).toHaveBeenCalledExactlyOnceWith(
+      'ada google token refresh failed reason=reconnect google_error=invalid_grant description="Token has been expired or revoked."',
+    );
+    expect(log.mock.calls[0]?.[0]).not.toContain("test-refresh-token");
+
+    const long = vi.fn(async () =>
+      jsonResponse({ error: "invalid_request", error_description: "x".repeat(500) }, 400),
+    );
+    const result = await refresh(long);
+    expect(result.ok === false && result.description?.length).toBe(200);
+  });
+
+  it("fails without a description when Google gives none", async () => {
+    const log = vi.fn();
+    expect(
+      await refresh(
+        vi.fn(async () => jsonResponse({}, 500)),
+        log,
+      ),
+    ).toEqual({
+      ok: false,
+      reason: "google_error",
+    });
+    expect(log).toHaveBeenCalledWith("ada google token refresh failed reason=google_error");
+  });
+
+  it("returns a refresh token Google rotated, and ignores one that is not usable", async () => {
+    const rotated = vi.fn(async () =>
+      jsonResponse({
+        access_token: "new-access",
+        expires_in: 3600,
+        refresh_token: "rotated-refresh",
+      }),
+    );
+    expect(await refresh(rotated)).toEqual({
+      ok: true,
+      accessToken: "new-access",
+      accessExpiresAtMs: NOW.getTime() + 3_600_000,
+      refreshToken: "rotated-refresh",
+    });
+    for (const refresh_token of ["short", 42, ""]) {
+      const plain = vi.fn(async () =>
+        jsonResponse({ access_token: "new-access", expires_in: 3600, refresh_token }),
+      );
+      expect(await refresh(plain)).not.toHaveProperty("refreshToken");
+    }
   });
 });
 

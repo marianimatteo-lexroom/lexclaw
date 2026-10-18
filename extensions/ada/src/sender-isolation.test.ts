@@ -86,6 +86,8 @@ function useAccounts() {
       store = {
         readAccount: vi.fn(async () => (owner === ANNA ? GOOGLE_ACCOUNT : null)),
         clearAccount: vi.fn(async () => {}),
+        updateTokensIfStill: vi.fn(async () => true),
+        clearAccountIfStill: vi.fn(async () => true),
         upsertAccount: vi.fn(async () => {}),
         replacePending: vi.fn(async () => {}),
         consumePending: vi.fn(async () => false),
@@ -259,7 +261,9 @@ describe("sender B cannot use or learn about sender A's Lexroom", () => {
     })) as { jobId: string };
     await vi.waitFor(() => expect(pushed.length).toBeGreaterThanOrEqual(2));
     expect(pushed.every((entry) => entry.to === `+${BRUNO}`)).toBe(true);
-    expect(pushed.at(-1)?.text).toContain("Lexroom non è collegato");
+    expect(pushed.at(-1)?.text).toContain(
+      "Lexroom non è ancora collegato al tuo numero: vuoi che ti mandi il link",
+    );
     expect(fetchMock).not.toHaveBeenCalled();
     expect(new Set(openAdaLexroomAccountFromApi.mock.calls.map(([, owner]) => owner))).toEqual(
       new Set([BRUNO]),

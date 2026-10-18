@@ -344,18 +344,16 @@ describe("welcome text", () => {
     }
   });
 
-  it("tells the user how to connect Lexroom and Gmail with phrases the connect skills answer", () => {
-    const phrases = {
-      it: ["«collega Lexroom»", "«collega Gmail»"],
-      en: ['"connect Lexroom"', '"connect Gmail"'],
-      es: ['"conecta Lexroom"', '"conecta Gmail"'],
-      fr: ['"connecte Lexroom"', '"connecte Gmail"'],
-      de: ['"Lexroom verbinden"', '"Gmail verbinden"'],
-    } as const;
+  it("never teaches a command: no quoted phrase, no keyword, in any language", () => {
     for (const language of LANGUAGES) {
-      for (const phrase of phrases[language]) {
-        expect(welcomeText(language), `${language} ${phrase}`).toContain(phrase);
-      }
+      const text = welcomeText(language);
+      expect(text, language).not.toMatch(/«|»/u);
+      expect(text, language).not.toMatch(
+        /collega Lexroom|collega Gmail|connect Lexroom|connect Gmail|conecta Lexroom|conecta Gmail|connecte Lexroom|connecte Gmail|Lexroom verbinden|Gmail verbinden/iu,
+      );
+      expect(text, language).not.toMatch(
+        /scrivimi|write to me|escríbeme|écrivez-moi|schreiben Sie mir/iu,
+      );
     }
   });
 
@@ -371,15 +369,22 @@ describe("welcome text", () => {
     }
   });
 
-  it("tells the user to connect their own Lexroom account and Gmail", () => {
+  it("says Ada will ask whether to connect their own account when she needs it, and send the link", () => {
     expect(welcomeText("it")).toContain(
-      "Collega il tuo account Lexroom: scrivimi «collega Lexroom»",
+      "serve il tuo account: quando mi servirà ti chiederò se vuoi collegarlo e ti manderò il link.",
     );
-    expect(welcomeText("it")).toContain("Collega il tuo Gmail: scrivimi «collega Gmail»");
-    expect(welcomeText("en")).toContain("Connect your own Lexroom account");
-    expect(welcomeText("es")).toContain("Conecta tu cuenta de Lexroom");
-    expect(welcomeText("fr")).toContain("Connectez votre compte Lexroom");
-    expect(welcomeText("de")).toContain("Verbinden Sie Ihr eigenes Lexroom-Konto");
+    expect(welcomeText("en")).toContain(
+      "I'll ask whether you want to connect it and send you the link",
+    );
+    expect(welcomeText("es")).toContain(
+      "te preguntaré si quieres conectarla y te enviaré el enlace",
+    );
+    expect(welcomeText("fr")).toContain(
+      "je vous demanderai si vous voulez le connecter et je vous enverrai le lien",
+    );
+    expect(welcomeText("de")).toContain(
+      "frage ich Sie, ob ich es verbinden soll, und sende Ihnen den Link",
+    );
   });
 
   it("fits one WhatsApp message", () => {

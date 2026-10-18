@@ -8,11 +8,14 @@ const executeAdaGoogleConnect = vi.hoisted(() => vi.fn());
 vi.mock("./memory.js", () => ({ openAdaMemoryIfExistsFromApi }));
 vi.mock("./google-tools.js", () => ({ executeAdaGoogleConnect }));
 
+import { takeConnectOffers } from "./connect-offers.js";
 import { clearSentDigests, dispatchDigest } from "./dispatch-digest.js";
 
 const ANNA = "393331111111";
 const BRUNO = "393332222222";
 const LAWYER = "390000000000";
+const DINO = "393334444444";
+const ELSA = "393339999999";
 
 const NO_PLAN: DigestPlan = { deliver: false, reason: "nothing_cleared_the_bar" };
 const PLAN: DigestPlan = {
@@ -112,6 +115,26 @@ describe("dispatchDigest", () => {
     expect(sent).toHaveLength(2);
   });
 
+  it("notes what the digest offered, for that number only, and only once it was delivered", async () => {
+    const { api, sendText } = setup();
+    sendText.mockRejectedValueOnce(new Error("window closed"));
+    expect(
+      await dispatchDigest(api, { owner: DINO, plan: PLAN, idempotencyKey: "d1" }),
+    ).toMatchObject({ ok: false });
+    expect(takeConnectOffers(DINO, { runId: "r0", inboundAtMs: Date.now() + 1_000 })).toEqual([]);
+
+    await dispatchDigest(api, {
+      owner: DINO,
+      plan: PLAN,
+      idempotencyKey: "d1",
+      afterLawyerReply: true,
+    });
+    const [offer] = takeConnectOffers(DINO, { runId: "r1", inboundAtMs: Date.now() + 1_000 });
+    expect(offer?.kind).toBe("digest");
+    expect(offer?.detail).toContain("a Lexroom research for Rossi SRL");
+    expect(takeConnectOffers(ELSA, { runId: "r1", inboundAtMs: Date.now() + 1_000 })).toEqual([]);
+  });
+
   it("sends nothing for a plan with nothing to say", async () => {
     const { api, sent } = setup();
     expect(await dispatchDigest(api, { owner: ANNA, plan: NO_PLAN, idempotencyKey: "k4" })).toEqual(
@@ -143,6 +166,29 @@ describe("dispatchDigest", () => {
     expect(sent[0]?.to).toBe(`+${ANNA}`);
     expect(sent[0]?.text).toContain("https://accounts.google.com/o/oauth2/v2/auth?state=anna");
     expect(sent[0]?.text).toContain("Collega Gmail e Google Calendar");
+  });
+
+  it("tells an owner whose Google sign-in expired, in plain words, with a fresh link and no command", async () => {
+    const { api, sent } = setup();
+    executeAdaGoogleConnect.mockResolvedValue({
+      ok: true,
+      connected: false,
+      ask: { url: "https://accounts.google.com/o/oauth2/v2/auth?state=anna", message: "x" },
+    });
+    expect(
+      await dispatchDigest(api, {
+        owner: ANNA,
+        plan: NO_PLAN,
+        idempotencyKey: "r1",
+        connectOnly: true,
+        reconnect: true,
+      }),
+    ).toEqual({ ok: true });
+    expect(sent[0]?.to).toBe(`+${ANNA}`);
+    expect(sent[0]?.text).toBe(
+      "Il collegamento al tuo Gmail è scaduto: ecco il link per ricollegarlo (vale 30 minuti)\nhttps://accounts.google.com/o/oauth2/v2/auth?state=anna",
+    );
+    expect(sent[0]?.text).not.toMatch(/«|scrivimi/u);
   });
 
   it("does not ask an already connected owner again", async () => {

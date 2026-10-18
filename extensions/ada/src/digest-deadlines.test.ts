@@ -46,12 +46,9 @@ describe("planDigest with deadline lines", () => {
       line("dl-a", "2026-11-12"),
       line("dl-b", "2026-11-20", { matterId: "verdi", matterLabel: "Verdi" }),
     ]);
-    expect(
-      plan.deliver &&
-        plan.deadlines?.map((entry) => [entry.no, entry.id, entry.replyHint, entry.skipHint]),
-    ).toEqual([
-      [1, "dl-a", "reply 1 to run research", "reply skip 1 to dismiss"],
-      [2, "dl-b", "reply 2 to run research", "reply skip 2 to dismiss"],
+    expect(plan.deliver && plan.deadlines?.map((entry) => [entry.no, entry.id])).toEqual([
+      [1, "dl-a"],
+      [2, "dl-b"],
     ]);
   });
 

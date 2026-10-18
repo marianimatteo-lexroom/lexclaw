@@ -17,6 +17,7 @@ vi.mock("./google-account.js", () => ({
 }));
 vi.mock("./memory.js", () => ({ openAdaMemoryIfExistsFromApi }));
 
+import { takeConnectOffers } from "./connect-offers.js";
 import { releaseMailboxFromOtherOwners } from "./mailbox-owner.js";
 
 const ANNA = "393331111111";
@@ -64,7 +65,12 @@ describe("a mailbox has exactly one owner", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]?.to).toBe(`+${ANNA}`);
     expect(sent[0]?.text).toContain("collegata da un altro numero");
-    expect(sent[0]?.text).toContain("«collega Gmail»");
+    expect(sent[0]?.text).toContain("Vuoi che ti mandi il link per ricollegarla?");
+    expect(sent[0]?.text).not.toMatch(/«|scrivimi/u);
+    expect(takeConnectOffers(ANNA, { runId: "r1", inboundAtMs: Date.now() + 1_000 })).toEqual([
+      { kind: "google" },
+    ]);
+    expect(takeConnectOffers(BRUNO, { runId: "r1", inboundAtMs: Date.now() + 1_000 })).toEqual([]);
     expect(logger.info).toHaveBeenCalledWith("ada google mailbox moved from=+39…1111 to=+39…2222");
   });
 

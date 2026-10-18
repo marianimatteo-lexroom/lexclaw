@@ -29,6 +29,7 @@ type Words = {
   draft: (label: string) => string;
   connect: (url: string) => string;
   connectSend: (url: string) => string;
+  connectExpired: (url: string) => string;
 };
 
 const WORDS: Record<Language, Words> = {
@@ -44,8 +45,8 @@ const WORDS: Record<Language, Words> = {
     tomorrow: "domani",
     passed: "già passata",
     reply: (no) =>
-      `Rispondi ${no} per avviare la ricerca su Lexroom, oppure "salta ${no}" per ignorarla.`,
-    briefReady: (no) => `La ricerca è pronta: scrivi "brief ${no}" e te la rimando.`,
+      `Rispondimi con ${no} se vuoi che avvii la ricerca su Lexroom, o dimmi se preferisci saltare la ${no}.`,
+    briefReady: (no) => `La ricerca è pronta: dimmi se vuoi che ti rimandi il brief della ${no}.`,
     watched: "È nella tua lista di controllo.",
     moved: "La data è cambiata.",
     unsure: "Non sono sicura della data: controlla l'atto.",
@@ -56,6 +57,8 @@ const WORDS: Record<Language, Words> = {
       `Collega Gmail e Google Calendar così posso prepararti il riepilogo del mattino e inviare le email che mi confermi.\nApri questo link per collegare il tuo account Google:\n${url}`,
     connectSend: (url) =>
       `Posso leggere Gmail e Google Calendar, ma non ancora inviare email.\nApri questo link e consenti l'invio:\n${url}`,
+    connectExpired: (url) =>
+      `Il collegamento al tuo Gmail è scaduto: ecco il link per ricollegarlo (vale 30 minuti)\n${url}`,
   },
   en: {
     intro: "Good morning. This one should not wait:",
@@ -68,8 +71,10 @@ const WORDS: Record<Language, Words> = {
     today: "today",
     tomorrow: "tomorrow",
     passed: "already passed",
-    reply: (no) => `Reply ${no} to run the Lexroom research, or "skip ${no}" to dismiss it.`,
-    briefReady: (no) => `The research is ready: write "brief ${no}" and I will send it again.`,
+    reply: (no) =>
+      `Reply with ${no} if you want me to run the Lexroom research, or tell me if you would rather skip ${no}.`,
+    briefReady: (no) =>
+      `The research is ready: tell me if you want me to send the brief for ${no} again.`,
     watched: "It is on your watch list.",
     moved: "The date moved.",
     unsure: "I am not sure of the date: please check the notice.",
@@ -80,6 +85,8 @@ const WORDS: Record<Language, Words> = {
       `Connect Gmail and Google Calendar so I can prepare your morning digest and send the emails you confirm.\nOpen this link to connect your Google account:\n${url}`,
     connectSend: (url) =>
       `I can read Gmail and Google Calendar, but I cannot send email yet.\nOpen this link and approve sending:\n${url}`,
+    connectExpired: (url) =>
+      `The connection to your Gmail has expired: here is the link to connect it again (it is valid for 30 minutes)\n${url}`,
   },
   es: {
     intro: "Buenos días. Esto no puede esperar:",
@@ -93,8 +100,9 @@ const WORDS: Record<Language, Words> = {
     tomorrow: "mañana",
     passed: "ya pasó",
     reply: (no) =>
-      `Responde ${no} para iniciar la investigación en Lexroom, o "omitir ${no}" para descartarla.`,
-    briefReady: (no) => `La investigación está lista: escribe "brief ${no}" y te la reenvío.`,
+      `Respóndeme con ${no} si quieres que inicie la investigación en Lexroom, o dime si prefieres omitir la ${no}.`,
+    briefReady: (no) =>
+      `La investigación está lista: dime si quieres que te reenvíe el brief de la ${no}.`,
     watched: "Está en tu lista de seguimiento.",
     moved: "La fecha cambió.",
     unsure: "No estoy segura de la fecha: revisa la notificación.",
@@ -106,6 +114,8 @@ const WORDS: Record<Language, Words> = {
       `Conecta Gmail y Google Calendar para que pueda preparar tu resumen de la mañana y enviar los correos que me confirmes.\nAbre este enlace para conectar tu cuenta de Google:\n${url}`,
     connectSend: (url) =>
       `Puedo leer Gmail y Google Calendar, pero todavía no puedo enviar correos.\nAbre este enlace y autoriza el envío:\n${url}`,
+    connectExpired: (url) =>
+      `La conexión con tu Gmail ha caducado: aquí tienes el enlace para volver a conectarlo (vale 30 minutos)\n${url}`,
   },
   fr: {
     intro: "Bonjour. Ceci ne peut pas attendre :",
@@ -119,8 +129,9 @@ const WORDS: Record<Language, Words> = {
     tomorrow: "demain",
     passed: "déjà passée",
     reply: (no) =>
-      `Répondez ${no} pour lancer la recherche sur Lexroom, ou "ignorer ${no}" pour l'écarter.`,
-    briefReady: (no) => `La recherche est prête : écrivez "brief ${no}" et je vous la renvoie.`,
+      `Répondez-moi avec ${no} si vous voulez que je lance la recherche sur Lexroom, ou dites-moi si vous préférez écarter la ${no}.`,
+    briefReady: (no) =>
+      `La recherche est prête : dites-moi si vous voulez que je vous renvoie le brief de la ${no}.`,
     watched: "Elle est dans votre liste de suivi.",
     moved: "La date a changé.",
     unsure: "Je ne suis pas sûre de la date : vérifiez l'acte.",
@@ -132,6 +143,8 @@ const WORDS: Record<Language, Words> = {
       `Connectez Gmail et Google Agenda pour que je puisse préparer votre résumé du matin et envoyer les e-mails que vous confirmez.\nOuvrez ce lien pour connecter votre compte Google :\n${url}`,
     connectSend: (url) =>
       `Je peux lire Gmail et Google Agenda, mais pas encore envoyer d'e-mails.\nOuvrez ce lien et autorisez l'envoi :\n${url}`,
+    connectExpired: (url) =>
+      `La connexion à votre Gmail a expiré : voici le lien pour la reconnecter (valable 30 minutes)\n${url}`,
   },
   de: {
     intro: "Guten Morgen. Das kann nicht warten:",
@@ -145,9 +158,9 @@ const WORDS: Record<Language, Words> = {
     tomorrow: "morgen",
     passed: "bereits vorbei",
     reply: (no) =>
-      `Antworten Sie ${no}, um die Lexroom-Recherche zu starten, oder "überspringen ${no}", um sie zu verwerfen.`,
+      `Antworten Sie mir mit ${no}, wenn ich die Lexroom-Recherche starten soll, oder sagen Sie mir, wenn Sie ${no} lieber überspringen möchten.`,
     briefReady: (no) =>
-      `Die Recherche ist fertig: Schreiben Sie "brief ${no}", dann sende ich sie erneut.`,
+      `Die Recherche ist fertig: Sagen Sie mir, wenn ich Ihnen die Zusammenfassung zu ${no} erneut senden soll.`,
     watched: "Sie steht auf Ihrer Beobachtungsliste.",
     moved: "Das Datum hat sich geändert.",
     unsure: "Ich bin mir beim Datum nicht sicher: Bitte prüfen Sie die Mitteilung.",
@@ -158,6 +171,8 @@ const WORDS: Record<Language, Words> = {
       `Verbinden Sie Gmail und Google Kalender, damit ich Ihre Morgenübersicht vorbereiten und E-Mails senden kann, die Sie bestätigen.\nÖffnen Sie diesen Link, um Ihr Google-Konto zu verbinden:\n${url}`,
     connectSend: (url) =>
       `Ich kann Gmail und Google Kalender lesen, aber noch keine E-Mails senden.\nÖffnen Sie diesen Link und erlauben Sie das Senden:\n${url}`,
+    connectExpired: (url) =>
+      `Die Verbindung zu Ihrem Gmail ist abgelaufen: Hier ist der Link zum erneuten Verbinden (30 Minuten gültig)\n${url}`,
   },
 };
 
@@ -245,12 +260,43 @@ export function renderDigestText(
   return blocks.join("\n\n");
 }
 
+const OFFER_LABEL_MAX = 80;
+const OFFER_DEADLINES_MAX = 10;
+
+/**
+ * What the digest above offered, for the note the model reads when the person answers it, since
+ * the model never sees the digest itself: the two next steps and every numbered item with the
+ * action its line invited.
+ */
+export function digestOfferDetail(plan: DeliverablePlan): string {
+  const label = (text: string) => text.trim().slice(0, OFFER_LABEL_MAX);
+  const [research, draft] = plan.nextSteps;
+  const lines = [
+    `  - a Lexroom research for ${label(research.matterLabel)}; a yes starts it`,
+    `  - a draft for ${label(draft.matterLabel)}, only after the research and with their ok`,
+  ];
+  for (const line of (plan.deadlines ?? []).slice(0, OFFER_DEADLINES_MAX)) {
+    const offered =
+      line.status === "tracked" && line.briefReady
+        ? "send the stored brief again"
+        : "start the Lexroom research";
+    lines.push(
+      `  - item ${line.no}: ${label(line.matterLabel)}, ${line.type} ${line.due}; offered: ${offered}, or skip it`,
+    );
+  }
+  return lines.join("\n");
+}
+
 /** The Google connect ask: the link that connects this person's account, in their language. */
 export function renderGoogleConnectText(
   language: Language,
   url: string,
-  purpose: "connect" | "send" = "connect",
+  purpose: "connect" | "send" | "expired" = "connect",
 ): string {
   const words = WORDS[language];
-  return purpose === "send" ? words.connectSend(url) : words.connect(url);
+  return purpose === "send"
+    ? words.connectSend(url)
+    : purpose === "expired"
+      ? words.connectExpired(url)
+      : words.connect(url);
 }

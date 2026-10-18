@@ -63,14 +63,15 @@ export type RenewFailure = {
 
 const FAILURE_TEXT: Record<Exclude<RenewFailure["reason"], "timeout">, string> = {
   wrong_password:
-    "Lexroom no longer accepts the saved email and password. Call ada_lexroom_connect and send that link.",
+    "Lexroom no longer accepts the saved email and password. Ask whether they want to reconnect; call ada_lexroom_connect and send the link only after they agree (or if they asked to connect).",
   mfa_required:
     "This Lexroom account requires a one-time code (MFA) at every sign-in, which Ada cannot enter, so she cannot renew the connection. Use a Lexroom account without MFA.",
-  no_password: "The Lexroom connection expired. Call ada_lexroom_connect and send that link.",
+  no_password:
+    "The Lexroom connection expired. Ask whether they want to reconnect; call ada_lexroom_connect and send the link only after they agree (or if they asked to connect).",
   unavailable:
     "Ada could not renew the Lexroom sign-in because Lexroom did not answer. Try again shortly.",
   forbidden:
-    "Lexroom answered and refused the sign-in for this account, so Ada could not renew it. The saved sign-in is kept. Tell the user, and suggest reconnecting with ada_lexroom_connect or checking the account with Lexroom.",
+    "Lexroom answered and refused the sign-in for this account, so Ada could not renew it. The saved sign-in is kept. Tell the user and ask whether they want to reconnect; call ada_lexroom_connect with force true only after they agree (or if they asked to connect), or suggest checking the account with Lexroom.",
   captcha_required:
     "Lexroom's sign-in asked for a captcha (bot detection), which Ada cannot solve, so she could not renew the sign-in. The saved sign-in is kept. Tell the user to try again later or to sign in on app.lexroom.ai first.",
 };
