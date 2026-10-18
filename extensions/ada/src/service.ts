@@ -28,6 +28,7 @@ import {
 } from "./google-api.js";
 import { googleConnectConfigFrom, readGoogleConnectConfig } from "./google-connect.js";
 import { saveRefreshedAccount } from "./google-tools.js";
+import { holdReconnectNote, takeHeldReconnectNote } from "./held-reconnect.js";
 import { maskNumber, logInboundSkip } from "./inbound-log.js";
 import { abortResearchJobs } from "./lexroom-jobs.js";
 import { openAdaMemoryFromApi, openAdaMemoryIfExistsFromApi, type MemoryStore } from "./memory.js";
@@ -47,15 +48,6 @@ function readPubSubTopic(config: unknown): string | null {
   }
   const topic = (config as { googlePubSubTopic?: unknown }).googlePubSubTopic;
   return typeof topic === "string" && topic.trim().startsWith("projects/") ? topic.trim() : null;
-}
-
-/** At most one "your Google sign-in expired" note per number per day; this process only. */
-const RECONNECT_NOTE_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const reconnectNoteAtMs = new Map<string, number>();
-
-/** Forgets which numbers were told their Google sign-in expired. For tests: the state is process-wide. */
-export function clearReconnectNotes(): void {
-  reconnectNoteAtMs.clear();
 }
 
 const POLL_MS = 15 * 60 * 1000;
@@ -118,6 +110,16 @@ function dayKey(now: Date, timeZone: string): string {
     month: "2-digit",
     day: "2-digit",
   }).format(now);
+}
+
+function reconnectNoteRequest(params: { owner: string; now: Date }) {
+  return {
+    owner: params.owner,
+    plan: { deliver: false, reason: "nothing_cleared_the_bar" } as const,
+    idempotencyKey: `reconnect:${params.owner}:${dayKey(params.now, DEFAULT_TZ)}`,
+    connectOnly: true,
+    reconnect: true,
+  };
 }
 
 async function loadGoogleReads(api: OpenClawPluginApi, owner: string, now: Date) {
@@ -324,31 +326,15 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
   const google = await loadGoogleReads(params.api, params.owner, params.now);
   if (!google.ok) {
     if (google.error === "reconnect") {
-      const sinceMs = params.now.getTime() - (reconnectNoteAtMs.get(params.owner) ?? -Infinity);
-      if (sinceMs < RECONNECT_NOTE_INTERVAL_MS) {
-        return {
-          collected: false,
-          delivered: false,
-          held: false,
-          reason: "reconnect_note_recent",
-          decision: "none",
-        };
-      }
-      const dispatch = await dispatchSafely(dispatchDigestTurn, {
-        owner: params.owner,
-        plan: { deliver: false, reason: "nothing_cleared_the_bar" },
-        idempotencyKey: `reconnect:${params.owner}:${dayKey(params.now, DEFAULT_TZ)}`,
-        connectOnly: true,
-        reconnect: true,
-      });
-      if (dispatch.ok) {
-        reconnectNoteAtMs.set(params.owner, params.now.getTime());
+      const dispatch = await dispatchSafely(dispatchDigestTurn, reconnectNoteRequest(params));
+      if (!dispatch.ok) {
+        holdReconnectNote(params.owner, params.now.getTime());
       }
       return {
         collected: false,
         delivered: dispatch.ok,
         held: false,
-        reason: dispatch.ok ? "reconnect_dispatched" : (dispatch.reason ?? "reconnect_rejected"),
+        reason: dispatch.ok ? "reconnect_dispatched" : "reconnect_held",
         decision: "connect",
       };
     }
@@ -921,6 +907,28 @@ export async function openWakeWindow(
 }
 
 /**
+ * The number just wrote, so the window is open: sends the expired-Google note that could not go
+ * out before, with a link made now. Kept for the next message when the send fails again.
+ */
+async function releaseHeldReconnectNote(
+  api: OpenClawPluginApi,
+  owner: string,
+  nowMs: number,
+): Promise<void> {
+  if (!takeHeldReconnectNote(owner, nowMs)) {
+    return;
+  }
+  const now = new Date(nowMs);
+  const result = await dispatchSafely(
+    (request) => dispatchDigest(api, { ...request, afterLawyerReply: true }),
+    reconnectNoteRequest({ owner, now }),
+  );
+  if (!result.ok && result.reason !== "already_connected") {
+    holdReconnectNote(owner, nowMs);
+  }
+}
+
+/**
  * Records that a number wrote, which opens its paid WhatsApp window and releases a digest held
  * for that number, and only that number's. A number with no memory yet has no digest to release,
  * so nothing is created for it: its window starts when it first connects an account.
@@ -950,6 +958,7 @@ export async function recordSenderInbound(params: {
     });
     return;
   }
+  await releaseHeldReconnectNote(params.api, owner, params.atMs);
   const memory = await openAdaMemoryIfExistsFromApi(params.api, owner);
   if (!memory) {
     logInboundSkip(params.api.logger, {

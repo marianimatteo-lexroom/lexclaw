@@ -28,7 +28,14 @@ vi.mock("./google-account.js", () => ({
 }));
 
 import { executeAdaGoogleConnect } from "./google-tools.js";
-import { clearReconnectNotes, runAdaCollectPass } from "./service.js";
+vi.mock("./memory.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./memory.js")>()),
+  openAdaMemoryIfExistsFromApi: async () => null,
+}));
+
+import { clearSentDigests } from "./dispatch-digest.js";
+import { clearHeldReconnectNotes } from "./held-reconnect.js";
+import { recordSenderInbound, runAdaCollectPass } from "./service.js";
 
 const OWNER = "393331111111";
 const NOW = new Date("2026-10-18T07:40:00.000Z");
@@ -67,7 +74,8 @@ const invalidGrant = () =>
 
 beforeEach(() => {
   vi.clearAllMocks();
-  clearReconnectNotes();
+  clearHeldReconnectNotes();
+  clearSentDigests();
   stores.account = null;
   google.loadAccessToken.mockReset();
 });
@@ -170,7 +178,7 @@ function memory(): MemoryStore {
   return { readWake: async () => ({ ...wake }) } as unknown as MemoryStore;
 }
 
-describe("the background pass tells a number whose Google sign-in expired, once a day", () => {
+describe("the background pass tells a number whose Google sign-in expired", () => {
   const pass = (now: Date, dispatch: ReturnType<typeof vi.fn>, owner = OWNER) =>
     runAdaCollectPass({
       api,
@@ -202,37 +210,93 @@ describe("the background pass tells a number whose Google sign-in expired, once 
     });
   });
 
-  it("goes out at most once per 24 hours per number, and other numbers are told on their own", async () => {
-    const dispatch = vi.fn(async () => ({ ok: true }));
-    await pass(NOW, dispatch);
-    const again = await pass(new Date(NOW.getTime() + 15 * 60_000), dispatch);
-    const later = await pass(new Date(NOW.getTime() + 23 * HOUR_MS), dispatch);
-    expect(dispatch).toHaveBeenCalledTimes(1);
-    expect(again).toMatchObject({ delivered: false, reason: "reconnect_note_recent" });
-    expect(later).toMatchObject({ reason: "reconnect_note_recent" });
-
-    await pass(new Date(NOW.getTime() + 15 * 60_000), dispatch, "393332222222");
-    expect(dispatch).toHaveBeenCalledTimes(2);
-    expect(dispatch.mock.calls[1]?.[0]).toMatchObject({ owner: "393332222222" });
-
-    await pass(new Date(NOW.getTime() + 25 * HOUR_MS), dispatch);
-    expect(dispatch).toHaveBeenCalledTimes(3);
-  });
-
-  it("does not start the 24-hour wait when the note could not be sent", async () => {
-    const dispatch = vi.fn(async () => ({ ok: false, reason: "kapso down" }));
-    expect(await pass(NOW, dispatch)).toMatchObject({ delivered: false, reason: "kapso down" });
-    dispatch.mockResolvedValue({ ok: true });
-    await pass(new Date(NOW.getTime() + 15 * 60_000), dispatch);
-    expect(dispatch).toHaveBeenCalledTimes(2);
-  });
-
   it("stays silent for a number with no account, which the morning ask already covers", async () => {
     stores.account = null;
     const dispatch = vi.fn(async () => ({ ok: true }));
     expect(await pass(NOW, dispatch)).toMatchObject({ decision: "none", reason: "not_connected" });
     expect(dispatch).not.toHaveBeenCalled();
     expect(clearAccount).not.toHaveBeenCalled();
+  });
+
+  describe("when the note cannot be sent", () => {
+    const send = vi.fn();
+    const inbound = (atMs: number, owner = OWNER) =>
+      recordSenderInbound({
+        api: {
+          ...api,
+          runtime: {
+            channel: { outbound: { loadAdapter: async () => ({ sendText: send }) } },
+          },
+        } as unknown as OpenClawPluginApi,
+        atMs,
+        channelId: "kapso-whatsapp",
+        senders: [`+${owner}`],
+      });
+
+    beforeEach(() => {
+      send.mockReset();
+      stores.account = null;
+    });
+
+    it("holds it, and sends it with a link made then when that number next writes", async () => {
+      stores.account = savedAccount();
+      const closed = vi.fn(async () => ({ ok: false, reason: "window closed" }));
+      expect(await pass(NOW, closed)).toMatchObject({
+        delivered: false,
+        reason: "reconnect_held",
+      });
+
+      stores.account = null;
+      await inbound(NOW.getTime() + 5 * HOUR_MS);
+      expect(send).toHaveBeenCalledTimes(1);
+      const call = send.mock.calls[0]?.[0] as { to: string; text: string };
+      expect(call.to).toBe(`+${OWNER}`);
+      expect(call.text).toMatch(/^Il collegamento al tuo Gmail è scaduto/u);
+      expect(call.text).toContain("accounts.google.com");
+      expect(replacePending).toHaveBeenCalledTimes(1);
+
+      send.mockClear();
+      await inbound(NOW.getTime() + 6 * HOUR_MS);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it("keeps holding while the send keeps failing, and drops it once the person reconnected", async () => {
+      stores.account = savedAccount();
+      await pass(
+        NOW,
+        vi.fn(async () => ({ ok: false, reason: "down" })),
+      );
+      stores.account = null;
+      send.mockRejectedValueOnce(new Error("window closed"));
+      await inbound(NOW.getTime() + HOUR_MS);
+      expect(send).toHaveBeenCalledTimes(1);
+
+      google.loadAccessToken.mockResolvedValue({
+        ok: true,
+        accessToken: "a",
+        accessExpiresAtMs: NOW.getTime() + 9 * HOUR_MS,
+      });
+      stores.account = savedAccount({
+        accessToken: "a",
+        accessExpiresAtMs: NOW.getTime() + 9 * HOUR_MS,
+      });
+      send.mockClear();
+      await inbound(NOW.getTime() + 2 * HOUR_MS);
+      expect(send).not.toHaveBeenCalled();
+      await inbound(NOW.getTime() + 3 * HOUR_MS);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it("holds per number: another number's message releases nothing of it", async () => {
+      stores.account = savedAccount();
+      await pass(
+        NOW,
+        vi.fn(async () => ({ ok: false, reason: "down" })),
+      );
+      stores.account = null;
+      await inbound(NOW.getTime() + HOUR_MS, "393332222222");
+      expect(send).not.toHaveBeenCalled();
+    });
   });
 });
 

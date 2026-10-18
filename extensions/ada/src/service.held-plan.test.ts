@@ -36,6 +36,7 @@ vi.mock("./memory.js", () => memoryModule);
 vi.mock("./google-account.js", () => ({
   openAdaGoogleAccountFromApi: async () => ({
     readAccount: async () => ({ email: "lawyer@example.com" }),
+    upsertAccount: async () => {},
   }),
   openAdaGoogleAccountDbFromApi: async () => ({ listOwners: async () => [] }),
 }));

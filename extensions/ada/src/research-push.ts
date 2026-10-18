@@ -278,6 +278,11 @@ export function recordSenderInbound(recipient: string, atMs: number): void {
   }
 }
 
+/** When `recipient` last wrote to Ada, if this process saw it. */
+export function lastSenderInboundAt(recipient: string): number | undefined {
+  return lastInboundAtMs.get(recipient);
+}
+
 function pruneHeld(nowMs: number): void {
   for (const [recipient, list] of held) {
     const fresh = list.filter((entry) => nowMs - entry.heldAtMs <= HELD_TTL_MS);

@@ -1,5 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import { renderDigestText, renderGoogleConnectText } from "./digest-text.js";
+import { noteConnectOffer } from "./connect-offers.js";
+import { digestOfferDetail, renderDigestText, renderGoogleConnectText } from "./digest-text.js";
 import type { DigestPlan } from "./digest.js";
 import { googleConnectConfigFrom } from "./google-connect.js";
 import { sendAdaWhatsAppText } from "./google-notify.js";
@@ -84,5 +85,8 @@ export async function dispatchDigest(
     return { ok: false, reason: result.error };
   }
   sent.set(key, nowMs);
+  if (!request.connectOnly && request.plan.deliver) {
+    noteConnectOffer(request.owner, "digest", Date.now(), digestOfferDetail(request.plan));
+  }
   return { ok: true };
 }

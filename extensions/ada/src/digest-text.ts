@@ -260,6 +260,33 @@ export function renderDigestText(
   return blocks.join("\n\n");
 }
 
+const OFFER_LABEL_MAX = 80;
+const OFFER_DEADLINES_MAX = 10;
+
+/**
+ * What the digest above offered, for the note the model reads when the person answers it, since
+ * the model never sees the digest itself: the two next steps and every numbered item with the
+ * action its line invited.
+ */
+export function digestOfferDetail(plan: DeliverablePlan): string {
+  const label = (text: string) => text.trim().slice(0, OFFER_LABEL_MAX);
+  const [research, draft] = plan.nextSteps;
+  const lines = [
+    `  - a Lexroom research for ${label(research.matterLabel)}; a yes starts it`,
+    `  - a draft for ${label(draft.matterLabel)}, only after the research and with their ok`,
+  ];
+  for (const line of (plan.deadlines ?? []).slice(0, OFFER_DEADLINES_MAX)) {
+    const offered =
+      line.status === "tracked" && line.briefReady
+        ? "send the stored brief again"
+        : "start the Lexroom research";
+    lines.push(
+      `  - item ${line.no}: ${label(line.matterLabel)}, ${line.type} ${line.due}; offered: ${offered}, or skip it`,
+    );
+  }
+  return lines.join("\n");
+}
+
 /** The Google connect ask: the link that connects this person's account, in their language. */
 export function renderGoogleConnectText(
   language: Language,

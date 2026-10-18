@@ -8,11 +8,14 @@ const executeAdaGoogleConnect = vi.hoisted(() => vi.fn());
 vi.mock("./memory.js", () => ({ openAdaMemoryIfExistsFromApi }));
 vi.mock("./google-tools.js", () => ({ executeAdaGoogleConnect }));
 
+import { takeConnectOffers } from "./connect-offers.js";
 import { clearSentDigests, dispatchDigest } from "./dispatch-digest.js";
 
 const ANNA = "393331111111";
 const BRUNO = "393332222222";
 const LAWYER = "390000000000";
+const DINO = "393334444444";
+const ELSA = "393339999999";
 
 const NO_PLAN: DigestPlan = { deliver: false, reason: "nothing_cleared_the_bar" };
 const PLAN: DigestPlan = {
@@ -110,6 +113,26 @@ describe("dispatchDigest", () => {
       afterLawyerReply: true,
     });
     expect(sent).toHaveLength(2);
+  });
+
+  it("notes what the digest offered, for that number only, and only once it was delivered", async () => {
+    const { api, sendText } = setup();
+    sendText.mockRejectedValueOnce(new Error("window closed"));
+    expect(
+      await dispatchDigest(api, { owner: DINO, plan: PLAN, idempotencyKey: "d1" }),
+    ).toMatchObject({ ok: false });
+    expect(takeConnectOffers(DINO, { runId: "r0" })).toEqual([]);
+
+    await dispatchDigest(api, {
+      owner: DINO,
+      plan: PLAN,
+      idempotencyKey: "d1",
+      afterLawyerReply: true,
+    });
+    const [offer] = takeConnectOffers(DINO, { runId: "r1" });
+    expect(offer?.kind).toBe("digest");
+    expect(offer?.detail).toContain("a Lexroom research for Rossi SRL");
+    expect(takeConnectOffers(ELSA, { runId: "r1" })).toEqual([]);
   });
 
   it("sends nothing for a plan with nothing to say", async () => {

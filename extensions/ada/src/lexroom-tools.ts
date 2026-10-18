@@ -192,7 +192,7 @@ async function runWithRecovery<T extends { ok: boolean; reason?: string }>(param
       return {
         ok: false,
         error:
-          "Lexroom rejected a sign-in Ada had just renewed. Try again shortly; if it keeps happening, call ada_lexroom_connect with force true.",
+          "Lexroom rejected a sign-in Ada had just renewed. Try again shortly; if it keeps happening, ask whether they want to reconnect and call ada_lexroom_connect with force true only after they agree (or if they asked to connect).",
       };
     }
     return second;
