@@ -93,9 +93,27 @@ describe("detectLanguage", () => {
     ["Dame un enlace nuevo, gracias", "es"],
     ["Bonjour, envoie-moi un nouveau lien", "fr"],
     ["Schick mir bitte einen neuen Link", "de"],
+    ["In tribunale", "it"],
+    ["in udienza", "it"],
+    ["In ufficio", "it"],
+    ["in arrivo", "it"],
+    ["Ok in ritardo", "it"],
+    ["In bocca al lupo", "it"],
+    ["Do atto", "it"],
+    ["Prima udienza in Corte d'Appello", "it"],
+    ["fai il recap del meeting", "it"],
+    ["controlla la governing law del contratto", "it"],
+    ["Check the SPA", "en"],
   ])("tells the short message %j", (text, language) => {
     expect(detectLanguage(text)).toBe(language);
   });
+
+  it.each(["in", "In", "do", "ok in", "on", "am", "has", "me", "a", "la", "il", "una", "corte"])(
+    "does not take the word %j that other languages use for evidence of any language",
+    (text) => {
+      expect(detectLanguage(text)).toBeUndefined();
+    },
+  );
 });
 
 describe("the language of a number's latest message", () => {

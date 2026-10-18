@@ -77,7 +77,7 @@ const STOPWORDS: Record<Language, ReadonlySet<string>> = {
  */
 const SHORT_HINTS: Record<Language, ReadonlySet<string>> = {
   it: new Set(
-    "e ciao buongiorno buonasera grazie sì voglio vorrei mandami dammi fammi dimmi nuovo nuova nuovi quando domani oggi vai certo perfetto ricerca puoi ti chi ecco avvocato".split(
+    "e ciao buongiorno buonasera grazie sì voglio vorrei mandami dammi fammi dimmi nuovo nuova nuovi quando domani oggi vai certo perfetto ricerca puoi ti chi ecco avvocato fai controlla prepara scrivi inviami aggiorna ricordami leggi riassumi traduci dove perché tribunale udienza ufficio arrivo ritardo bocca lupo atto appello prima contratto sentenza giudice fascicolo scadenza ricorso".split(
       " ",
     ),
   ),
@@ -103,11 +103,54 @@ const SHORT_HINTS: Record<Language, ReadonlySet<string>> = {
   ),
 };
 
+/**
+ * Everyday words of each language that are not evidence of it but exist in it ("in", "do" and "il"
+ * are Italian, "has" is Spanish, "on" is French, "am" is German). They are never counted, and they
+ * make any stopword or hint of another language that spells the same ambiguous.
+ */
+const EVERYDAY_WORDS: Record<Language, ReadonlySet<string>> = {
+  it: new Set(
+    "in do a da su ma se mi ci vi lo la le gli un uno al del nel col dal sul tra fra no si ho hai ha è me te ne so corte".split(
+      " ",
+    ),
+  ),
+  en: new Set(
+    "a an in on at do me we he so no to be by it is as or if my us am go up of".split(" "),
+  ),
+  es: new Set(
+    "a de en el la lo me mi no se si te un una y o es su al del con por para he has ha cerca corte causa decreto cosa cliente prima".split(
+      " ",
+    ),
+  ),
+  fr: new Set("a de en le la un une me ne ni on ou se si te tu y du et est il elle au".split(" ")),
+  de: new Set("in im am an da so ob wo zu es er du die der das was".split(" ")),
+};
+
+const LANGUAGES = Object.keys(STOPWORDS) as Language[];
+
+const wordsOf = (language: Language): string[] => [
+  ...STOPWORDS[language],
+  ...SHORT_HINTS[language],
+  ...EVERYDAY_WORDS[language],
+];
+
+/** Words that belong to more than one supported language, so say nothing about a short message. */
+const AMBIGUOUS_WORDS: ReadonlySet<string> = (() => {
+  const seen = new Map<string, number>();
+  for (const language of LANGUAGES) {
+    for (const word of new Set(wordsOf(language))) {
+      seen.set(word, (seen.get(word) ?? 0) + 1);
+    }
+  }
+  return new Set([...seen].filter(([, count]) => count > 1).map(([word]) => word));
+})();
+
 const SHORT_MESSAGE_WORDS = 10;
 
 /**
- * The language of a text by its stopwords and, in a short message, its hint words; undefined when
- * the text is too short or too neutral to tell ("ok", a link, an emoji, a case citation).
+ * The language of a text; undefined when it is too short or too neutral to tell ("ok", a link, an
+ * emoji, a case citation). A long text is told by its stopwords. A short message has too few of
+ * them, so its hint words count as well, but only those no other supported language also uses.
  */
 export function detectLanguage(text: string): Language | undefined {
   const words =
@@ -115,20 +158,21 @@ export function detectLanguage(text: string): Language | undefined {
       .slice(0, 3000)
       .toLowerCase()
       .match(/[\p{L}]+/gu) ?? [];
-  const scores = (Object.keys(STOPWORDS) as Language[])
-    .map((language) => ({
-      language,
-      score: words.filter(
-        (word) => STOPWORDS[language].has(word) || SHORT_HINTS[language].has(word),
-      ).length,
-    }))
-    .toSorted((a, b) => b.score - a.score);
+  const short = words.length <= SHORT_MESSAGE_WORDS;
+  const scores = LANGUAGES.map((language) => ({
+    language,
+    score: words.filter((word) =>
+      short
+        ? !AMBIGUOUS_WORDS.has(word) &&
+          (STOPWORDS[language].has(word) || SHORT_HINTS[language].has(word))
+        : STOPWORDS[language].has(word),
+    ).length,
+  })).toSorted((a, b) => b.score - a.score);
   const [best, second] = scores;
   if (!best) {
     return undefined;
   }
   const margin = best.score - (second?.score ?? 0);
-  const short = words.length <= SHORT_MESSAGE_WORDS;
   return (short ? best.score >= 1 && margin >= 1 : best.score >= 3 && margin >= 2)
     ? best.language
     : undefined;
