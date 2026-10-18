@@ -334,6 +334,8 @@ describe("greetingLanguage", () => {
 
 describe("welcome text", () => {
   const LANGUAGES = ["it", "en", "es", "fr", "de"] as const;
+  /** The template's own English sentence describes what Ada can do; it is not an instruction. */
+  const DESCRIPTIVE_OPENING = "connect Gmail and Calendar so she can manage";
 
   it("is signed Ada in every language and never says Vera", () => {
     for (const language of LANGUAGES) {
@@ -346,10 +348,10 @@ describe("welcome text", () => {
 
   it("never teaches a command: no quoted phrase, no keyword, in any language", () => {
     for (const language of LANGUAGES) {
-      const text = welcomeText(language);
+      const text = welcomeText(language).replace(DESCRIPTIVE_OPENING, "");
       expect(text, language).not.toMatch(/«|»/u);
       expect(text, language).not.toMatch(
-        /collega Lexroom|connect Lexroom|conecta Lexroom|connecte Lexroom|Lexroom verbinden/iu,
+        /collega Lexroom|collega Gmail|connect Lexroom|connect Gmail|conecta Lexroom|conecta Gmail|connecte Lexroom|connecte Gmail|Lexroom verbinden|Gmail verbinden/iu,
       );
       expect(text, language).not.toMatch(
         /scrivimi|write to me|escríbeme|écrivez-moi|schreiben Sie mir/iu,

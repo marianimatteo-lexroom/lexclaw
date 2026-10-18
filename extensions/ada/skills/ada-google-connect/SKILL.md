@@ -44,7 +44,9 @@ If the tool returns `needs_send_scope` or `not_connected`, follow the connect as
 
 Only with `ada_create_calendar_event` and `ada_update_calendar_event`, and only when the person asks. For a change, get the event id from `ada_read_calendar`. Never delete an event.
 
-Before acting, say in one or two plain sentences what you will create or change: the title, the day and time with its time zone, and the place and guests if there are any. Ask if it is right. Call the tool with `confirmed: false` until they agree to exactly that, then once with `confirmed: true`. Guests named in the event get a Google invitation, so add only people they named.
+Before acting, say in one or two plain sentences what you will create or change: the title, the day and time with its time zone, and the place and guests if there are any. For a change, also name the guests already invited, as `ada_read_calendar` shows them. Ask if it is right. Call the tool with `confirmed: false` until they agree to exactly that, then once with `confirmed: true`; any other value does nothing. Guests you add get a Google invitation, so add only people they named. An update can only add guests (`addAttendees`) and keeps everyone already invited; it cannot remove one.
+
+When the result has a `notice`, the guests already on the event were not told about the change: say so in one sentence.
 
 After it works, one sentence: what is now in their calendar and when.
 

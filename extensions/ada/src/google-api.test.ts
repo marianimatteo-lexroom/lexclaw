@@ -76,6 +76,33 @@ describe("google parsers", () => {
   });
 });
 
+describe("calendar guests", () => {
+  const payload = {
+    items: [
+      {
+        id: "hearing",
+        status: "confirmed",
+        summary: "Rossi hearing",
+        start: { dateTime: "2026-10-09T09:00:00.000Z" },
+        end: { dateTime: "2026-10-09T10:00:00.000Z" },
+        attendees: [
+          { email: "anna@example.com", displayName: "Anna Bianchi", responseStatus: "accepted" },
+          { email: "luca@example.com" },
+          { displayName: "no address" },
+        ],
+      },
+    ],
+  };
+
+  it("lists guests, with email and name, only when asked", () => {
+    expect(parseCalendarEvents(payload)[0]).not.toHaveProperty("attendees");
+    expect(parseCalendarEvents(payload, { includeAttendees: true })[0]?.attendees).toEqual([
+      { email: "anna@example.com", name: "Anna Bianchi" },
+      { email: "luca@example.com" },
+    ]);
+  });
+});
+
 describe("google oauth", () => {
   it("exchanges a code for a refresh token and the account email", async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {

@@ -758,8 +758,30 @@ describe("calendar event tools", () => {
     ).toMatchObject({ ok: true, event: { id: "evt-1", summary: "Udienza Rossi" } });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(urlOf(fetchMock.mock.calls[0]?.[0] as RequestInfo)).toBe(
-      "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+      "https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=none",
     );
+  });
+
+  it("shows who is invited when reading the calendar", async () => {
+    useGoogleAccount(googleAccount({ scopes: writeScopes }));
+    fetchMock.mockImplementation(async () =>
+      json({
+        items: [
+          {
+            id: "evt-1",
+            summary: "Udienza",
+            start: { dateTime: create.start },
+            end: { dateTime: create.end },
+            attendees: [{ email: "anna@example.com", displayName: "Anna Bianchi" }],
+          },
+        ],
+      }),
+    );
+    const { callTool } = registerAda();
+    expect(await callTool("ada_read_calendar", {})).toMatchObject({
+      ok: true,
+      events: [{ id: "evt-1", attendees: [{ email: "anna@example.com", name: "Anna Bianchi" }] }],
+    });
   });
 
   it("asks for a fresh permission when the saved grant is the old read-only one", async () => {

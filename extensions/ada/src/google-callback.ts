@@ -293,7 +293,7 @@ export async function handleAdaGoogleCallback(
       kind: "retry",
       heading: "Not connected",
       message:
-        "Ada did not connect Gmail or Google Calendar. Return to WhatsApp and ask Ada for a new link.",
+        "Ada did not connect Gmail or Google Calendar. If Google showed a warning, or you went back, return to WhatsApp and ask Ada for a new link.",
     });
     return true;
   }

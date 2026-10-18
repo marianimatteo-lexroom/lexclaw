@@ -26,7 +26,11 @@ export type CalendarEvent = {
   end: string;
   status: string;
   description?: string;
+  /** Only when the caller asks for them: guests are other people's addresses. */
+  attendees?: CalendarAttendee[];
 };
+
+export type CalendarAttendee = { email: string; name?: string };
 
 export type MessageAttachment = {
   /** "eml" is a forwarded message such as a PEC envelope's postacert.eml. */
@@ -218,9 +222,43 @@ function eventInstant(value: unknown): string {
   return "";
 }
 
+/** A guest as Google stores it; the fields that must survive a rewrite of the guest list. */
+export type CalendarGuest = {
+  email: string;
+  displayName?: string;
+  optional?: boolean;
+  resource?: boolean;
+  responseStatus?: string;
+};
+
+function parseGuests(value: unknown): CalendarGuest[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item): CalendarGuest[] => {
+    const guest = item as Record<string, unknown> | null;
+    if (!guest || typeof guest.email !== "string" || !EMAIL.test(guest.email)) {
+      return [];
+    }
+    return [
+      {
+        email: guest.email,
+        ...(typeof guest.displayName === "string"
+          ? { displayName: clip(guest.displayName, 200) }
+          : {}),
+        ...(guest.optional === true ? { optional: true } : {}),
+        ...(guest.resource === true ? { resource: true } : {}),
+        ...(typeof guest.responseStatus === "string"
+          ? { responseStatus: guest.responseStatus }
+          : {}),
+      },
+    ];
+  });
+}
+
 export function parseCalendarEvents(
   payload: unknown,
-  options: { includeDescription?: boolean } = {},
+  options: { includeDescription?: boolean; includeAttendees?: boolean } = {},
 ): CalendarEvent[] {
   if (!payload || typeof payload !== "object") {
     return [];
@@ -241,6 +279,7 @@ export function parseCalendarEvents(
       status?: unknown;
       start?: unknown;
       end?: unknown;
+      attendees?: unknown;
     };
     if (typeof record.id !== "string" || record.status === "cancelled") {
       continue;
@@ -249,6 +288,7 @@ export function parseCalendarEvents(
     if (!start) {
       continue;
     }
+    const guests = options.includeAttendees === true ? parseGuests(record.attendees) : [];
     events.push({
       id: record.id,
       summary: typeof record.summary === "string" ? clip(record.summary, 300) : "",
@@ -259,6 +299,13 @@ export function parseCalendarEvents(
       typeof record.description === "string" &&
       record.description.trim()
         ? { description: clip(record.description, 600) }
+        : {}),
+      ...(guests.length > 0
+        ? {
+            attendees: guests.map(({ email, displayName }) =>
+              displayName ? { email, name: displayName } : { email },
+            ),
+          }
         : {}),
     });
   }
@@ -519,6 +566,8 @@ export async function listUpcomingEvents(params: {
   maxResults?: number;
   /** Only deadline intake reads descriptions; other callers never see them. */
   includeDescription?: boolean;
+  /** Only the person reading their own calendar sees who is invited. */
+  includeAttendees?: boolean;
   fetchImpl?: FetchLike;
   signal?: AbortSignal;
 }): Promise<{ ok: true; events: CalendarEvent[] } | { ok: false; status: number }> {
@@ -538,54 +587,120 @@ export async function listUpcomingEvents(params: {
   }
   return {
     ok: true,
-    events: parseCalendarEvents(listed.value, { includeDescription: params.includeDescription }),
+    events: parseCalendarEvents(listed.value, {
+      includeDescription: params.includeDescription,
+      includeAttendees: params.includeAttendees,
+    }),
   };
 }
 
 export type CalendarEventInput = {
   summary?: string;
+  /** ISO 8601 date-time. */
   start?: string;
   end?: string;
   timeZone?: string;
   description?: string;
   location?: string;
-  attendees?: string[];
+  /** The complete guest list to save. Leave out to keep the event's guests as they are. */
+  guests?: CalendarGuest[];
+  /** The event being moved is all-day: its `date` fields give way to the new date-times. */
+  wasAllDay?: boolean;
 };
+
+/** An event as Google has it now, with what a safe edit needs to know about it. */
+export type CurrentCalendarEvent = {
+  event: CalendarEvent;
+  timeZone?: string;
+  guests: CalendarGuest[];
+};
+
+export async function getCalendarEvent(params: {
+  accessToken: string;
+  eventId: string;
+  fetchImpl?: FetchLike;
+  signal?: AbortSignal;
+}): Promise<
+  ({ ok: true } & CurrentCalendarEvent & { wasAllDay: boolean }) | { ok: false; status: number }
+> {
+  const got = await authorizedGet(
+    `${CALENDAR_EVENTS_URL}/${encodeURIComponent(params.eventId)}`,
+    params.accessToken,
+    params.fetchImpl ?? fetch,
+    params.signal,
+  );
+  if (!got.ok) {
+    return got;
+  }
+  const [event] = parseCalendarEvents({ items: [got.value] }, { includeAttendees: true });
+  if (!event) {
+    return { ok: false, status: 404 };
+  }
+  const record = got.value as {
+    start?: { timeZone?: unknown; dateTime?: unknown };
+    attendees?: unknown;
+  };
+  return {
+    ok: true,
+    event,
+    guests: parseGuests(record.attendees),
+    ...(typeof record.start?.timeZone === "string" ? { timeZone: record.start.timeZone } : {}),
+    wasAllDay: typeof record.start?.dateTime !== "string",
+  };
+}
+
+/**
+ * Why Google refused a write with 403: the saved grant lacks the calendar scope (a fresh
+ * permission fixes it), or the calendar does not let this person write (nothing does).
+ */
+function denialOf(payload: unknown): "scope" | "access" | undefined {
+  const text = JSON.stringify(payload) ?? "";
+  if (/ACCESS_TOKEN_SCOPE_INSUFFICIENT|insufficient authentication scopes/iu.test(text)) {
+    return "scope";
+  }
+  return /rateLimitExceeded|quotaExceeded|dailyLimitExceeded|backendError/iu.test(text)
+    ? undefined
+    : "access";
+}
 
 /**
  * Creates an event on the primary calendar, or patches the one named by `eventId`. Only the
- * fields given are sent, so an update never blanks what it does not mention. Attendees are
- * invited by Google when the call names any. `insufficientScope` is Google saying the saved
- * grant cannot write events, as opposed to any other 403.
+ * fields given are sent, so an update never blanks what it does not mention. `sendUpdates` is
+ * Google's all-or-nothing choice of whether guests get an email about this call.
  */
 export async function writeCalendarEvent(params: {
   accessToken: string;
   eventId?: string;
   event: CalendarEventInput;
+  sendUpdates: "all" | "none";
   fetchImpl?: FetchLike;
   signal?: AbortSignal;
 }): Promise<
-  { ok: true; event: CalendarEvent } | { ok: false; status: number; insufficientScope: boolean }
+  { ok: true; event: CalendarEvent } | { ok: false; status: number; denied?: "scope" | "access" }
 > {
   const { event } = params;
   const instant = (dateTime: string | undefined) =>
-    dateTime ? { dateTime, ...(event.timeZone ? { timeZone: event.timeZone } : {}) } : undefined;
+    dateTime
+      ? {
+          dateTime,
+          ...(event.timeZone ? { timeZone: event.timeZone } : {}),
+          ...(event.wasAllDay ? { date: null } : {}),
+        }
+      : undefined;
   const body = {
     ...(event.summary !== undefined ? { summary: event.summary } : {}),
     ...(event.description !== undefined ? { description: event.description } : {}),
     ...(event.location !== undefined ? { location: event.location } : {}),
     ...(event.start ? { start: instant(event.start) } : {}),
     ...(event.end ? { end: instant(event.end) } : {}),
-    ...(event.attendees ? { attendees: event.attendees.map((email) => ({ email })) } : {}),
+    ...(event.guests ? { attendees: event.guests } : {}),
   };
   const url = new URL(
     params.eventId
       ? `${CALENDAR_EVENTS_URL}/${encodeURIComponent(params.eventId)}`
       : CALENDAR_EVENTS_URL,
   );
-  if (event.attendees?.length) {
-    url.searchParams.set("sendUpdates", "all");
-  }
+  url.searchParams.set("sendUpdates", params.sendUpdates);
   let response: Response;
   try {
     response = await (params.fetchImpl ?? fetch)(url.toString(), {
@@ -598,22 +713,15 @@ export async function writeCalendarEvent(params: {
       signal: withGoogleTimeout(params.signal),
     });
   } catch {
-    return { ok: false, status: 0, insufficientScope: false };
+    return { ok: false, status: 0 };
   }
   const payload = await readBody(response);
   if (!response.ok) {
-    return {
-      ok: false,
-      status: response.status,
-      insufficientScope:
-        response.status === 403 &&
-        /insufficient|SCOPE_INSUFFICIENT/iu.test(JSON.stringify(payload)),
-    };
+    const denied = response.status === 403 ? denialOf(payload) : undefined;
+    return { ok: false, status: response.status, ...(denied ? { denied } : {}) };
   }
-  const [saved] = parseCalendarEvents({ items: [payload] });
-  return saved
-    ? { ok: true, event: saved }
-    : { ok: false, status: response.status, insufficientScope: false };
+  const [saved] = parseCalendarEvents({ items: [payload] }, { includeAttendees: true });
+  return saved ? { ok: true, event: saved } : { ok: false, status: response.status };
 }
 
 /** Renew Gmail push to a Pub/Sub topic. Calendar still uses the 15-minute poll. */
