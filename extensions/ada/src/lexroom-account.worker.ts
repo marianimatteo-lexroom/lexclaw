@@ -9,13 +9,14 @@ import type {
   executeSqliteQuerySync as ExecuteSqliteQuerySync,
   executeSqliteQueryTakeFirstSync as ExecuteSqliteQueryTakeFirstSync,
   getNodeSqliteKysely as GetNodeSqliteKysely,
+  iterateSqliteQuerySync as IterateSqliteQuerySync,
   openNodeSqliteDatabase as OpenNodeSqliteDatabase,
   runSqliteImmediateTransactionSync as RunSqliteImmediateTransactionSync,
   SqliteWorkerBackend,
   SqliteWorkerCommand,
 } from "openclaw/plugin-sdk/sqlite-worker-runtime";
 import {
-  ADA_LEXROOM_ACCOUNT_ID,
+  LEGACY_LEXROOM_ACCOUNT_ID,
   type LexroomAccountRecord,
   type AdaLexroomOperations,
 } from "./lexroom-account-contract.js";
@@ -73,6 +74,10 @@ const executeSqliteQueryTakeFirstSync = sdkFunction<typeof ExecuteSqliteQueryTak
   sqliteRuntime,
   "executeSqliteQueryTakeFirstSync",
 );
+const iterateSqliteQuerySync = sdkFunction<typeof IterateSqliteQuerySync>(
+  sqliteRuntime,
+  "iterateSqliteQuerySync",
+);
 const getNodeSqliteKysely = sdkFunction<typeof GetNodeSqliteKysely>(
   sqliteRuntime,
   "getNodeSqliteKysely",
@@ -107,10 +112,13 @@ CREATE TABLE IF NOT EXISTS vera_lexroom_account (
 ) STRICT;
 `;
 
-const PASSWORD_COLUMN_SQL = "ALTER TABLE vera_lexroom_account ADD COLUMN password TEXT NOT NULL DEFAULT ''";
+const PASSWORD_COLUMN_SQL =
+  "ALTER TABLE vera_lexroom_account ADD COLUMN password TEXT NOT NULL DEFAULT ''";
+const PENDING_OWNER_COLUMN_SQL =
+  "ALTER TABLE vera_lexroom_pending ADD COLUMN owner TEXT NOT NULL DEFAULT ''";
 
 type AdaLexroomDatabase = {
-  vera_lexroom_pending: { nonce: string; expires_at_ms: number };
+  vera_lexroom_pending: { nonce: string; owner: string; expires_at_ms: number };
   vera_lexroom_account: {
     id: string;
     email: string;
@@ -136,6 +144,14 @@ function chmodIfExists(file: string): void {
     if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
       throw error;
     }
+  }
+}
+
+const OWNER = /^\d{7,15}$/u;
+
+function assertOwner(owner: string): void {
+  if (!OWNER.test(owner)) {
+    throw new Error("Ada Lexroom account owner is invalid");
   }
 }
 
@@ -182,33 +198,33 @@ class AdaLexroomDatabaseStore {
     runSqliteImmediateTransactionSync(
       this.db,
       () => {
-        const row = executeSqliteQueryTakeFirstSync(
-          this.db,
-          this.query
-            .selectFrom("vera_lexroom_account")
-            .select(["access_token", "refresh_token", "password"])
-            .where("id", "=", ADA_LEXROOM_ACCOUNT_ID),
+        const rows = Array.from(
+          iterateSqliteQuerySync(
+            this.db,
+            this.query
+              .selectFrom("vera_lexroom_account")
+              .select(["id", "access_token", "refresh_token", "password"]),
+          ),
         );
-        if (!row) {
-          return;
+        for (const row of rows) {
+          const access = this.cipher.open(row.access_token, ACCESS_TOKEN_CONTEXT);
+          const refresh = this.cipher.open(row.refresh_token, REFRESH_TOKEN_CONTEXT);
+          const password = this.cipher.open(row.password, PASSWORD_CONTEXT);
+          if (!access.legacy && !refresh.legacy && !password.legacy) {
+            continue;
+          }
+          executeSqliteQuerySync(
+            this.db,
+            this.query
+              .updateTable("vera_lexroom_account")
+              .set({
+                access_token: this.cipher.seal(access.value, ACCESS_TOKEN_CONTEXT),
+                refresh_token: this.cipher.seal(refresh.value, REFRESH_TOKEN_CONTEXT),
+                password: this.cipher.seal(password.value, PASSWORD_CONTEXT),
+              })
+              .where("id", "=", row.id),
+          );
         }
-        const access = this.cipher.open(row.access_token, ACCESS_TOKEN_CONTEXT);
-        const refresh = this.cipher.open(row.refresh_token, REFRESH_TOKEN_CONTEXT);
-        const password = this.cipher.open(row.password, PASSWORD_CONTEXT);
-        if (!access.legacy && !refresh.legacy && !password.legacy) {
-          return;
-        }
-        executeSqliteQuerySync(
-          this.db,
-          this.query
-            .updateTable("vera_lexroom_account")
-            .set({
-              access_token: this.cipher.seal(access.value, ACCESS_TOKEN_CONTEXT),
-              refresh_token: this.cipher.seal(refresh.value, REFRESH_TOKEN_CONTEXT),
-              password: this.cipher.seal(password.value, PASSWORD_CONTEXT),
-            })
-            .where("id", "=", ADA_LEXROOM_ACCOUNT_ID),
-        );
       },
       {
         busyTimeoutMs: 5000,
@@ -218,7 +234,59 @@ class AdaLexroomDatabaseStore {
     );
   }
 
-  replacePending(nonce: string, expiresAtMs: number): undefined {
+  /**
+   * Accounts used to be one row for the whole install, stored under a fixed id. Moves it to the
+   * configured lawyer's number so the current owner keeps working without reconnecting; the
+   * encrypted columns are bound to the table and column, not the id, so they stay readable. A row
+   * the number already has wins, and the old one is dropped so it cannot belong to anyone else.
+   */
+  adoptLegacy(owner: string): boolean {
+    assertOwner(owner);
+    return runSqliteImmediateTransactionSync(
+      this.db,
+      () => {
+        const legacy = executeSqliteQueryTakeFirstSync(
+          this.db,
+          this.query
+            .selectFrom("vera_lexroom_account")
+            .select("id")
+            .where("id", "=", LEGACY_LEXROOM_ACCOUNT_ID),
+        );
+        if (!legacy) {
+          return false;
+        }
+        const existing = executeSqliteQueryTakeFirstSync(
+          this.db,
+          this.query.selectFrom("vera_lexroom_account").select("id").where("id", "=", owner),
+        );
+        if (existing) {
+          executeSqliteQuerySync(
+            this.db,
+            this.query
+              .deleteFrom("vera_lexroom_account")
+              .where("id", "=", LEGACY_LEXROOM_ACCOUNT_ID),
+          );
+          return false;
+        }
+        executeSqliteQuerySync(
+          this.db,
+          this.query
+            .updateTable("vera_lexroom_account")
+            .set({ id: owner })
+            .where("id", "=", LEGACY_LEXROOM_ACCOUNT_ID),
+        );
+        return true;
+      },
+      {
+        busyTimeoutMs: 5000,
+        databaseLabel: "ada lexroom account",
+        operationLabel: "ada.lexroom.account.adopt-legacy",
+      },
+    );
+  }
+
+  replacePending(owner: string, nonce: string, expiresAtMs: number): undefined {
+    assertOwner(owner);
     assertNonce(nonce);
     if (!Number.isFinite(expiresAtMs)) {
       throw new Error("Ada Lexroom connect expiry is invalid");
@@ -228,12 +296,13 @@ class AdaLexroomDatabaseStore {
       () => {
         executeSqliteQuerySync(
           this.db,
-          this.query.deleteFrom("vera_lexroom_pending").where("expires_at_ms", ">", 0),
+          this.query.deleteFrom("vera_lexroom_pending").where("owner", "=", owner),
         );
         executeSqliteQuerySync(
           this.db,
           this.query.insertInto("vera_lexroom_pending").values({
             nonce,
+            owner,
             expires_at_ms: expiresAtMs,
           }),
         );
@@ -247,19 +316,21 @@ class AdaLexroomDatabaseStore {
     return undefined;
   }
 
-  hasPending(nonce: string, nowMs: number): boolean {
+  hasPending(owner: string, nonce: string, nowMs: number): boolean {
+    assertOwner(owner);
     assertNonce(nonce);
     const row = executeSqliteQueryTakeFirstSync(
       this.db,
       this.query
         .selectFrom("vera_lexroom_pending")
-        .select(["expires_at_ms"])
+        .select(["owner", "expires_at_ms"])
         .where("nonce", "=", nonce),
     );
-    return Boolean(row && row.expires_at_ms > nowMs);
+    return Boolean(row && row.owner === owner && row.expires_at_ms > nowMs);
   }
 
-  consumePending(nonce: string, nowMs: number): boolean {
+  consumePending(owner: string, nonce: string, nowMs: number): boolean {
+    assertOwner(owner);
     assertNonce(nonce);
     return runSqliteImmediateTransactionSync(
       this.db,
@@ -268,10 +339,10 @@ class AdaLexroomDatabaseStore {
           this.db,
           this.query
             .selectFrom("vera_lexroom_pending")
-            .select(["nonce", "expires_at_ms"])
+            .select(["nonce", "owner", "expires_at_ms"])
             .where("nonce", "=", nonce),
         );
-        if (!row) {
+        if (!row || row.owner !== owner) {
           return false;
         }
         executeSqliteQuerySync(
@@ -288,19 +359,20 @@ class AdaLexroomDatabaseStore {
     );
   }
 
-  upsertAccount(account: LexroomAccountRecord): undefined {
+  upsertAccount(owner: string, account: LexroomAccountRecord): undefined {
+    assertOwner(owner);
     assertAccount(account);
     runSqliteImmediateTransactionSync(
       this.db,
       () => {
         executeSqliteQuerySync(
           this.db,
-          this.query.deleteFrom("vera_lexroom_account").where("id", "=", ADA_LEXROOM_ACCOUNT_ID),
+          this.query.deleteFrom("vera_lexroom_account").where("id", "=", owner),
         );
         executeSqliteQuerySync(
           this.db,
           this.query.insertInto("vera_lexroom_account").values({
-            id: ADA_LEXROOM_ACCOUNT_ID,
+            id: owner,
             email: account.email,
             access_token: this.cipher.seal(account.accessToken, ACCESS_TOKEN_CONTEXT),
             refresh_token: this.cipher.seal(account.refreshToken, REFRESH_TOKEN_CONTEXT),
@@ -319,7 +391,8 @@ class AdaLexroomDatabaseStore {
     return undefined;
   }
 
-  readAccount(): LexroomAccountRecord | null {
+  readAccount(owner: string): LexroomAccountRecord | null {
+    assertOwner(owner);
     const row = executeSqliteQueryTakeFirstSync(
       this.db,
       this.query
@@ -332,7 +405,7 @@ class AdaLexroomDatabaseStore {
           "access_expires_at_ms",
           "connected_at_ms",
         ])
-        .where("id", "=", ADA_LEXROOM_ACCOUNT_ID),
+        .where("id", "=", owner),
     );
     if (!row) {
       return null;
@@ -347,10 +420,11 @@ class AdaLexroomDatabaseStore {
     };
   }
 
-  clearAccount(): undefined {
+  clearAccount(owner: string): undefined {
+    assertOwner(owner);
     executeSqliteQuerySync(
       this.db,
-      this.query.deleteFrom("vera_lexroom_account").where("id", "=", ADA_LEXROOM_ACCOUNT_ID),
+      this.query.deleteFrom("vera_lexroom_account").where("id", "=", owner),
     );
     return undefined;
   }
@@ -390,6 +464,14 @@ function openAdaLexroomDatabase(dbPath: string): AdaLexroomDatabaseStore {
     if (hasPassword === undefined) {
       db.exec(PASSWORD_COLUMN_SQL);
     }
+    const hasPendingOwner = db
+      .prepare("SELECT 1 FROM pragma_table_info('vera_lexroom_pending') WHERE name = 'owner'")
+      .get();
+    if (hasPendingOwner === undefined) {
+      db.exec(PENDING_OWNER_COLUMN_SQL);
+    }
+    // A link issued before links named a number cannot be bound to anyone, so it is dropped.
+    db.exec("DELETE FROM vera_lexroom_pending WHERE owner = ''");
     for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`]) {
       chmodIfExists(file);
     }
@@ -415,17 +497,27 @@ export function createSqliteWorkerBackend(
     execute(command: SqliteWorkerCommand<AdaLexroomOperations>) {
       switch (command.type) {
         case "replacePending":
-          return database.replacePending(command.input.nonce, command.input.expiresAtMs);
+          return database.replacePending(
+            command.input.owner,
+            command.input.nonce,
+            command.input.expiresAtMs,
+          );
         case "hasPending":
-          return database.hasPending(command.input.nonce, command.input.nowMs);
+          return database.hasPending(command.input.owner, command.input.nonce, command.input.nowMs);
         case "consumePending":
-          return database.consumePending(command.input.nonce, command.input.nowMs);
+          return database.consumePending(
+            command.input.owner,
+            command.input.nonce,
+            command.input.nowMs,
+          );
         case "upsertAccount":
-          return database.upsertAccount(command.input);
+          return database.upsertAccount(command.input.owner, command.input.account);
         case "readAccount":
-          return database.readAccount();
+          return database.readAccount(command.input.owner);
         case "clearAccount":
-          return database.clearAccount();
+          return database.clearAccount(command.input.owner);
+        case "adoptLegacy":
+          return database.adoptLegacy(command.input.owner);
       }
       throw new Error("Unexpected Ada Lexroom command");
     },

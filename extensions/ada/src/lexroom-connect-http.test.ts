@@ -5,6 +5,7 @@ import { handleAdaLexroomConnect } from "./lexroom-connect-http.js";
 import { createConnectState } from "./lexroom-connect.js";
 
 const SECRET = "0123456789abcdef";
+const OWNER = "393331111111";
 
 function createStore(): LexroomAccountStore & {
   pending: Map<string, number>;
@@ -80,7 +81,7 @@ describe("handleAdaLexroomConnect", () => {
   it("shows the login form for a valid pending state", async () => {
     const now = new Date("2026-10-10T12:00:00.000Z");
     const store = createStore();
-    const issued = createConnectState(SECRET, now);
+    const issued = createConnectState(SECRET, now, OWNER);
     await store.replacePending(issued.nonce, issued.expiresAtMs);
     const out = mockRes();
     await handleAdaLexroomConnect(
@@ -92,7 +93,7 @@ describe("handleAdaLexroomConnect", () => {
           lexroomStateSecret: SECRET,
         },
         now: () => now,
-        store,
+        openStore: async () => store,
         log: { error: vi.fn() },
       },
     );
@@ -104,7 +105,7 @@ describe("handleAdaLexroomConnect", () => {
   it("explains an account that needs MFA on the form and keeps the link usable", async () => {
     const now = new Date("2026-10-10T12:00:00.000Z");
     const store = createStore();
-    const issued = createConnectState(SECRET, now);
+    const issued = createConnectState(SECRET, now, OWNER);
     await store.replacePending(issued.nonce, issued.expiresAtMs);
     const out = mockRes();
     await handleAdaLexroomConnect(
@@ -124,7 +125,7 @@ describe("handleAdaLexroomConnect", () => {
           lexroomStateSecret: SECRET,
         },
         now: () => now,
-        store,
+        openStore: async () => store,
         log: { error: vi.fn() },
         login: async () => ({
           ok: false,
@@ -143,7 +144,7 @@ describe("handleAdaLexroomConnect", () => {
   it("stores the account after a successful login POST", async () => {
     const now = new Date("2026-10-10T12:00:00.000Z");
     const store = createStore();
-    const issued = createConnectState(SECRET, now);
+    const issued = createConnectState(SECRET, now, OWNER);
     await store.replacePending(issued.nonce, issued.expiresAtMs);
     const out = mockRes();
     const notify = vi.fn(async () => ({ ok: true as const }));
@@ -171,7 +172,7 @@ describe("handleAdaLexroomConnect", () => {
           lexroomStateSecret: SECRET,
         },
         now: () => now,
-        store,
+        openStore: async () => store,
         log: { error: vi.fn() },
         notifyConnected: notify,
         login: async () => ({
@@ -187,7 +188,7 @@ describe("handleAdaLexroomConnect", () => {
     expect(out.body()).toContain("Connected");
     expect(store.account?.email).toBe("lawyer@lexroom.ai");
     expect(store.account?.accessToken).toBe(access);
-    expect(notify).toHaveBeenCalledWith("lawyer@lexroom.ai");
+    expect(notify).toHaveBeenCalledWith(OWNER, "lawyer@lexroom.ai");
     expect(store.pending.size).toBe(0);
   });
 });

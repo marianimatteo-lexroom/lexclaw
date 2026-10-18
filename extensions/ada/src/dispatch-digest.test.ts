@@ -1,89 +1,173 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DigestPlan } from "./digest.js";
-import { dispatchDigest } from "./dispatch-digest.js";
 
-const plan: DigestPlan = { deliver: false, reason: "nothing_cleared_the_bar" };
+const openAdaMemoryIfExistsFromApi = vi.hoisted(() => vi.fn());
+const executeAdaGoogleConnect = vi.hoisted(() => vi.fn());
 
-function apiWith(dispatchHookAgentTurn: ReturnType<typeof vi.fn> | undefined) {
-  return {
-    runtime: { hooks: dispatchHookAgentTurn ? { dispatchHookAgentTurn } : undefined },
-  } as unknown as Pick<OpenClawPluginApi, "runtime">;
+vi.mock("./memory.js", () => ({ openAdaMemoryIfExistsFromApi }));
+vi.mock("./google-tools.js", () => ({ executeAdaGoogleConnect }));
+
+import { clearSentDigests, dispatchDigest } from "./dispatch-digest.js";
+
+const ANNA = "393331111111";
+const BRUNO = "393332222222";
+const LAWYER = "390000000000";
+
+const NO_PLAN: DigestPlan = { deliver: false, reason: "nothing_cleared_the_bar" };
+const PLAN: DigestPlan = {
+  deliver: true,
+  items: [
+    {
+      matterId: "rossi",
+      matterLabel: "Rossi SRL",
+      kind: "deadline",
+      summary: "memoria entro domani",
+      cost: 100,
+      dueAt: "2026-10-12T15:00:00.000Z",
+    },
+  ],
+  nextSteps: [
+    {
+      action: "research",
+      matterId: "rossi",
+      matterLabel: "Rossi SRL",
+      instruction: "Research only the Rossi SRL matter: memoria entro domani",
+    },
+    {
+      action: "draft_if_confirmed",
+      matterId: "rossi",
+      matterLabel: "Rossi SRL",
+      instruction: "After the lawyer confirms, draft only for the Rossi SRL matter",
+    },
+  ],
+};
+
+function setup(profiles: Record<string, { language: string; timezone: string } | null> = {}) {
+  const sent: Array<{ to: string; text: string }> = [];
+  const sendText = vi.fn(async (params: { to: string; text: string }) => {
+    sent.push({ to: params.to, text: params.text });
+  });
+  openAdaMemoryIfExistsFromApi.mockImplementation(async (_api: unknown, owner: string) => {
+    const profile = profiles[owner];
+    return profile ? { readProfile: async () => profile } : null;
+  });
+  const api = {
+    config: { channels: { "kapso-whatsapp": { defaultTo: `+${LAWYER}` } } },
+    pluginConfig: {},
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+    runtime: { channel: { outbound: { loadAdapter: async () => ({ sendText }) } } },
+  } as unknown as Pick<
+    OpenClawPluginApi,
+    "runtime" | "runtimeSource" | "config" | "logger" | "pluginConfig"
+  >;
+  return { api, sent, sendText };
 }
 
+beforeEach(() => {
+  vi.clearAllMocks();
+  clearSentDigests();
+});
+
 describe("dispatchDigest", () => {
-  it("reports hooks_unavailable when the host has no hook dispatcher", async () => {
-    expect(
-      await dispatchDigest(apiWith(undefined), {
-        plan,
-        sessionKey: "hook:vera:digest:d",
-        idempotencyKey: "k",
-      }),
-    ).toEqual({ ok: false, reason: "hooks_unavailable" });
-  });
-
-  it("starts one isolated digest turn with the plan and the caller's idempotency key", async () => {
-    const dispatch = vi.fn(async () => ({ ok: true, runId: "run" }));
-    const result = await dispatchDigest(apiWith(dispatch), {
-      plan,
-      sessionKey: "hook:vera:digest:d",
-      idempotencyKey: "vera-digest:d:verdi",
+  it("sends the digest to its owner's number only, in their language, without any model turn", async () => {
+    const { api, sent } = setup({ [ANNA]: { language: "English", timezone: "Europe/Rome" } });
+    expect(await dispatchDigest(api, { owner: ANNA, plan: PLAN, idempotencyKey: "k1" })).toEqual({
+      ok: true,
     });
-    expect(result).toEqual({ ok: true });
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: "Ada digest",
-        sessionKey: "hook:vera:digest:d",
-        idempotencyKey: "vera-digest:d:verdi",
-        externalContentSource: "email",
-        deliver: true,
-        timeoutSeconds: 45,
-        message: expect.stringContaining(JSON.stringify(plan)),
-      }),
-    );
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.to).toBe(`+${ANNA}`);
+    expect(sent[0]?.text).toContain("Good morning. This one should not wait:");
+    expect(sent[0]?.text).toContain("Rossi SRL: memoria entro domani");
+    expect(sent.some((entry) => entry.to === `+${LAWYER}`)).toBe(false);
   });
 
-  it("marks a release after a lawyer reply and keeps its idempotency keys apart", async () => {
-    const dispatch = vi.fn(async () => ({ ok: true, runId: "run" }));
-    await dispatchDigest(apiWith(dispatch), {
-      plan,
-      sessionKey: "hook:vera:digest:d",
-      idempotencyKey: "vera-digest:d:verdi",
+  it("writes it in Italian by default and for a number with no profile", async () => {
+    const { api, sent } = setup();
+    await dispatchDigest(api, { owner: BRUNO, plan: PLAN, idempotencyKey: "k2" });
+    expect(sent[0]).toMatchObject({ to: `+${BRUNO}` });
+    expect(sent[0]?.text).toContain("Buongiorno. Questo non può aspettare:");
+    expect(sent[0]?.text).toContain("Rossi SRL");
+    expect(sent[0]?.text).toContain("Posso fare subito:");
+  });
+
+  it("sends a different owner's digest to that owner, never to the previous one", async () => {
+    const { api, sent } = setup();
+    await dispatchDigest(api, { owner: ANNA, plan: PLAN, idempotencyKey: "same-key-a" });
+    await dispatchDigest(api, { owner: BRUNO, plan: PLAN, idempotencyKey: "same-key-b" });
+    expect(sent.map((entry) => entry.to)).toEqual([`+${ANNA}`, `+${BRUNO}`]);
+  });
+
+  it("does not send the same digest twice, and keeps a release after a reply apart", async () => {
+    const { api, sent } = setup();
+    await dispatchDigest(api, { owner: ANNA, plan: PLAN, idempotencyKey: "k3" });
+    await dispatchDigest(api, { owner: ANNA, plan: PLAN, idempotencyKey: "k3" });
+    expect(sent).toHaveLength(1);
+    await dispatchDigest(api, {
+      owner: ANNA,
+      plan: PLAN,
+      idempotencyKey: "k3",
       afterLawyerReply: true,
     });
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: "Ada held digest",
-        idempotencyKey: "vera-held:vera-digest:d:verdi",
-        message: expect.stringContaining("The lawyer just texted"),
-      }),
-    );
+    expect(sent).toHaveLength(2);
   });
 
-  it("asks for the Google connect skill instead of a digest", async () => {
-    const dispatch = vi.fn(async () => ({ ok: true, runId: "run" }));
-    await dispatchDigest(apiWith(dispatch), {
-      plan,
-      sessionKey: "hook:vera:connect:d",
-      idempotencyKey: "vera-connect:d",
-      connectOnly: true,
+  it("sends nothing for a plan with nothing to say", async () => {
+    const { api, sent } = setup();
+    expect(await dispatchDigest(api, { owner: ANNA, plan: NO_PLAN, idempotencyKey: "k4" })).toEqual(
+      {
+        ok: false,
+        reason: "nothing_to_send",
+      },
+    );
+    expect(sent).toEqual([]);
+  });
+
+  it("asks the owner to connect Google with that owner's own link", async () => {
+    const { api, sent } = setup();
+    executeAdaGoogleConnect.mockResolvedValue({
+      ok: true,
+      connected: false,
+      ask: { url: "https://accounts.google.com/o/oauth2/v2/auth?state=anna", message: "x" },
     });
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: "Ada Google connect",
-        message: "Follow the ada-google-connect skill now. Do not invent a digest.",
+    expect(
+      await dispatchDigest(api, {
+        owner: ANNA,
+        plan: NO_PLAN,
+        idempotencyKey: "c1",
+        connectOnly: true,
       }),
-    );
+    ).toEqual({ ok: true });
+    expect(executeAdaGoogleConnect).toHaveBeenCalledExactlyOnceWith(ANNA, {}, api);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.to).toBe(`+${ANNA}`);
+    expect(sent[0]?.text).toContain("https://accounts.google.com/o/oauth2/v2/auth?state=anna");
+    expect(sent[0]?.text).toContain("Collega Gmail e Google Calendar");
   });
 
-  it("passes through the host's rejection reason", async () => {
-    const dispatch = vi.fn(async () => ({ ok: false, reason: "timeout" }));
+  it("does not ask an already connected owner again", async () => {
+    const { api, sent } = setup();
+    executeAdaGoogleConnect.mockResolvedValue({ ok: true, connected: true, email: "a@b.c" });
     expect(
-      await dispatchDigest(apiWith(dispatch), {
-        plan,
-        sessionKey: "hook:vera:digest:d",
-        idempotencyKey: "k",
+      await dispatchDigest(api, {
+        owner: ANNA,
+        plan: NO_PLAN,
+        idempotencyKey: "c2",
+        connectOnly: true,
       }),
-    ).toEqual({ ok: false, reason: "timeout" });
+    ).toEqual({ ok: false, reason: "already_connected" });
+    expect(sent).toEqual([]);
+  });
+
+  it("reports a failed send and lets the next pass try again", async () => {
+    const { api, sendText } = setup();
+    sendText.mockRejectedValueOnce(new Error("kapso down"));
+    expect(await dispatchDigest(api, { owner: ANNA, plan: PLAN, idempotencyKey: "k5" })).toEqual({
+      ok: false,
+      reason: "kapso down",
+    });
+    expect(await dispatchDigest(api, { owner: ANNA, plan: PLAN, idempotencyKey: "k5" })).toEqual({
+      ok: true,
+    });
   });
 });

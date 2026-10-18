@@ -5,12 +5,24 @@ import {
   toolPluginMetadataSymbol,
 } from "openclaw/plugin-sdk/tool-plugin";
 import { Type } from "typebox";
-import { buildInjectedBrief } from "./src/brief.js";
 import {
-  DEADLINE_REPLY_ACTIONS,
-  executeAdaDeadlineList,
-  executeAdaDeadlineReply,
-} from "./src/deadline-tools.js";
+  adaDeadlineListDefinition,
+  adaDeadlineReplyDefinition,
+  adaDraftDefinition,
+  adaGoogleConnectDefinition,
+  adaLexroomConnectDefinition,
+  adaMemoryGetDefinition,
+  adaMemoryHistoryDefinition,
+  adaMemoryListDefinition,
+  adaMemorySearchDefinition,
+  adaReadCalendarDefinition,
+  adaReadInboxDefinition,
+  adaSendEmailDefinition,
+  adaTodoGetDefinition,
+  adaTodoListDefinition,
+} from "./src/account-tool-definitions.js";
+import { buildInjectedBrief } from "./src/brief.js";
+import { executeAdaDeadlineList, executeAdaDeadlineReply } from "./src/deadline-tools.js";
 import { planDigest, type DigestSignal } from "./src/digest.js";
 import { openAdaGoogleAccountFromApi } from "./src/google-account.js";
 import { exchangeAuthorizationCode } from "./src/google-api.js";
@@ -35,7 +47,7 @@ import {
   executeAdaDraft,
   sendLexroomConnectedNotice,
 } from "./src/lexroom-tools.js";
-import { MEMORY_FOLDERS } from "./src/memory-contract.js";
+import { EMPTY_WAKE_STATE } from "./src/memory-contract.js";
 import {
   executeAdaMemoryGet,
   executeAdaMemoryHistory,
@@ -44,7 +56,9 @@ import {
   executeAdaTodoGet,
   executeAdaTodoList,
 } from "./src/memory-tools.js";
-import { openAdaMemoryFromApi } from "./src/memory.js";
+import { openAdaMemoryIfExistsFromApi } from "./src/memory.js";
+import { ownerToolFactory } from "./src/owner-tool.js";
+import { lawyerOwner, resolveTurnOwner } from "./src/owner.js";
 import { ADA_PERSONA } from "./src/persona.js";
 import { registerResearchLinkHooks } from "./src/research-link-outbound.js";
 import { onSenderInbound } from "./src/research-push.js";
@@ -54,7 +68,7 @@ import {
   researchStatusToolDefinition,
   researchToolDefinition,
 } from "./src/research-tool.js";
-import { recordLawyerInbound, registerAdaService } from "./src/service.js";
+import { openWakeWindow, recordSenderInbound, registerAdaService } from "./src/service.js";
 import { registerStatusReactionHooks } from "./src/status-reactions.js";
 import { handleAdaStatus } from "./src/status.js";
 import { handleAdaGoogleNotify } from "./src/watch.js";
@@ -257,232 +271,109 @@ const tools = defineToolPlugin({
       factory: ({ api, toolContext }) => createResearchStatusTool({ api, toolContext }),
     }),
     tool({
-      name: "ada_draft",
-      label: "Lexroom draft",
-      description:
-        "Draft a legal act for one matter. Set confirmed true only after the lawyer agrees in the chat. Any other value returns confirmation_required and does not call Lexroom.",
-      parameters: Type.Object(
-        {
-          matterId: Type.String({ minLength: 1 }),
-          prompt: Type.String({ minLength: 1 }),
-          confirmed: Type.Boolean(),
-          modules: Type.Optional(Type.Array(Type.String())),
-          parentResearchId: Type.Optional(Type.String()),
-        },
-        { additionalProperties: false },
+      ...adaDraftDefinition,
+      optional: true,
+      factory: ownerToolFactory(adaDraftDefinition, (args, { owner, api, config, signal }) =>
+        executeAdaDraft({ owner, args, config: config as LexroomConfig, api, signal }),
       ),
-      optional: true,
-      async execute(params, config: LexroomConfig, context) {
-        return await executeAdaDraft({
-          args: params,
-          config,
-          api: context.api,
-          signal: context.signal,
-        });
-      },
     }),
     tool({
-      name: "ada_lexroom_connect",
-      label: "Connect Lexroom",
-      description:
-        "Check whether this lawyer connected Lexroom for research and drafting. Ada renews the saved sign-in by herself from the saved email and password when it is expiring, then checks it with a live Lexroom call. Only a wrong password, an account that needs a one-time code, or a missing saved password removes it and returns one WhatsApp ask with a single Ada-hosted Lexroom sign-in link. A 403 or an unreachable Lexroom never removes it. Set force true to discard the saved sign-in and always get a new link. Does not send the message.",
-      parameters: Type.Object(
-        { force: Type.Optional(Type.Boolean()) },
-        { additionalProperties: false },
-      ),
+      ...adaLexroomConnectDefinition,
       optional: true,
-      async execute(params, config, context) {
-        return await executeAdaLexroomConnect(
-          lexroomConnectConfigFrom(config),
-          context.api,
-          new Date(),
-          { force: params.force === true, signal: context.signal },
-        );
-      },
-    }),
-    tool({
-      name: "ada_google_connect",
-      label: "Connect Gmail and Calendar",
-      description:
-        "Check whether this lawyer connected Gmail and Google Calendar, including permission to send mail. When they have not, or the saved connection cannot send, return one WhatsApp ask and a single Google OAuth link. Does not send the message.",
-      parameters: Type.Object({}, { additionalProperties: false }),
-      optional: true,
-      async execute(_params, config, context) {
-        return await executeAdaGoogleConnect(config, context.api);
-      },
-    }),
-    tool({
-      name: "ada_read_inbox",
-      label: "Read connected Gmail",
-      description:
-        "Read recent inbox metadata from the Gmail account this lawyer connected. Does not send mail.",
-      parameters: Type.Object(
-        {
-          max: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })),
-        },
-        { additionalProperties: false },
-      ),
-      optional: true,
-      async execute(params, config, context) {
-        return await executeAdaReadInbox(config, context.api, params.max, context.signal);
-      },
-    }),
-    tool({
-      name: "ada_read_calendar",
-      label: "Read connected Google Calendar",
-      description:
-        "Read upcoming events from the Google Calendar this lawyer connected. Read-only. Never creates or moves events.",
-      parameters: Type.Object(
-        {
-          hours: Type.Optional(Type.Integer({ minimum: 1, maximum: 168 })),
-        },
-        { additionalProperties: false },
-      ),
-      optional: true,
-      async execute(params, config, context) {
-        return await executeAdaReadCalendar(config, context.api, params.hours, context.signal);
-      },
-    }),
-    tool({
-      name: "ada_send_email",
-      label: "Send email from connected Gmail",
-      description:
-        "Send one plain-text email from the Gmail account this lawyer connected. Set confirmed true only after he agrees in the chat to that exact message. Any other value returns confirmation_required and does not send. Calendar stays read-only.",
-      parameters: Type.Object(
-        {
-          to: Type.String({ minLength: 3, description: "One recipient email address." }),
-          subject: Type.String({ minLength: 1, description: "One-line subject." }),
-          text: Type.String({ minLength: 1, description: "Plain-text body." }),
-          confirmed: Type.Boolean(),
-        },
-        { additionalProperties: false },
-      ),
-      optional: true,
-      async execute(params, config, context) {
-        return await executeAdaSendEmail(config, context.api, params, context.signal);
-      },
-    }),
-    tool({
-      name: "ada_deadline_list",
-      label: "List tracked deadlines and hearings",
-      description:
-        "List upcoming hearings and deadlines Ada extracted from mail and calendar, with the numbers from the last digest, status (candidate or tracked), confidence, sources, and reminder schedule. Read-only. Requires deadlineIntake.enabled.",
-      parameters: Type.Object({}, { additionalProperties: false }),
-      optional: true,
-      async execute(_params, config, context) {
-        return await executeAdaDeadlineList(config, context.api);
-      },
-    }),
-    tool({
-      name: "ada_deadline_reply",
-      label: "Act on a digest deadline",
-      description:
-        "Apply the lawyer's reply to a numbered deadline or hearing from the digest. research confirms tracking (reminders start) and runs Lexroom research for that matter, returning the brief to text back. track confirms tracking only. brief returns the stored brief again without calling Lexroom. dismiss and done close the item. Call it only after the lawyer replies; never to guess. Sends no email and does not touch the calendar.",
-      parameters: Type.Object(
-        {
-          ref: Type.String({
-            minLength: 1,
-            description:
-              'The digest number the lawyer replied with, such as "1", or a deadline id.',
+      factory: ownerToolFactory(
+        adaLexroomConnectDefinition,
+        (args, { owner, api, config, signal }) =>
+          executeAdaLexroomConnect(owner, lexroomConnectConfigFrom(config), api, new Date(), {
+            force: args.force === true,
+            signal,
           }),
-          action: Type.Union(DEADLINE_REPLY_ACTIONS.map((action) => Type.Literal(action))),
-        },
-        { additionalProperties: false },
       ),
-      optional: true,
-      async execute(params, config, context) {
-        return await executeAdaDeadlineReply(params, config, context.api, context.signal);
-      },
     }),
     tool({
-      name: "ada_memory_search",
-      label: "Search matter memory",
-      description:
-        "Keyword search inside one matter's Instinct-shaped wiki. Aliases matter; misspellings do not. Never crosses matters.",
-      parameters: Type.Object(
-        {
-          query: Type.String({ minLength: 1 }),
-          matterId: Type.String({ minLength: 1 }),
-        },
-        { additionalProperties: false },
-      ),
+      ...adaGoogleConnectDefinition,
       optional: true,
-      async execute(params, _config, context) {
-        return await executeAdaMemorySearch(context.api, params);
-      },
+      factory: ownerToolFactory(adaGoogleConnectDefinition, (_args, { owner, api, config }) =>
+        executeAdaGoogleConnect(owner, config, api),
+      ),
     }),
     tool({
-      name: "ada_memory_list",
-      label: "List matter memory folder",
-      description: "List current wiki pages in one Instinct folder for one matter.",
-      parameters: Type.Object(
-        {
-          folder: Type.Union(MEMORY_FOLDERS.map((folder) => Type.Literal(folder))),
-          matterId: Type.String({ minLength: 1 }),
-        },
-        { additionalProperties: false },
-      ),
+      ...adaReadInboxDefinition,
       optional: true,
-      async execute(params, _config, context) {
-        return await executeAdaMemoryList(context.api, params);
-      },
+      factory: ownerToolFactory(adaReadInboxDefinition, (args, { owner, api, config, signal }) =>
+        executeAdaReadInbox(owner, config, api, args.max, signal),
+      ),
     }),
     tool({
-      name: "ada_memory_get",
-      label: "Get matter memory page",
-      description: "Read one rendered wiki page. Requires the matter id that owns it.",
-      parameters: Type.Object(
-        {
-          id: Type.String({ minLength: 1 }),
-          matterId: Type.String({ minLength: 1 }),
-        },
-        { additionalProperties: false },
-      ),
+      ...adaReadCalendarDefinition,
       optional: true,
-      async execute(params, _config, context) {
-        return await executeAdaMemoryGet(context.api, params);
-      },
+      factory: ownerToolFactory(adaReadCalendarDefinition, (args, { owner, api, config, signal }) =>
+        executeAdaReadCalendar(owner, config, api, args.hours, signal),
+      ),
     }),
     tool({
-      name: "ada_memory_history",
-      label: "Matter memory history",
-      description: "Read revision summaries for one page. Old bodies stay here after corrections.",
-      parameters: Type.Object(
-        {
-          id: Type.String({ minLength: 1 }),
-          matterId: Type.String({ minLength: 1 }),
-        },
-        { additionalProperties: false },
-      ),
+      ...adaSendEmailDefinition,
       optional: true,
-      async execute(params, _config, context) {
-        return await executeAdaMemoryHistory(context.api, params);
-      },
+      factory: ownerToolFactory(adaSendEmailDefinition, (args, { owner, api, config, signal }) =>
+        executeAdaSendEmail(owner, config, api, args, signal),
+      ),
     }),
     tool({
-      name: "ada_todo_list",
-      label: "List open loops",
-      description: "List todo ids, owners, titles, and statuses. Details need ada_todo_get.",
-      parameters: Type.Object({}, { additionalProperties: false }),
+      ...adaDeadlineListDefinition,
       optional: true,
-      async execute(_params, _config, context) {
-        return await executeAdaTodoList(context.api);
-      },
+      factory: ownerToolFactory(adaDeadlineListDefinition, (_args, { owner, api, config }) =>
+        executeAdaDeadlineList(config, api, owner),
+      ),
     }),
     tool({
-      name: "ada_todo_get",
-      label: "Get open loop detail",
-      description: "Read detail for one open loop.",
-      parameters: Type.Object(
-        {
-          id: Type.String({ minLength: 1 }),
-        },
-        { additionalProperties: false },
-      ),
+      ...adaDeadlineReplyDefinition,
       optional: true,
-      async execute(params, _config, context) {
-        return await executeAdaTodoGet(context.api, params);
-      },
+      factory: ownerToolFactory(
+        adaDeadlineReplyDefinition,
+        (args, { owner, api, config, signal }) =>
+          executeAdaDeadlineReply(args, config, api, owner, signal),
+      ),
+    }),
+    tool({
+      ...adaMemorySearchDefinition,
+      optional: true,
+      factory: ownerToolFactory(adaMemorySearchDefinition, (args, { owner, api }) =>
+        executeAdaMemorySearch(api, owner, args),
+      ),
+    }),
+    tool({
+      ...adaMemoryListDefinition,
+      optional: true,
+      factory: ownerToolFactory(adaMemoryListDefinition, (args, { owner, api }) =>
+        executeAdaMemoryList(api, owner, args),
+      ),
+    }),
+    tool({
+      ...adaMemoryGetDefinition,
+      optional: true,
+      factory: ownerToolFactory(adaMemoryGetDefinition, (args, { owner, api }) =>
+        executeAdaMemoryGet(api, owner, args),
+      ),
+    }),
+    tool({
+      ...adaMemoryHistoryDefinition,
+      optional: true,
+      factory: ownerToolFactory(adaMemoryHistoryDefinition, (args, { owner, api }) =>
+        executeAdaMemoryHistory(api, owner, args),
+      ),
+    }),
+    tool({
+      ...adaTodoListDefinition,
+      optional: true,
+      factory: ownerToolFactory(adaTodoListDefinition, (_args, { owner, api }) =>
+        executeAdaTodoList(api, owner),
+      ),
+    }),
+    tool({
+      ...adaTodoGetDefinition,
+      optional: true,
+      factory: ownerToolFactory(adaTodoGetDefinition, (args, { owner, api }) =>
+        executeAdaTodoGet(api, owner, args),
+      ),
     }),
   ],
 });
@@ -505,7 +396,8 @@ const entry = definePluginEntry({
     const statusReactions = registerStatusReactionHooks(api);
     registerResearchLinkHooks(
       api,
-      async () => (await (await openAdaMemoryFromApi(api)).readProfile())?.language,
+      async (owner) =>
+        (await (await openAdaMemoryIfExistsFromApi(api, owner))?.readProfile())?.language,
     );
 
     registerWelcomeHook(api, {
@@ -546,7 +438,7 @@ const entry = definePluginEntry({
         }
       });
       try {
-        await recordLawyerInbound({
+        await recordSenderInbound({
           api,
           atMs: Date.now(),
           channelId,
@@ -576,7 +468,18 @@ const entry = definePluginEntry({
           if (!authority?.allows("ada_memory_search")) {
             return;
           }
-          const memory = await openAdaMemoryFromApi(api);
+          const turn = resolveTurnOwner({
+            requesterSenderId: ctx.senderId,
+            messageChannel: ctx.channelId,
+            sessionKey: ctx.sessionKey,
+          });
+          if (!turn.ok) {
+            return;
+          }
+          const memory = await openAdaMemoryIfExistsFromApi(api, turn.owner);
+          if (!memory) {
+            return;
+          }
           const [profile, todos] = await Promise.all([memory.readProfile(), memory.listTodos()]);
           authority.assertActive();
           const brief = buildInjectedBrief({
@@ -604,19 +507,21 @@ const entry = definePluginEntry({
       match: "exact",
       handler: async (req, res) => {
         try {
-          const store = await openAdaGoogleAccountFromApi(api);
           return await handleAdaGoogleCallback(req, res, {
             config: googleConnectConfigFrom(api.pluginConfig),
             now: () => new Date(),
-            store,
+            openStore: (owner) => openAdaGoogleAccountFromApi(api, owner),
             exchange: exchangeAuthorizationCode,
             log: api.logger,
-            notifyConnected: (email) =>
-              sendGoogleConnectedNotice({
+            notifyConnected: async (owner, email) => {
+              await openWakeWindow(api, owner);
+              return await sendGoogleConnectedNotice({
                 config: api.config,
+                owner,
                 email,
                 loadAdapter: (channelId) => api.runtime.channel.outbound.loadAdapter(channelId),
-              }),
+              });
+            },
           });
         } catch (error) {
           api.logger.error(
@@ -647,7 +552,11 @@ const entry = definePluginEntry({
         handleAdaStatus(req, res, {
           config: api.pluginConfig,
           now: () => new Date(),
-          readWake: async () => (await openAdaMemoryFromApi(api)).readWake(),
+          readWake: async () => {
+            const lawyer = lawyerOwner(api.config);
+            const memory = lawyer ? await openAdaMemoryIfExistsFromApi(api, lawyer) : null;
+            return memory ? await memory.readWake() : EMPTY_WAKE_STATE;
+          },
           log: api.logger,
         }),
     });
@@ -658,15 +567,15 @@ const entry = definePluginEntry({
       match: "exact",
       handler: async (req, res) => {
         try {
-          const store = await openAdaLexroomAccountFromApi(api);
           return await handleAdaLexroomConnect(req, res, {
             config: lexroomConnectConfigFrom(api.pluginConfig),
             now: () => new Date(),
-            store,
+            openStore: (owner) => openAdaLexroomAccountFromApi(api, owner),
             log: api.logger,
-            notifyConnected: (email) =>
+            notifyConnected: (owner, email) =>
               sendLexroomConnectedNotice({
                 config: api.config,
+                owner,
                 email,
                 loadAdapter: (channelId) => api.runtime.channel.outbound.loadAdapter(channelId),
               }),

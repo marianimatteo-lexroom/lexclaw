@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { isAdaPath } from "./http-paths.js";
+import { isOwner } from "./owner.js";
 
 /**
  * Gmail and Calendar share one Google OAuth consent. Requester-scoped MCP is
@@ -103,7 +104,10 @@ export function readGoogleConnectConfig(
     return { ok: false, error: "googleRedirectUri must be an origin plus /ada/google/callback." };
   }
   if (!isAdaPath(parsed.pathname, CALLBACK_SUFFIX)) {
-    return { ok: false, error: "googleRedirectUri must use the path /ada/google/callback or /vera/google/callback." };
+    return {
+      ok: false,
+      error: "googleRedirectUri must use the path /ada/google/callback or /vera/google/callback.",
+    };
   }
   return {
     ok: true,
@@ -111,13 +115,21 @@ export function readGoogleConnectConfig(
   };
 }
 
+/**
+ * The signed, single-use, 30-minute state a connect link carries. It names the WhatsApp number
+ * that asked for the link, so finishing the link saves the account for that number and for no
+ * one else, whoever opens it.
+ */
 export function createConnectState(
   stateSecret: string,
   now: Date,
+  owner: string,
 ): { state: string; nonce: string; expiresAtMs: number } {
   const nonce = randomBytes(32).toString("base64url");
   const expiresAtMs = now.getTime() + STATE_TTL_MS;
-  const payload = Buffer.from(JSON.stringify({ nonce, exp: expiresAtMs })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ nonce, exp: expiresAtMs, owner })).toString(
+    "base64url",
+  );
   const signature = createHmac("sha256", stateSecret).update(payload).digest("base64url");
   return { state: `${payload}.${signature}`, nonce, expiresAtMs };
 }
@@ -126,7 +138,7 @@ export function readConnectState(
   stateSecret: string,
   state: string,
   now: Date,
-): { nonce: string } | null {
+): { nonce: string; owner: string } | null {
   const parts = state.split(".");
   if (parts.length !== 2) {
     return null;
@@ -141,11 +153,12 @@ export function readConnectState(
   if (actualBuf.length !== expectedBuf.length || !timingSafeEqual(actualBuf, expectedBuf)) {
     return null;
   }
-  let parsed: { nonce?: unknown; exp?: unknown };
+  let parsed: { nonce?: unknown; exp?: unknown; owner?: unknown };
   try {
     parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
       nonce?: unknown;
       exp?: unknown;
+      owner?: unknown;
     };
   } catch {
     return null;
@@ -153,10 +166,13 @@ export function readConnectState(
   if (typeof parsed.nonce !== "string" || typeof parsed.exp !== "number") {
     return null;
   }
+  if (!isOwner(parsed.owner)) {
+    return null;
+  }
   if (parsed.exp <= now.getTime()) {
     return null;
   }
-  return { nonce: parsed.nonce };
+  return { nonce: parsed.nonce, owner: parsed.owner };
 }
 
 export function buildGoogleConnectUrl(params: {
@@ -206,6 +222,8 @@ export function googleConnectMessage(url: string, purpose: "connect" | "send" = 
 }
 
 export async function prepareGoogleConnect(params: {
+  /** The WhatsApp number that asked; the link, and the account it saves, belong to it. */
+  owner: string;
   config: GoogleConnectConfig;
   now: Date;
   account: { email: string; scopes: string | null } | null;
@@ -223,7 +241,7 @@ export async function prepareGoogleConnect(params: {
   if (!config.ok) {
     return config;
   }
-  const issued = createConnectState(config.settings.stateSecret, params.now);
+  const issued = createConnectState(config.settings.stateSecret, params.now, params.owner);
   await params.savePending(issued.nonce, issued.expiresAtMs);
   const url = buildGoogleConnectUrl({
     clientId: config.settings.clientId,

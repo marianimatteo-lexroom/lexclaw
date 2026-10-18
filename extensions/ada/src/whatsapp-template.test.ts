@@ -174,41 +174,34 @@ describe("sendDigestReadyNotice", () => {
     return { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
   }
 
-  it("sends to the configured WhatsApp destination and logs the outcome", async () => {
+  it("sends to the number it is given, never the configured one, and logs the outcome", async () => {
     const log = logger();
     const fetchImpl = vi.fn(async () => jsonResponse(200, { messages: [{ id: "wamid.x" }] }));
     const result = await sendDigestReadyNotice({
       api: { config: config as never, logger: log },
       template,
+      to: "+393331111111",
       fetchImpl,
     });
     expect(result.ok).toBe(true);
     expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toMatchObject({
-      to: "390000000000",
+      to: "393331111111",
     });
     expect(log.info).toHaveBeenCalledOnce();
   });
 
-  it("warns instead of sending when there is no destination or Kapso rejects", async () => {
+  it("warns instead of sending when Kapso rejects", async () => {
     const log = logger();
     const fetchImpl = vi.fn(async () => jsonResponse(401));
     expect(
       await sendDigestReadyNotice({
-        api: { config: {} as never, logger: log },
-        template,
-        fetchImpl,
-      }),
-    ).toEqual({ ok: false, error: "kapso-whatsapp defaultTo is not set" });
-    expect(fetchImpl).not.toHaveBeenCalled();
-
-    expect(
-      await sendDigestReadyNotice({
         api: { config: config as never, logger: log },
         template,
+        to: "+393331111111",
         fetchImpl,
       }),
     ).toEqual({ ok: false, error: "kapso template returned HTTP 401" });
-    expect(log.warn).toHaveBeenCalledTimes(2);
+    expect(log.warn).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(log.warn.mock.calls)).not.toContain("kapso_test_key");
   });
 });

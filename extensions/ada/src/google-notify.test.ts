@@ -14,34 +14,29 @@ const config = {
 } as OpenClawPluginApi["config"];
 
 describe("sendGoogleConnectedNotice", () => {
-  it("texts the configured WhatsApp destination", async () => {
+  it("texts the number that connected the account, and never the configured lawyer", async () => {
     const sendText = vi.fn(async () => ({ ok: true }));
     const result = await sendGoogleConnectedNotice({
       config,
-      email: "lawyer@example.com",
+      owner: "393331111111",
+      email: "anna@example.com",
       loadAdapter: async () => ({ sendText }),
     });
     expect(result).toEqual({ ok: true });
     expect(readAdaWhatsAppTarget(config)).toBe("+390000000000");
-    expect(sendText).toHaveBeenCalledWith({
+    expect(sendText).toHaveBeenCalledExactlyOnceWith({
       cfg: config,
-      to: "+390000000000",
+      to: "+393331111111",
       text: "Gmail and Calendar are connected. I can send mail when you say so.",
     });
   });
 
-  it("does not send when the destination or adapter is missing", async () => {
+  it("does not send when the adapter is missing", async () => {
     const sendText = vi.fn();
     expect(
       await sendGoogleConnectedNotice({
-        config: {} as OpenClawPluginApi["config"],
-        email: "lawyer@example.com",
-        loadAdapter: async () => ({ sendText }),
-      }),
-    ).toEqual({ ok: false, error: "kapso-whatsapp defaultTo is not set" });
-    expect(
-      await sendGoogleConnectedNotice({
         config,
+        owner: "393331111111",
         email: "lawyer\n@example.com",
         loadAdapter: async () => undefined,
       }),
@@ -65,22 +60,21 @@ describe("sendAdaWhatsAppText", () => {
       runtime: { channel: { outbound: { loadAdapter } } },
     }) as unknown as Pick<OpenClawPluginApi, "config" | "runtime">;
 
-  it("texts the configured lawyer through the Kapso adapter", async () => {
+  it("texts the number it is given through the Kapso adapter", async () => {
     const sendText = vi.fn(async () => undefined);
     const result = await sendAdaWhatsAppText({
       api: apiWith(async () => ({ sendText })),
+      to: "+393331111111",
       text: "Ciao",
     });
     expect(result).toEqual({ ok: true });
-    expect(sendText).toHaveBeenCalledWith({ cfg: config, to: "+390000000000", text: "Ciao" });
+    expect(sendText).toHaveBeenCalledWith({ cfg: config, to: "+393331111111", text: "Ciao" });
   });
 
-  it("reports a missing destination, a missing adapter and a failing send without throwing", async () => {
-    expect(await sendAdaWhatsAppText({ api: apiWith(async () => ({}), {}), text: "x" })).toEqual({
-      ok: false,
-      error: "kapso-whatsapp defaultTo is not set",
-    });
-    expect(await sendAdaWhatsAppText({ api: apiWith(async () => null), text: "x" })).toEqual({
+  it("reports a missing adapter and a failing send without throwing", async () => {
+    expect(
+      await sendAdaWhatsAppText({ api: apiWith(async () => null), to: "+393331111111", text: "x" }),
+    ).toEqual({
       ok: false,
       error: "kapso-whatsapp outbound is unavailable",
     });
@@ -91,6 +85,7 @@ describe("sendAdaWhatsAppText", () => {
             throw new Error("kapso 500");
           },
         })),
+        to: "+393331111111",
         text: "x",
       }),
     ).toEqual({ ok: false, error: "kapso 500" });
@@ -105,6 +100,7 @@ describe("sendAdaWhatsAppText", () => {
             // Never settles.
           }),
       })),
+      to: "+393331111111",
       text: "x",
       timeoutMs: 5000,
     });

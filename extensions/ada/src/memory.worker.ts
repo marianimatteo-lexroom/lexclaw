@@ -1305,6 +1305,24 @@ class AdaMemoryDatabaseStore {
     );
   }
 
+  exportSnapshot(destination: string): undefined {
+    if (
+      !path.isAbsolute(destination) ||
+      destination.includes("\u0000") ||
+      fs.existsSync(destination)
+    ) {
+      throw new Error("Ada memory snapshot needs a new absolute path");
+    }
+    this.db.prepare("VACUUM INTO ?").run(destination);
+    const copy = openNodeSqliteDatabase(destination);
+    try {
+      copy.exec("DELETE FROM vera_welcomed");
+    } finally {
+      copy.close();
+    }
+    return undefined;
+  }
+
   releaseWelcome(number: string): undefined {
     executeSqliteQuerySync(
       this.db,
@@ -1446,6 +1464,8 @@ export function createSqliteWorkerBackend(
           return database.claimWelcome(command.input.number, command.input.atMs);
         case "releaseWelcome":
           return database.releaseWelcome(command.input.number);
+        case "exportSnapshot":
+          return database.exportSnapshot(command.input.path);
       }
       throw new Error("Unexpected Ada memory command");
     },

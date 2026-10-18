@@ -24,8 +24,8 @@ import {
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 const api = { config: {}, logger, runtimeSource: "/fake/index.ts", runtime: {} } as never;
 
-const A = { senderId: "+39 000 000 0001", channel: "kapso-whatsapp" };
-const B = { senderId: "+39 000 000 0002", channel: "kapso-whatsapp" };
+const A = { senderId: "+39 000 000 0001" };
+const B = { senderId: "+39 000 000 0002" };
 const NUMBER_A = "390000000001";
 const NUMBER_B = "390000000002";
 
@@ -85,7 +85,7 @@ function whatsapp(windows: Record<string, boolean | null> = {}) {
 
 beforeEach(() => {
   clearHeldResearch();
-  takeResearchLinks("");
+  takeResearchLinks("", NUMBER_A);
   const record: LexroomAccountRecord = {
     email: "lawyer@example.com",
     accessToken: `push-${Math.random()}`,
@@ -100,16 +100,16 @@ beforeEach(() => {
 describe("ada_research tells the requester and sends the result", () => {
   const research = { matterId: "m", query: "Termini per l'opposizione" };
   const start = (
-    requester: { senderId?: string; channel?: string; conversationId?: string },
+    requester: { senderId: string },
     wa: ReturnType<typeof whatsapp>,
     fetchImpl: typeof fetch,
     query = research.query,
   ) =>
     startAdaResearch({
+      owner: senderNumber(requester.senderId) ?? "",
       args: { ...research, query },
       config: {},
       api,
-      requester,
       fetchImpl,
       pushDepsFor: wa.depsFor,
     });
@@ -139,7 +139,7 @@ describe("ada_research tells the requester and sends the result", () => {
     await expect(
       readResearchJob({ jobId: started.jobId, requester: NUMBER_A, waitSeconds: 1 }),
     ).resolves.toMatchObject({ ok: true, state: "delivered", delivery: "sent" });
-    expect(takeResearchLinks("")).toEqual([]);
+    expect(takeResearchLinks("", NUMBER_A)).toEqual([]);
   });
 
   it("gives two different senders only their own acknowledgement and their own result", async () => {
@@ -172,9 +172,6 @@ describe("ada_research tells the requester and sends the result", () => {
     }
     expect(
       await readResearchJob({ jobId: startedA.jobId, requester: NUMBER_B, waitSeconds: 0 }),
-    ).toMatchObject({ ok: false, reason: "unknown_job" });
-    expect(
-      await readResearchJob({ jobId: startedA.jobId, requester: undefined, waitSeconds: 0 }),
     ).toMatchObject({ ok: false, reason: "unknown_job" });
     expect(
       await readResearchJob({ jobId: startedB.jobId, requester: NUMBER_B, waitSeconds: 0 }),
@@ -254,35 +251,4 @@ describe("ada_research tells the requester and sends the result", () => {
     expect(wa.to(NUMBER_B)[1]).toContain("Lexroom returned 500: boom");
     expect(wa.to(NUMBER_A)).toEqual([]);
   });
-
-  it.each<[string, { senderId?: string; channel?: string; conversationId?: string }, string]>([
-    ["an unknown sender", {}, "sender_unknown"],
-    ["a sender id that is not a phone number", { senderId: "webchat-user-7" }, "sender_unknown"],
-    ["another channel", { senderId: A.senderId, channel: "telegram" }, "other_channel"],
-    ["a group chat", { ...A, conversationId: "120363025246125486@g.us" }, "group_chat"],
-  ])(
-    "falls back to reading the result with the status tool for %s",
-    async (_label, requester, reason) => {
-      const server = lexroom({
-        "/v1/ask_me_anything": () => answerStream("r1", "Quaranta giorni [1]"),
-      });
-      const wa = whatsapp();
-      const started = await start(requester, wa, server);
-      expect(started).toMatchObject({ ok: true, state: "running" });
-      expect(started).not.toHaveProperty("requesterNotified");
-      if (!started.ok) {
-        throw new Error("expected a job");
-      }
-      const read = await readResearchJob({
-        jobId: started.jobId,
-        requester: senderNumber(requester.senderId) ?? undefined,
-        waitSeconds: 1,
-      });
-      expect(read).toMatchObject({ ok: true, state: "done", answer: "Quaranta giorni [1]" });
-      expect(wa.sent.size).toBe(0);
-      expect(logger.info).toHaveBeenCalledWith(
-        expect.stringContaining(`ack.skipped reason=${reason}`),
-      );
-    },
-  );
 });

@@ -6,10 +6,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const openAdaMemoryFromApi = vi.hoisted(() => vi.fn());
 const openAdaGoogleAccountFromApi = vi.hoisted(() => vi.fn());
 
-vi.mock("./memory.js", () => ({ openAdaMemoryFromApi }));
-vi.mock("./google-account.js", () => ({ openAdaGoogleAccountFromApi }));
+vi.mock("./memory.js", () => ({
+  openAdaMemoryFromApi,
+  openAdaMemoryIfExistsFromApi: (...args: unknown[]) => openAdaMemoryFromApi(...args),
+}));
+vi.mock("./google-account.js", () => ({
+  openAdaGoogleAccountFromApi,
+  openAdaGoogleAccountDbFromApi: async () => ({
+    listOwners: async () => [OWNER],
+    readAccount: async () => ({ email: "lawyer@example.com" }),
+  }),
+}));
 
+import { clearSentDigests } from "./dispatch-digest.js";
 import { createNotifyState, handleAdaGoogleNotify, type NotifyDeps } from "./watch.js";
+
+const OWNER = "393331111111";
 
 const TOKEN = "test-notify-token-0123456789";
 const NOW = new Date("2026-10-14T10:00:00.000Z");
@@ -24,13 +36,20 @@ const PLUGIN_CONFIG = {
 
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 const fetchMock = vi.fn<typeof fetch>();
-const dispatchHookAgentTurn = vi.fn();
+const sendText = vi.fn();
 
-function makeApi(options: { pluginConfig?: unknown; hooks?: unknown }): OpenClawPluginApi {
+function makeApi(options: { pluginConfig?: unknown; adapter?: boolean }): OpenClawPluginApi {
   return {
     logger,
+    config: { channels: { "kapso-whatsapp": { defaultTo: "+390000000000" } } },
     pluginConfig: "pluginConfig" in options ? options.pluginConfig : PLUGIN_CONFIG,
-    runtime: { hooks: "hooks" in options ? options.hooks : { dispatchHookAgentTurn } },
+    runtime: {
+      channel: {
+        outbound: {
+          loadAdapter: async () => (options.adapter === false ? undefined : { sendText }),
+        },
+      },
+    },
   } as unknown as OpenClawPluginApi;
 }
 
@@ -150,8 +169,9 @@ beforeEach(() => {
   notifyState = createNotifyState();
   vi.clearAllMocks();
   fetchMock.mockReset();
-  dispatchHookAgentTurn.mockReset();
-  dispatchHookAgentTurn.mockResolvedValue({ ok: true });
+  sendText.mockReset();
+  sendText.mockResolvedValue(undefined);
+  clearSentDigests();
   vi.stubGlobal("fetch", fetchMock);
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
@@ -179,7 +199,7 @@ describe("handleAdaGoogleNotify auth", () => {
     expect(res.body).toBe("unauthorized");
     expect(openAdaMemoryFromApi).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(dispatchHookAgentTurn).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -224,7 +244,7 @@ describe("handleAdaGoogleNotify push handling", () => {
     expect(res.statusCode).toBe(204);
     expect(res.ended).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(dispatchHookAgentTurn).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
     expect(memory.writeWake).not.toHaveBeenCalled();
   });
 
@@ -245,7 +265,7 @@ describe("handleAdaGoogleNotify push handling", () => {
       heldPlanNextAttemptAtMs: null,
       heldPlanTemplateAttemptedAtMs: null,
     });
-    expect(dispatchHookAgentTurn).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
   });
 
   it("ignores Gmail messages that match no matter alias", async () => {
@@ -258,10 +278,10 @@ describe("handleAdaGoogleNotify push handling", () => {
       expect.objectContaining({ messageId: "msg-1", subject: "Hello" }),
       expect.objectContaining({ messageId: "msg-2", subject: "Hello" }),
     ]);
-    expect(dispatchHookAgentTurn).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
   });
 
-  it("dispatches one digest turn for an urgent matter hit when the WhatsApp window is open", async () => {
+  it("sends one digest to the owner for an urgent matter hit when the WhatsApp window is open", async () => {
     const memory = useMemory({
       listMatterAliases: vi.fn(async () => [
         { matterId: "matter-a", alias: "Alpha", title: "Alpha matter" },
@@ -293,18 +313,10 @@ describe("handleAdaGoogleNotify push handling", () => {
     });
     const { res } = await push(makeApi({}));
     expect(res.statusCode).toBe(204);
-    expect(dispatchHookAgentTurn).toHaveBeenCalledTimes(1);
-    const call = dispatchHookAgentTurn.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(call).toMatchObject({
-      name: "Ada digest",
-      agentId: "main",
-      sessionKey: "hook:vera:digest:2026-10-14",
-      externalContentSource: "email",
-      deliver: true,
-      timeoutSeconds: 45,
-      idempotencyKey: "vera-digest:2026-10-14:matter-a",
-    });
-    expect(String(call.message)).toContain("Alpha matter");
+    expect(sendText).toHaveBeenCalledTimes(1);
+    const call = sendText.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(call).toMatchObject({ to: `+${OWNER}` });
+    expect(String(call.text)).toContain("Alpha matter");
     expect(memory.writeWake).toHaveBeenCalledWith(
       expect.objectContaining({
         lastCollectAtMs: NOW.getTime(),
@@ -334,14 +346,14 @@ describe("handleAdaGoogleNotify push handling", () => {
     });
     const { res } = await push(makeApi({}));
     expect(res.statusCode).toBe(204);
-    expect(dispatchHookAgentTurn).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
     const held = memory.writeWake.mock.calls.find(([patch]) => patch.heldPlanJson);
     expect(held).toBeDefined();
     expect(JSON.parse(String(held?.[0].heldPlanJson))).toMatchObject({ deliver: true });
     expect(held?.[0].heldPlanAtMs).toBe(NOW.getTime());
   });
 
-  describe("when the hook dispatcher cannot deliver", () => {
+  describe("when the digest cannot be sent", () => {
     const openWindowMemory = () =>
       useMemory({
         listMatterAliases: vi.fn(async () => [
@@ -368,11 +380,11 @@ describe("handleAdaGoogleNotify push handling", () => {
       end: { dateTime: "2026-10-14T13:00:00.000Z" },
     };
 
-    it("still answers 204, holds the plan for retry, and records no digest when hooks are unavailable", async () => {
+    it("still answers 204, holds the plan for retry, and records no digest when WhatsApp is unavailable", async () => {
       const memory = openWindowMemory();
       useGoogleAccount(true);
       useGoogleApis({ events: [alphaEvent] });
-      const { res } = await push(makeApi({ hooks: undefined }));
+      const { res } = await push(makeApi({ adapter: false }));
       expect(res.statusCode).toBe(204);
       expect(memory.writeWake).toHaveBeenCalledTimes(1);
       expect(memory.writeWake).toHaveBeenCalledWith(
@@ -387,14 +399,14 @@ describe("handleAdaGoogleNotify push handling", () => {
       expect(memory.replaceCalendarSnapshot).not.toHaveBeenCalled();
     });
 
-    it("still answers 204, holds the plan for retry, and records no digest when the dispatcher rejects the turn", async () => {
+    it("still answers 204, holds the plan for retry, and records no digest when the send fails", async () => {
       const memory = openWindowMemory();
       useGoogleAccount(true);
       useGoogleApis({ events: [alphaEvent] });
-      dispatchHookAgentTurn.mockResolvedValue({ ok: false, reason: "queue_full" });
+      sendText.mockRejectedValue(new Error("queue_full"));
       const { res } = await push(makeApi({}));
       expect(res.statusCode).toBe(204);
-      expect(dispatchHookAgentTurn).toHaveBeenCalledTimes(1);
+      expect(sendText).toHaveBeenCalledTimes(1);
       expect(memory.writeWake).toHaveBeenCalledTimes(1);
       expect(memory.writeWake).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -409,7 +421,7 @@ describe("handleAdaGoogleNotify push handling", () => {
     });
   });
 
-  it("keeps an undelivered plan as held when the dispatcher rejects it", async () => {
+  it("keeps an undelivered plan as held when the send fails", async () => {
     const memory = useMemory({
       listMatterAliases: vi.fn(async () => [
         { matterId: "matter-a", alias: "Alpha", title: "Alpha matter" },
@@ -439,7 +451,7 @@ describe("handleAdaGoogleNotify push handling", () => {
         },
       ],
     });
-    dispatchHookAgentTurn.mockResolvedValue({ ok: false, reason: "queue_full" });
+    sendText.mockRejectedValue(new Error("queue_full"));
     const { res } = await push(makeApi({}));
     expect(res.statusCode).toBe(204);
     expect(memory.writeWake).toHaveBeenCalledWith(

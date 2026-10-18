@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { isAdaPath } from "./http-paths.js";
+import { isOwner } from "./owner.js";
 
 /**
  * Lexroom has no public OAuth for research. The lawyer opens an Ada-hosted
@@ -128,13 +129,21 @@ export function readLexroomConnectConfig(
   };
 }
 
+/**
+ * The signed, single-use, 30-minute state a connect link carries. It names the WhatsApp number
+ * that asked for the link, so finishing the link saves the account for that number and for no
+ * one else, whoever opens it.
+ */
 export function createConnectState(
   stateSecret: string,
   now: Date,
+  owner: string,
 ): { state: string; nonce: string; expiresAtMs: number } {
   const nonce = randomBytes(32).toString("base64url");
   const expiresAtMs = now.getTime() + STATE_TTL_MS;
-  const payload = Buffer.from(JSON.stringify({ nonce, exp: expiresAtMs })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ nonce, exp: expiresAtMs, owner })).toString(
+    "base64url",
+  );
   const signature = createHmac("sha256", stateSecret).update(payload).digest("base64url");
   return { state: `${payload}.${signature}`, nonce, expiresAtMs };
 }
@@ -143,7 +152,7 @@ export function readConnectState(
   stateSecret: string,
   state: string,
   now: Date,
-): { nonce: string } | null {
+): { nonce: string; owner: string } | null {
   const parts = state.split(".");
   if (parts.length !== 2) {
     return null;
@@ -158,11 +167,12 @@ export function readConnectState(
   if (actualBuf.length !== expectedBuf.length || !timingSafeEqual(actualBuf, expectedBuf)) {
     return null;
   }
-  let parsed: { nonce?: unknown; exp?: unknown };
+  let parsed: { nonce?: unknown; exp?: unknown; owner?: unknown };
   try {
     parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
       nonce?: unknown;
       exp?: unknown;
+      owner?: unknown;
     };
   } catch {
     return null;
@@ -170,10 +180,13 @@ export function readConnectState(
   if (typeof parsed.nonce !== "string" || typeof parsed.exp !== "number") {
     return null;
   }
+  if (!isOwner(parsed.owner)) {
+    return null;
+  }
   if (parsed.exp <= now.getTime()) {
     return null;
   }
-  return { nonce: parsed.nonce };
+  return { nonce: parsed.nonce, owner: parsed.owner };
 }
 
 export function buildLexroomConnectUrl(params: { connectUri: string; state: string }): string {
@@ -225,6 +238,8 @@ export function isLexroomAccessLive(params: {
 }
 
 export async function prepareLexroomConnect(params: {
+  /** The WhatsApp number that asked; the link, and the account it saves, belong to it. */
+  owner: string;
   config: LexroomConnectConfig;
   now: Date;
   account: { email: string; accessToken: string; accessExpiresAtMs: number | null } | null;
@@ -246,7 +261,7 @@ export async function prepareLexroomConnect(params: {
   if (!config.ok) {
     return config;
   }
-  const issued = createConnectState(config.settings.stateSecret, params.now);
+  const issued = createConnectState(config.settings.stateSecret, params.now, params.owner);
   await params.savePending(issued.nonce, issued.expiresAtMs);
   const url = buildLexroomConnectUrl({
     connectUri: config.settings.connectUri,

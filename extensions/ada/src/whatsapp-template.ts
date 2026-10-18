@@ -1,5 +1,4 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import { readAdaWhatsAppTarget } from "./google-notify.js";
 import {
   firstString,
   kapsoMessagesEndpoint,
@@ -110,27 +109,24 @@ export function warnDigestReadyTemplateUnset(api: Pick<OpenClawPluginApi, "logge
   }
   warnedUnset.add(api);
   api.logger.warn(
-    "ada: digest held for a closed WhatsApp window but digestReadyTemplate is not set; the lawyer will not be nudged to reply",
+    "ada: digest held for a closed WhatsApp window but digestReadyTemplate is not set; the user will not be nudged to reply",
   );
 }
 
-/** Tell the lawyer a digest is waiting so a reply can reopen the 24-hour window. */
+/** Tell one number a digest is waiting so a reply can reopen its 24-hour window. */
 export async function sendDigestReadyNotice(params: {
   api: Pick<OpenClawPluginApi, "config" | "logger">;
   template: KapsoTemplate;
-  /** Whom to nudge; the configured lawyer when omitted. */
-  to?: string;
+  /** Whom to nudge. There is no default: a send always names the number it is for. */
+  to: string;
   fetchImpl?: typeof fetch;
 }): Promise<KapsoTemplateResult> {
-  const to = params.to ?? readAdaWhatsAppTarget(params.api.config);
-  const result: KapsoTemplateResult = to
-    ? await sendKapsoTemplate({
-        config: params.api.config,
-        to,
-        template: params.template,
-        fetchImpl: params.fetchImpl,
-      })
-    : { ok: false, error: "kapso-whatsapp defaultTo is not set" };
+  const result: KapsoTemplateResult = await sendKapsoTemplate({
+    config: params.api.config,
+    to: params.to,
+    template: params.template,
+    fetchImpl: params.fetchImpl,
+  });
   if (result.ok) {
     params.api.logger.info("ada sent the digest-ready template to reopen the WhatsApp window");
   } else {

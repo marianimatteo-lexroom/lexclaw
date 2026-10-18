@@ -11,10 +11,12 @@ import type { GoogleConnectedNotice } from "./google-notify.js";
 type CallbackDeps = {
   config: GoogleConnectConfig;
   now: () => Date;
-  store: GoogleAccountStore;
+  /** The account store of one number; the number comes from the signed state, never the request. */
+  openStore: (owner: string) => Promise<GoogleAccountStore>;
   exchange: typeof exchangeAuthorizationCode;
   log: { error: (message: string) => void };
-  notifyConnected?: (email: string) => Promise<GoogleConnectedNotice>;
+  /** Confirms to the number that asked for the link, and to no one else. */
+  notifyConnected?: (owner: string, email: string) => Promise<GoogleConnectedNotice>;
 };
 
 function escapeHtml(value: string): string {
@@ -304,7 +306,8 @@ export async function handleAdaGoogleCallback(
     });
     return true;
   }
-  const pending = await deps.store.consumePending(parsed.nonce, now.getTime());
+  const store = await deps.openStore(parsed.owner);
+  const pending = await store.consumePending(parsed.nonce, now.getTime());
   if (!pending) {
     writeAdaConnectPage(res, 400, {
       kind: "retry",
@@ -333,7 +336,7 @@ export async function handleAdaGoogleCallback(
     });
     return true;
   }
-  await deps.store.upsertAccount({
+  await store.upsertAccount({
     email: exchanged.token.email,
     refreshToken: exchanged.token.refreshToken,
     accessToken: exchanged.token.accessToken,
@@ -342,7 +345,7 @@ export async function handleAdaGoogleCallback(
     scopes: exchanged.token.scopes,
   });
   if (deps.notifyConnected) {
-    const notice = await deps.notifyConnected(exchanged.token.email);
+    const notice = await deps.notifyConnected(parsed.owner, exchanged.token.email);
     if (!notice.ok) {
       deps.log.error(`ada google connect confirmation was not sent: ${notice.error}`);
     }

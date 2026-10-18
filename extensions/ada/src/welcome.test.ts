@@ -10,7 +10,7 @@ import { greetingLanguage, registerWelcomeHook, welcomeEnabled, welcomeText } fr
 const stores = vi.hoisted(() => ({ open: undefined as undefined | (() => MemoryStore) }));
 vi.mock("./memory.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./memory.js")>()),
-  openAdaMemoryFromApi: async () => stores.open?.(),
+  openAdaRegistryFromApi: async () => stores.open?.(),
 }));
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);

@@ -9,14 +9,14 @@ import type { LexroomConfig } from "./lexroom-client.js";
 import { readResearchJob } from "./lexroom-jobs.js";
 import { lexroomLogger } from "./lexroom-log.js";
 import { startAdaResearch } from "./lexroom-tools.js";
-import { senderNumber } from "./research-push.js";
+import { ownerRefusalMessage, resolveTurnOwner } from "./owner.js";
 
 /** The model-facing definition of `ada_research`, shared by its static metadata and its factory. */
 export const researchToolDefinition = {
   name: "ada_research",
   label: "Lexroom research",
   description:
-    "Start Lexroom research for one matter. It runs in the background for one to three minutes and returns a jobId at once. When a WhatsApp number asked, Ada has already told that number on WhatsApp that it is running and sends it the answer, the sources and the link to the Lexroom app herself when it is ready: do not poll, do not write a link, and end that turn with exactly NO_REPLY. Only when the result has no requesterNotified field (Ada could not tell who asked, or it was a group chat, so she sends nothing) call ada_research_status with the jobId to read the answer; even when requesterNotified is false Ada still sends the answer herself. Pass modules (for example Civile) to pick what is searched; otherwise every module the Lexroom user may search is used. Pass libraryDocumentIds only for documents that belong to that matter. The private library is not searched unless those ids are present.",
+    "Start Lexroom research for one matter. It runs in the background for one to three minutes and returns a jobId at once. It runs with the Lexroom account of the person asking in this private chat, never anyone else's, and Ada has already told that person on WhatsApp that it is running and sends them the answer, the sources and the link to the Lexroom app herself when it is ready: do not poll, do not write a link, and end that turn with exactly NO_REPLY. When requesterNotified is false Ada still sends the answer herself. When the person has not connected Lexroom the result says not_connected: call ada_lexroom_connect and send the link. Pass modules (for example Civile) to pick what is searched; otherwise every module the Lexroom user may search is used. Pass libraryDocumentIds only for documents that belong to that matter. The private library is not searched unless those ids are present.",
   parameters: Type.Object(
     {
       matterId: Type.String({ minLength: 1 }),
@@ -41,19 +41,18 @@ export function createResearchTool(params: {
   const { api, config, toolContext } = params;
   return {
     ...researchToolDefinition,
-    execute: async (_toolCallId, args: Static<typeof researchToolDefinition.parameters>) =>
-      jsonResult(
-        await startAdaResearch({
-          args,
-          config,
-          api,
-          requester: {
-            senderId: toolContext.requesterSenderId,
-            channel: toolContext.messageChannel,
-            conversationId: toolContext.nativeChannelId,
-          },
-        }),
-      ),
+    execute: async (_toolCallId, args: Static<typeof researchToolDefinition.parameters>) => {
+      const turn = resolveTurnOwner({
+        requesterSenderId: toolContext.requesterSenderId,
+        messageChannel: toolContext.messageChannel,
+        nativeChannelId: toolContext.nativeChannelId,
+        sessionKey: toolContext.sessionKey,
+      });
+      if (!turn.ok) {
+        return jsonResult({ ok: false, error: ownerRefusalMessage(turn.reason) });
+      }
+      return jsonResult(await startAdaResearch({ owner: turn.owner, args, config, api }));
+    },
   };
 }
 
@@ -80,14 +79,24 @@ export function createResearchStatusTool(params: {
   const { api, toolContext } = params;
   return {
     ...researchStatusToolDefinition,
-    execute: async (_toolCallId, args: Static<typeof researchStatusToolDefinition.parameters>) =>
-      jsonResult(
+    execute: async (_toolCallId, args: Static<typeof researchStatusToolDefinition.parameters>) => {
+      const turn = resolveTurnOwner({
+        requesterSenderId: toolContext.requesterSenderId,
+        messageChannel: toolContext.messageChannel,
+        nativeChannelId: toolContext.nativeChannelId,
+        sessionKey: toolContext.sessionKey,
+      });
+      if (!turn.ok) {
+        return jsonResult({ ok: false, error: ownerRefusalMessage(turn.reason) });
+      }
+      return jsonResult(
         await readResearchJob({
           jobId: args.jobId,
           waitSeconds: args.waitSeconds,
-          requester: senderNumber(toolContext.requesterSenderId) ?? undefined,
+          requester: turn.owner,
           log: lexroomLogger(api.logger),
         }),
-      ),
+      );
+    },
   };
 }

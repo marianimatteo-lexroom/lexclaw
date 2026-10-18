@@ -23,6 +23,8 @@ const SECRET = "0123456789abcdef";
 const KEY = Buffer.alloc(32, 7).toString("base64");
 const NOW = new Date("2026-10-15T14:45:00.000Z");
 const EMAIL = "matteo.mariani+verus@lexroom.ai";
+const OWNER = "393331111111";
+const OTHER = "393332222222";
 const CONNECT_CONFIG = {
   lexroomConnectUri: "https://gateway.example/ada/lexroom/connect",
   lexroomStateSecret: SECRET,
@@ -38,26 +40,34 @@ function jwt(expiresInSec: number): string {
 type Backend = ReturnType<typeof createSqliteWorkerBackend>;
 
 /** The real SQLite account backend, one connection each: what the route and a tool would hold. */
-function connect(databasePath: string): { backend: Backend; store: LexroomAccountStore } {
+function connect(
+  databasePath: string,
+  owner = OWNER,
+): {
+  backend: Backend;
+  store: LexroomAccountStore;
+  storeFor: (owner: string) => LexroomAccountStore;
+} {
   const backend = createSqliteWorkerBackend(undefined, { databasePath });
   const run = async (type: string, input: unknown) =>
     await Promise.resolve(backend.execute({ type, input } as never));
-  const store: LexroomAccountStore = {
+  const storeFor = (who: string): LexroomAccountStore => ({
     replacePending: async (nonce, expiresAtMs) => {
-      await run("replacePending", { nonce, expiresAtMs });
+      await run("replacePending", { owner: who, nonce, expiresAtMs });
     },
-    hasPending: async (nonce, nowMs) => (await run("hasPending", { nonce, nowMs })) as boolean,
+    hasPending: async (nonce, nowMs) =>
+      (await run("hasPending", { owner: who, nonce, nowMs })) as boolean,
     consumePending: async (nonce, nowMs) =>
-      (await run("consumePending", { nonce, nowMs })) as boolean,
+      (await run("consumePending", { owner: who, nonce, nowMs })) as boolean,
     upsertAccount: async (account) => {
-      await run("upsertAccount", account);
+      await run("upsertAccount", { owner: who, account });
     },
-    readAccount: async () => (await run("readAccount", undefined)) as never,
+    readAccount: async () => (await run("readAccount", { owner: who })) as never,
     clearAccount: async () => {
-      await run("clearAccount", undefined);
+      await run("clearAccount", { owner: who });
     },
-  };
-  return { backend, store };
+  });
+  return { backend, store: storeFor(owner), storeFor };
 }
 
 function mockRes() {
@@ -90,7 +100,7 @@ async function signIn(
   login: { email?: string; accessToken: string; accessExpiresAtMs: number | null },
   options: { notify?: () => Promise<{ ok: true }>; otp?: string } = {},
 ) {
-  const issued = createConnectState(SECRET, NOW);
+  const issued = createConnectState(SECRET, NOW, OWNER);
   await store.replacePending(issued.nonce, issued.expiresAtMs);
   const out = mockRes();
   await handleAdaLexroomConnect(
@@ -104,7 +114,7 @@ async function signIn(
     {
       config: CONNECT_CONFIG,
       now: () => NOW,
-      store,
+      openStore: async () => store,
       log: logger,
       notifyConnected: options.notify,
       login: async () => ({
@@ -148,7 +158,7 @@ describe("a completed Lexroom callback", () => {
       expect(page.html).toContain("Connected");
 
       const fetchImpl = vi.fn(async () => json({ credits: 5 })) as unknown as typeof fetch;
-      const status = await executeAdaLexroomConnect(CONNECT_CONFIG, api, NOW, { fetchImpl });
+      const status = await executeAdaLexroomConnect(OWNER, CONNECT_CONFIG, api, NOW, { fetchImpl });
       expect(status).toEqual({ ok: true, connected: true, email: EMAIL });
     } finally {
       route.backend.close();
@@ -170,7 +180,9 @@ describe("a completed Lexroom callback", () => {
         json({ detail: "You do not have permission to perform this action." }, 403),
       ) as unknown as typeof fetch;
       for (let call = 0; call < 3; call += 1) {
-        expect(await executeAdaLexroomConnect(CONNECT_CONFIG, api, NOW, { fetchImpl })).toEqual({
+        expect(
+          await executeAdaLexroomConnect(OWNER, CONNECT_CONFIG, api, NOW, { fetchImpl }),
+        ).toEqual({
           ok: true,
           connected: true,
           email: EMAIL,
@@ -239,7 +251,7 @@ describe("the same credential from another process", () => {
       const seenByChild = JSON.parse(
         inChild(
           dbPath,
-          `process.stdout.write(JSON.stringify(backend.execute({ type: "readAccount", input: undefined })));`,
+          `process.stdout.write(JSON.stringify(backend.execute({ type: "readAccount", input: { owner: ${JSON.stringify(OWNER)} } })));`,
         ),
       ) as { email: string; accessToken: string };
       expect(seenByChild).toMatchObject({
@@ -249,9 +261,9 @@ describe("the same credential from another process", () => {
 
       inChild(
         dbPath,
-        `backend.execute({ type: "upsertAccount", input: { email: ${JSON.stringify(EMAIL)}, accessToken: "token-written-by-child-0002", password: "", refreshToken: "", accessExpiresAtMs: null, connectedAtMs: 2 } });`,
+        `backend.execute({ type: "upsertAccount", input: { owner: ${JSON.stringify(OWNER)}, account: { email: ${JSON.stringify(EMAIL)}, accessToken: "token-written-by-child-0002", password: "", refreshToken: "", accessExpiresAtMs: null, connectedAtMs: 2 } } });`,
       );
-      expect(mine.backend.execute({ type: "readAccount", input: undefined })).toMatchObject({
+      expect(mine.backend.execute({ type: "readAccount", input: { owner: OWNER } })).toMatchObject({
         accessToken: "token-written-by-child-0002",
       });
     } finally {
@@ -342,6 +354,107 @@ describe("the success page", () => {
   });
 });
 
+describe("a connect link and the number that asked for it", () => {
+  it("connects only the number that requested it, whoever opens the link", async () => {
+    const dbPath = path.join(tempDirs.make("ada-lexroom-"), "ada", "lexroom-account.sqlite");
+    const db = connect(dbPath);
+    try {
+      const issued = createConnectState(SECRET, NOW, OWNER);
+      await db.storeFor(OWNER).replacePending(issued.nonce, issued.expiresAtMs);
+      const opened: string[] = [];
+      const out = mockRes();
+      await handleAdaLexroomConnect(
+        mockReq({ state: issued.state, email: "someone.else@lexroom.ai", password: "pw" }),
+        out.res,
+        {
+          config: CONNECT_CONFIG,
+          now: () => NOW,
+          openStore: async (owner) => {
+            opened.push(owner);
+            return db.storeFor(owner);
+          },
+          log: logger,
+          login: async () => ({
+            ok: true,
+            email: "someone.else@lexroom.ai",
+            accessToken: jwt(3600),
+            refreshToken: "",
+            accessExpiresAtMs: NOW.getTime() + 3_600_000,
+          }),
+        },
+      );
+      expect(out.res.statusCode).toBe(200);
+      expect(new Set(opened)).toEqual(new Set([OWNER]));
+      expect(await db.storeFor(OWNER).readAccount()).toMatchObject({
+        email: "someone.else@lexroom.ai",
+      });
+      expect(await db.storeFor(OTHER).readAccount()).toBeNull();
+    } finally {
+      db.backend.close();
+    }
+  });
+
+  it("cannot overwrite a number's connection with a link issued to another number", async () => {
+    const dbPath = path.join(tempDirs.make("ada-lexroom-"), "ada", "lexroom-account.sqlite");
+    const db = connect(dbPath);
+    try {
+      await signIn(db.storeFor(OWNER), {
+        accessToken: jwt(3600),
+        accessExpiresAtMs: NOW.getTime() + 3_600_000,
+      });
+      const before = await db.storeFor(OWNER).readAccount();
+      expect(before?.email).toBe(EMAIL);
+
+      // The other number asks for its own link and completes it with different credentials.
+      const issued = createConnectState(SECRET, NOW, OTHER);
+      await db.storeFor(OTHER).replacePending(issued.nonce, issued.expiresAtMs);
+      const out = mockRes();
+      await handleAdaLexroomConnect(
+        mockReq({ state: issued.state, email: "mallory@lexroom.ai", password: "pw" }),
+        out.res,
+        {
+          config: CONNECT_CONFIG,
+          now: () => NOW,
+          openStore: async (owner) => db.storeFor(owner),
+          log: logger,
+          login: async () => ({
+            ok: true,
+            email: "mallory@lexroom.ai",
+            accessToken: jwt(3600),
+            refreshToken: "",
+            accessExpiresAtMs: NOW.getTime() + 3_600_000,
+          }),
+        },
+      );
+      expect(await db.storeFor(OWNER).readAccount()).toEqual(before);
+      expect(await db.storeFor(OTHER).readAccount()).toMatchObject({ email: "mallory@lexroom.ai" });
+    } finally {
+      db.backend.close();
+    }
+  });
+
+  it("refuses a link whose state names a number other than the one it was issued to", async () => {
+    const dbPath = path.join(tempDirs.make("ada-lexroom-"), "ada", "lexroom-account.sqlite");
+    const db = connect(dbPath);
+    try {
+      // A pending row exists for OWNER; a state signed for OTHER reuses its nonce.
+      const issued = createConnectState(SECRET, NOW, OWNER);
+      await db.storeFor(OWNER).replacePending(issued.nonce, issued.expiresAtMs);
+      const forged = createConnectState(SECRET, NOW, OTHER);
+      const stolen = {
+        ...forged,
+        state: forged.state,
+        nonce: issued.nonce,
+      };
+      expect(await db.storeFor(OTHER).hasPending(stolen.nonce, NOW.getTime())).toBe(false);
+      expect(await db.storeFor(OTHER).consumePending(stolen.nonce, NOW.getTime())).toBe(false);
+      expect(await db.storeFor(OWNER).hasPending(issued.nonce, NOW.getTime())).toBe(true);
+    } finally {
+      db.backend.close();
+    }
+  });
+});
+
 describe("credential logging", () => {
   it("records every write, read and clear with key, backend, process and normalization, never the token", async () => {
     const dbPath = path.join(tempDirs.make("ada-lexroom-"), "ada", "lexroom-account.sqlite");
@@ -350,6 +463,7 @@ describe("credential logging", () => {
     const store = withLexroomStoreLogging(real.store, {
       log: (event, fields) => lines.push({ event, fields }),
       databasePath: dbPath,
+      owner: OWNER,
     });
     try {
       const secret = "very-secret-access-token-value-123456";
@@ -368,7 +482,7 @@ describe("credential logging", () => {
         "store.clear",
       ]);
       expect(lines[0]?.fields).toMatchObject({
-        storageKey: "lawyer",
+        storageKey: "+39…1111",
         backend: "sqlite-worker",
         db: dbPath,
         email: EMAIL,

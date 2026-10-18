@@ -1,9 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import {
-  readAdaWhatsAppTarget,
-  ADA_WHATSAPP_CHANNEL,
-  type GoogleConnectedNotice,
-} from "./google-notify.js";
+import { ADA_WHATSAPP_CHANNEL, type GoogleConnectedNotice } from "./google-notify.js";
 import type { LexroomAccountStore } from "./lexroom-account-contract.js";
 import { openAdaLexroomAccountFromApi } from "./lexroom-account.js";
 import {
@@ -37,15 +33,15 @@ import {
   MIN_LEXROOM_TIMEOUT_MS,
 } from "./lexroom-timeout.js";
 import type { DeadlineItem } from "./memory-contract.js";
+import { lawyerOwner } from "./owner.js";
 import {
   livePushDeps,
   pushResearchResult,
   sendResearchAck,
-  senderNumber,
   type PushDeps,
 } from "./research-push.js";
 
-type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger">;
+type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger" | "config">;
 
 type ToolFailure = {
   ok: false;
@@ -57,9 +53,9 @@ function isStoreFailure(store: LexroomAccountStore | ToolFailure): store is Tool
   return "ok" in store;
 }
 
-async function openStore(api: StoreApi): Promise<LexroomAccountStore | ToolFailure> {
+async function openStore(api: StoreApi, owner: string): Promise<LexroomAccountStore | ToolFailure> {
   try {
-    return await openAdaLexroomAccountFromApi(api);
+    return await openAdaLexroomAccountFromApi(api, owner);
   } catch (error) {
     api.logger.error(
       `ada lexroom account store failed: ${error instanceof Error ? error.message : "unknown"}`,
@@ -74,6 +70,8 @@ export function lexroomConnectedText(_email: string): string {
 
 export async function sendLexroomConnectedNotice(params: {
   config: OpenClawPluginApi["config"];
+  /** The WhatsApp number that connected the account; the confirmation goes to it alone. */
+  owner: string;
   email: string;
   loadAdapter: (channelId: string) => Promise<
     | {
@@ -87,10 +85,7 @@ export async function sendLexroomConnectedNotice(params: {
     | undefined
   >;
 }): Promise<GoogleConnectedNotice> {
-  const to = readAdaWhatsAppTarget(params.config);
-  if (!to) {
-    return { ok: false, error: "kapso-whatsapp defaultTo is not set" };
-  }
+  const to = `+${params.owner}`;
   let adapter:
     | {
         sendText?: (params: {
@@ -151,6 +146,7 @@ function renewalFailure(failure: RenewFailure): Failure {
  * the client gives it no reconnect reason. A static config token has nothing to renew.
  */
 async function runWithRecovery<T extends { ok: boolean; reason?: string }>(params: {
+  owner: string;
   api: StoreApi;
   resolved: { source: "account" | "config"; config: LexroomConfig };
   fetchImpl?: typeof fetch;
@@ -162,7 +158,7 @@ async function runWithRecovery<T extends { ok: boolean; reason?: string }>(param
   if (first.ok || first.reason !== "not_connected" || resolved.source !== "account") {
     return first;
   }
-  const store = await openStore(api);
+  const store = await openStore(api, params.owner);
   if (isStoreFailure(store)) {
     return first;
   }
@@ -216,12 +212,13 @@ async function runWithRecovery<T extends { ok: boolean; reason?: string }>(param
  * Lexroom leaves the sign-in in place. `force` drops whatever is saved and always issues a link.
  */
 export async function executeAdaLexroomConnect(
+  owner: string,
   config: LexroomConnectConfig,
   api: StoreApi,
   now = new Date(),
   options: { force?: boolean; fetchImpl?: typeof fetch; signal?: AbortSignal } = {},
 ): Promise<LexroomConnectResult | ToolFailure> {
-  const store = await openStore(api);
+  const store = await openStore(api, owner);
   if (isStoreFailure(store)) {
     return store;
   }
@@ -272,6 +269,7 @@ export async function executeAdaLexroomConnect(
       }
     }
     return await prepareLexroomConnect({
+      owner,
       config,
       now,
       account: account
@@ -292,8 +290,14 @@ export async function executeAdaLexroomConnect(
   }
 }
 
-/** Prefer the linked Lexroom account, renewing its token when needed; else a static config token. */
+/**
+ * The owner's linked Lexroom account, renewing its token when needed. Only the configured
+ * lawyer may fall back to the static config token; every other number without a connection is
+ * simply not connected.
+ */
 export async function resolveLexroomConfig(params: {
+  /** The WhatsApp number whose account is used: the only account there is for this call. */
+  owner: string;
   config: LexroomConfig & LexroomConnectConfig;
   api: StoreApi;
   now?: Date;
@@ -303,7 +307,7 @@ export async function resolveLexroomConfig(params: {
   { ok: true; config: LexroomConfig; email?: string; source: "account" | "config" } | LexroomFailure
 > {
   const now = params.now ?? new Date();
-  const store = await openStore(params.api);
+  const store = await openStore(params.api, params.owner);
   if (!isStoreFailure(store)) {
     try {
       const account = await store.readAccount();
@@ -339,7 +343,11 @@ export async function resolveLexroomConfig(params: {
       );
     }
   }
-  const fallback = params.config.accessToken?.trim() ?? "";
+  // The static token in plugin config is the configured lawyer's own, and no one else's.
+  const fallback =
+    params.owner === lawyerOwner(params.api.config)
+      ? (params.config.accessToken?.trim() ?? "")
+      : "";
   if (
     fallback &&
     isLexroomAccessLive({
@@ -370,6 +378,7 @@ export async function resolveLexroomConfig(params: {
 
 /** Same as resolveLexroomConfig, with the tool call and the account lookup time in the log. */
 export async function resolveLexroomConfigLogged(params: {
+  owner: string;
   tool: string;
   config: LexroomConfig & LexroomConnectConfig;
   api: StoreApi;
@@ -416,6 +425,7 @@ type DraftArgs = {
 
 /** ada_research: resolves the Lexroom credential, runs the call, renews it once on a 401. */
 export async function executeAdaResearch(params: {
+  owner: string;
   args: ResearchArgs;
   config: LexroomConfig & LexroomConnectConfig;
   api: StoreApi;
@@ -423,6 +433,7 @@ export async function executeAdaResearch(params: {
   fetchImpl?: typeof fetch;
 }) {
   const resolved = await resolveLexroomConfigLogged({
+    owner: params.owner,
     tool: "ada_research",
     config: params.config,
     api: params.api,
@@ -433,6 +444,7 @@ export async function executeAdaResearch(params: {
     return resolved;
   }
   return await runWithRecovery({
+    owner: params.owner,
     api: params.api,
     resolved,
     fetchImpl: params.fetchImpl,
@@ -448,14 +460,6 @@ export async function executeAdaResearch(params: {
   });
 }
 
-/** Who asked, from the host's trusted tool context. */
-export type ResearchRequester = {
-  senderId?: string;
-  channel?: string;
-  /** The platform's id of the conversation, which tells a group from a one-to-one chat. */
-  conversationId?: string;
-};
-
 type PushApi = Parameters<typeof livePushDeps>[0];
 
 /**
@@ -463,17 +467,16 @@ type PushApi = Parameters<typeof livePushDeps>[0];
  * its handle at once. The job gets its own abort signal, because the tool call's ends when the
  * tool returns.
  *
- * When a WhatsApp number asked in a chat of its own, code also tells that number that the
- * research is running and sends it the result when it ends, so the model neither polls nor has
- * to remember to say anything. Messages go only to the requesting number. When the sender is
- * unknown, not a phone number, or in a group, nothing is sent and the model reads the result
- * through ada_research_status.
+ * `owner` is the WhatsApp number of the private chat that asked, taken from the host's trusted
+ * context by the caller. The research runs with that number's Lexroom account and nobody else's,
+ * code tells that number that it is running and sends it the result when it ends, so the model
+ * neither polls nor has to remember to say anything. Messages go only to that number.
  */
 export async function startAdaResearch(params: {
+  owner: string;
   args: ResearchArgs;
   config: LexroomConfig & LexroomConnectConfig;
   api: StoreApi & PushApi;
-  requester?: ResearchRequester;
   fetchImpl?: typeof fetch;
   /** Test seam: the sender, window check and nudge for one recipient. Defaults to the live ones. */
   pushDepsFor?: (recipient: string) => PushDeps;
@@ -486,21 +489,8 @@ export async function startAdaResearch(params: {
     return { ok: false as const, error: "query is required" };
   }
   const log = lexroomLogger(params.api.logger);
-  const { channel, conversationId } = params.requester ?? {};
-  const onKapso = channel === undefined || channel === ADA_WHATSAPP_CHANNEL;
-  const recipient = onKapso ? senderNumber(params.requester?.senderId) : null;
-  const inGroup = conversationId !== undefined && /@g\.us$/iu.test(conversationId.trim());
-  const owner = recipient ?? undefined;
-  const push =
-    recipient && !inGroup
-      ? (params.pushDepsFor ?? ((to) => livePushDeps(params.api, log, to)))(recipient)
-      : undefined;
-  if (!push) {
-    log("ack.skipped", {
-      reason: !onKapso ? "other_channel" : inGroup ? "group_chat" : "sender_unknown",
-      senderKnown: params.requester?.senderId !== undefined,
-    });
-  }
+  const { owner } = params;
+  const push = (params.pushDepsFor ?? ((to) => livePushDeps(params.api, log, to)))(owner);
   const total =
     params.config.timeoutMs && params.config.timeoutMs >= MIN_LEXROOM_TIMEOUT_MS
       ? params.config.timeoutMs
@@ -511,22 +501,19 @@ export async function startAdaResearch(params: {
     // The call's own total cap, plus room for the sign-in and module lookups before it.
     deadlineMs: total + 3 * lexroomTimeoutMs(),
     log,
-    ...(push
-      ? {
-          deliver: (result, job) =>
-            pushResearchResult(
-              {
-                jobId: job.id,
-                startedAtMs: job.startedAtMs,
-                result,
-                query: params.args.query,
-              },
-              push,
-            ),
-        }
-      : {}),
+    deliver: (result, job) =>
+      pushResearchResult(
+        {
+          jobId: job.id,
+          startedAtMs: job.startedAtMs,
+          result,
+          query: params.args.query,
+        },
+        push,
+      ),
     run: (signal) =>
       executeAdaResearch({
+        owner,
         args: params.args,
         config: params.config,
         api: params.api,
@@ -534,7 +521,7 @@ export async function startAdaResearch(params: {
         signal,
       }),
   });
-  if (!started.ok || !push) {
+  if (!started.ok) {
     return started;
   }
   const notified = await sendResearchAck({ jobId: started.jobId, query: params.args.query }, push);
@@ -547,8 +534,9 @@ export async function startAdaResearch(params: {
   };
 }
 
-/** ada_draft: nothing is resolved or sent until the lawyer has confirmed. */
+/** ada_draft: nothing is resolved or sent until the user has confirmed. */
 export async function executeAdaDraft(params: {
+  owner: string;
   args: DraftArgs;
   config: LexroomConfig & LexroomConnectConfig;
   api: StoreApi;
@@ -559,6 +547,7 @@ export async function executeAdaDraft(params: {
     return await runDraft({ config: params.config, ...params.args, signal: params.signal });
   }
   const resolved = await resolveLexroomConfigLogged({
+    owner: params.owner,
     tool: "ada_draft",
     config: params.config,
     api: params.api,
@@ -569,6 +558,7 @@ export async function executeAdaDraft(params: {
     return resolved;
   }
   return await runWithRecovery({
+    owner: params.owner,
     api: params.api,
     resolved,
     fetchImpl: params.fetchImpl,
@@ -617,6 +607,7 @@ export type DeadlineResearchResult =
  * drafts and never sends mail. Uses the connected Lexroom account like ada_research.
  */
 export async function runDeadlineResearch(params: {
+  owner: string;
   item: DeadlineItem;
   matterLabel: string;
   language?: string | null;
@@ -627,6 +618,7 @@ export async function runDeadlineResearch(params: {
   fetchImpl?: typeof fetch;
 }): Promise<DeadlineResearchResult> {
   const resolved = await resolveLexroomConfigLogged({
+    owner: params.owner,
     tool: "deadline_research",
     config: params.config,
     api: params.api,
@@ -638,6 +630,7 @@ export async function runDeadlineResearch(params: {
     return resolved;
   }
   const outcome = await runWithRecovery({
+    owner: params.owner,
     api: params.api,
     resolved,
     fetchImpl: params.fetchImpl,

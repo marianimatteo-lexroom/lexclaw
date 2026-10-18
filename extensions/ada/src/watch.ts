@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { openAdaGoogleAccountDbFromApi } from "./google-account.js";
 import {
   constantTimeEqual,
   createGoogleCertSource,
@@ -116,6 +117,20 @@ async function readBody(req: IncomingMessage): Promise<string | null> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/** The number whose connected Google account is this mailbox, or null when none is. */
+async function ownerOfMailbox(api: OpenClawPluginApi, mailbox: string): Promise<string | null> {
+  if (!mailbox) {
+    return null;
+  }
+  const db = await openAdaGoogleAccountDbFromApi(api);
+  for (const owner of await db.listOwners()) {
+    if ((await db.readAccount(owner))?.email.toLowerCase() === mailbox) {
+      return owner;
+    }
+  }
+  return null;
+}
+
 /** Pub/Sub wraps Gmail's `{ emailAddress, historyId }` in `message.data` (base64). */
 function parseHistory(body: string): { mailbox: string; historyId: bigint } | null {
   try {
@@ -203,9 +218,15 @@ export async function handleAdaGoogleNotify(
   deps.state.lastRunAtMs = nowMs;
 
   try {
-    const memory = await openAdaMemoryFromApi(api);
+    const owner = await ownerOfMailbox(api, history.mailbox);
+    if (!owner) {
+      api.logger.info("ada google notify skipped: the mailbox is not connected to any number");
+      return reply(res, 204);
+    }
+    const memory = await openAdaMemoryFromApi(api, owner);
     await runAdaCollectPass({
       api,
+      owner,
       memory,
       now: new Date(nowMs),
       forceMorning: false,

@@ -14,13 +14,15 @@ import { lexroomTimeoutMs } from "./lexroom-timeout.js";
 type ConnectHttpDeps = {
   config: LexroomConnectConfig;
   now: () => Date;
-  store: LexroomAccountStore;
+  /** The account store of one number; the number comes from the signed link, never the request. */
+  openStore: (owner: string) => Promise<LexroomAccountStore>;
   log: {
     error: (message: string) => void;
     info?: (message: string) => void;
     warn?: (message: string) => void;
   };
-  notifyConnected?: (email: string) => Promise<GoogleConnectedNotice>;
+  /** Confirms to the number that asked for the link, and to no one else. */
+  notifyConnected?: (owner: string, email: string) => Promise<GoogleConnectedNotice>;
   login?: typeof loginLexroomAccount;
 };
 
@@ -257,6 +259,7 @@ async function readFormBody(req: IncomingMessage): Promise<URLSearchParams> {
  */
 async function persistAndConfirm(
   deps: ConnectHttpDeps,
+  store: LexroomAccountStore,
   record: Parameters<LexroomAccountStore["upsertAccount"]>[0],
 ): Promise<{ reason: string; message: string } | undefined> {
   const saveFailed = {
@@ -265,8 +268,8 @@ async function persistAndConfirm(
       "Ada could not save the Lexroom sign-in. Return to WhatsApp and ask Ada for a new link.",
   };
   try {
-    await deps.store.upsertAccount(record);
-    const saved = await deps.store.readAccount();
+    await store.upsertAccount(record);
+    const saved = await store.readAccount();
     if (!saved || saved.accessToken !== record.accessToken || saved.email !== record.email) {
       return { ...saveFailed, reason: "not_readable_after_write" };
     }
@@ -317,7 +320,10 @@ export async function handleAdaLexroomConnect(
     const state = query(req).get("state")?.trim() ?? "";
     const now = deps.now();
     const parsed = state ? readConnectState(config.settings.stateSecret, state, now) : null;
-    if (!parsed || !(await deps.store.hasPending(parsed.nonce, now.getTime()))) {
+    if (
+      !parsed ||
+      !(await (await deps.openStore(parsed.owner)).hasPending(parsed.nonce, now.getTime()))
+    ) {
       writeHtml(
         res,
         400,
@@ -368,7 +374,8 @@ export async function handleAdaLexroomConnect(
   const password = form.get("password") ?? "";
   const now = deps.now();
   const parsed = state ? readConnectState(config.settings.stateSecret, state, now) : null;
-  if (!parsed || !(await deps.store.hasPending(parsed.nonce, now.getTime()))) {
+  const store = parsed ? await deps.openStore(parsed.owner) : null;
+  if (!parsed || !store || !(await store.hasPending(parsed.nonce, now.getTime()))) {
     writeHtml(
       res,
       400,
@@ -422,7 +429,7 @@ export async function handleAdaLexroomConnect(
     return true;
   }
 
-  const pending = await deps.store.consumePending(parsed.nonce, now.getTime());
+  const pending = await store.consumePending(parsed.nonce, now.getTime());
   if (!pending) {
     writeHtml(
       res,
@@ -450,7 +457,7 @@ export async function handleAdaLexroomConnect(
     emailStored: record.email,
     normalization: email === record.email ? "unchanged" : "lowercased-or-from-session",
   });
-  const failure = await persistAndConfirm(deps, record);
+  const failure = await persistAndConfirm(deps, store, record);
   if (failure) {
     log("connect.callback.rejected", { reason: failure.reason });
     writeHtml(
@@ -462,7 +469,7 @@ export async function handleAdaLexroomConnect(
   }
   log("connect.callback.confirmed", { email: record.email });
   if (deps.notifyConnected) {
-    const notice = await deps.notifyConnected(result.email);
+    const notice = await deps.notifyConnected(parsed.owner, result.email);
     if (!notice.ok) {
       deps.log.error(`ada lexroom connect confirmation was not sent: ${notice.error}`);
     }

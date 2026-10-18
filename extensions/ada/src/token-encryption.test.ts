@@ -7,6 +7,7 @@ import { createSqliteWorkerBackend as createLexroomBackend } from "./lexroom-acc
 import { resolveTokenCipher } from "./token-crypto.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const OWNER = "393331111111";
 const KEY_A = Buffer.alloc(32, 1).toString("base64");
 const KEY_B = Buffer.alloc(32, 2).toString("hex");
 
@@ -88,8 +89,8 @@ describe("encrypted Google account tokens", () => {
     const databasePath = path.join(tempDirs.make("ada-google-enc-"), "google-account.sqlite");
     const backend = createGoogleBackend(undefined, { databasePath });
     try {
-      backend.execute({ type: "upsertAccount", input: GOOGLE });
-      expect(backend.execute({ type: "readAccount", input: undefined })).toEqual(GOOGLE);
+      backend.execute({ type: "upsertAccount", input: { owner: OWNER, account: GOOGLE } });
+      expect(backend.execute({ type: "readAccount", input: { owner: OWNER } })).toEqual(GOOGLE);
     } finally {
       void backend.close();
     }
@@ -104,7 +105,7 @@ describe("encrypted Google account tokens", () => {
     const databasePath = path.join(tempDirs.make("ada-google-legacy-"), "google-account.sqlite");
     const legacy = createGoogleBackend(undefined, { databasePath });
     try {
-      legacy.execute({ type: "upsertAccount", input: GOOGLE });
+      legacy.execute({ type: "upsertAccount", input: { owner: OWNER, account: GOOGLE } });
     } finally {
       void legacy.close();
     }
@@ -113,7 +114,7 @@ describe("encrypted Google account tokens", () => {
     useKey(KEY_A);
     const upgraded = createGoogleBackend(undefined, { databasePath });
     try {
-      expect(upgraded.execute({ type: "readAccount", input: undefined })).toEqual(GOOGLE);
+      expect(upgraded.execute({ type: "readAccount", input: { owner: OWNER } })).toEqual(GOOGLE);
     } finally {
       void upgraded.close();
     }
@@ -129,8 +130,8 @@ describe("encrypted Google account tokens", () => {
     });
     try {
       const account = { ...GOOGLE, accessToken: null, accessExpiresAtMs: null };
-      backend.execute({ type: "upsertAccount", input: account });
-      expect(backend.execute({ type: "readAccount", input: undefined })).toEqual(account);
+      backend.execute({ type: "upsertAccount", input: { owner: OWNER, account: account } });
+      expect(backend.execute({ type: "readAccount", input: { owner: OWNER } })).toEqual(account);
     } finally {
       void backend.close();
     }
@@ -152,8 +153,8 @@ describe("encrypted Lexroom account tokens", () => {
     const databasePath = path.join(tempDirs.make("ada-lexroom-enc-"), "lexroom-account.sqlite");
     const backend = createLexroomBackend(undefined, { databasePath });
     try {
-      backend.execute({ type: "upsertAccount", input: LEXROOM });
-      expect(backend.execute({ type: "readAccount", input: undefined })).toEqual(LEXROOM);
+      backend.execute({ type: "upsertAccount", input: { owner: OWNER, account: LEXROOM } });
+      expect(backend.execute({ type: "readAccount", input: { owner: OWNER } })).toEqual(LEXROOM);
     } finally {
       void backend.close();
     }
@@ -169,7 +170,7 @@ describe("encrypted Lexroom account tokens", () => {
     const databasePath = path.join(tempDirs.make("ada-lexroom-legacy-"), "lexroom-account.sqlite");
     const legacy = createLexroomBackend(undefined, { databasePath });
     try {
-      legacy.execute({ type: "upsertAccount", input: LEXROOM });
+      legacy.execute({ type: "upsertAccount", input: { owner: OWNER, account: LEXROOM } });
     } finally {
       void legacy.close();
     }
@@ -178,7 +179,7 @@ describe("encrypted Lexroom account tokens", () => {
     useKey(KEY_A);
     const upgraded = createLexroomBackend(undefined, { databasePath });
     try {
-      expect(upgraded.execute({ type: "readAccount", input: undefined })).toEqual(LEXROOM);
+      expect(upgraded.execute({ type: "readAccount", input: { owner: OWNER } })).toEqual(LEXROOM);
     } finally {
       void upgraded.close();
     }
@@ -200,7 +201,8 @@ describe("encrypted Lexroom account tokens", () => {
     old.close();
     const backend = createLexroomBackend(undefined, { databasePath });
     try {
-      expect(backend.execute({ type: "readAccount", input: undefined })).toEqual({
+      backend.execute({ type: "adoptLegacy", input: { owner: OWNER } });
+      expect(backend.execute({ type: "readAccount", input: { owner: OWNER } })).toEqual({
         email: "lawyer@example.com",
         accessToken: "old-access-token",
         password: "",
@@ -221,8 +223,8 @@ describe("encrypted Lexroom account tokens", () => {
     const databasePath = path.join(tempDirs.make("ada-lexroom-gw-"), "lexroom-account.sqlite");
     const backend = createLexroomBackend(undefined, { databasePath });
     try {
-      backend.execute({ type: "upsertAccount", input: LEXROOM });
-      expect(backend.execute({ type: "readAccount", input: undefined })).toEqual(LEXROOM);
+      backend.execute({ type: "upsertAccount", input: { owner: OWNER, account: LEXROOM } });
+      expect(backend.execute({ type: "readAccount", input: { owner: OWNER } })).toEqual(LEXROOM);
     } finally {
       void backend.close();
     }

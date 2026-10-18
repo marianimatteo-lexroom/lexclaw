@@ -9,7 +9,7 @@ import type { MemoryStore } from "./memory.js";
 import {
   HELD_PLAN_MAX_ATTEMPTS,
   heldPlanBackoffMs,
-  recordLawyerInbound,
+  recordSenderInbound,
   registerAdaService,
   runAdaCollectPass,
 } from "./service.js";
@@ -26,7 +26,10 @@ vi.mock("./google-api.js", async (importOriginal) => ({
   ...google,
 }));
 
-const memoryModule = vi.hoisted(() => ({ openAdaMemoryFromApi: vi.fn() }));
+const memoryModule = vi.hoisted(() => {
+  const openAdaMemoryFromApi = vi.fn();
+  return { openAdaMemoryFromApi, openAdaMemoryIfExistsFromApi: openAdaMemoryFromApi };
+});
 
 vi.mock("./memory.js", () => memoryModule);
 
@@ -34,6 +37,7 @@ vi.mock("./google-account.js", () => ({
   openAdaGoogleAccountFromApi: async () => ({
     readAccount: async () => ({ email: "lawyer@example.com" }),
   }),
+  openAdaGoogleAccountDbFromApi: async () => ({ listOwners: async () => [] }),
 }));
 
 const plan: DigestPlan = {
@@ -73,6 +77,8 @@ const deliverable: CollectResult = {
 };
 
 const LAWYER_NUMBER = "+390000000000";
+const OWNER = "390000000000";
+const HOST_CONFIG = { channels: { "kapso-whatsapp": { defaultTo: LAWYER_NUMBER } } };
 const HOUR_MS = 60 * 60 * 1000;
 const MORNING = new Date("2026-10-06T05:40:00.000Z");
 const POLL_1 = new Date(MORNING.getTime() + 10 * 60 * 1000);
@@ -145,6 +151,7 @@ function setGoogle(reads: { messages?: InboxMessage[]; events?: unknown[] }) {
 
 const api: OpenClawPluginApi = createTestPluginApi({
   id: "ada",
+  config: HOST_CONFIG as OpenClawPluginApi["config"],
   pluginConfig: {
     googleClientId: "client-id",
     googleClientSecret: "client-secret",
@@ -165,6 +172,7 @@ function pass(
 ) {
   return runAdaCollectPass({
     api: options.api ?? api,
+    owner: OWNER,
     memory,
     now: options.now,
     forceMorning: options.forceMorning ?? false,
@@ -460,19 +468,20 @@ describe("collect pass concurrency", () => {
     setGoogle({ events: [HEARING] });
     const store = createMemory();
     memoryModule.openAdaMemoryFromApi.mockResolvedValue(store.memory);
-    const hookDispatch = vi.fn(async () => ({ ok: true, runId: "run" }));
+    const sendText = vi.fn(async (_params: { to: string; text: string }) => undefined);
     const replyApi = createTestPluginApi({
       id: "ada",
       pluginConfig: api.pluginConfig,
-      config: { channels: { "kapso-whatsapp": { defaultTo: LAWYER_NUMBER } } },
+      config: HOST_CONFIG as OpenClawPluginApi["config"],
       runtime: {
-        hooks: { dispatchHookAgentTurn: hookDispatch },
+        channel: { outbound: { loadAdapter: async () => ({ sendText }) } },
       } as unknown as OpenClawPluginApi["runtime"],
     });
 
     let failDispatch!: () => void;
     const poll = runAdaCollectPass({
       api: replyApi,
+      owner: OWNER,
       memory: store.memory,
       now: MORNING,
       forceMorning: false,
@@ -485,7 +494,7 @@ describe("collect pass concurrency", () => {
     await vi.waitFor(() => expect(failDispatch).toBeTypeOf("function"));
 
     const replyAtMs = MORNING.getTime() + 60_000;
-    const reply = recordLawyerInbound({
+    const reply = recordSenderInbound({
       api: replyApi,
       atMs: replyAtMs,
       channelId: "kapso-whatsapp",
@@ -494,12 +503,9 @@ describe("collect pass concurrency", () => {
     failDispatch();
     await Promise.all([poll, reply]);
 
-    expect(hookDispatch).toHaveBeenCalledOnce();
-    expect(hookDispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: "Ada held digest",
-        message: expect.stringContaining("The lawyer just texted"),
-      }),
+    expect(sendText).toHaveBeenCalledOnce();
+    expect(sendText).toHaveBeenCalledWith(
+      expect.objectContaining({ to: LAWYER_NUMBER, text: expect.stringContaining("Verdi") }),
     );
     expect(store.wake()).toMatchObject({
       lastLawyerInboundAtMs: replyAtMs,
@@ -525,6 +531,7 @@ describe("ada service scheduling", () => {
     let service: Parameters<OpenClawPluginApi["registerService"]>[0] | undefined;
     const serviceApi = createTestPluginApi({
       id: "ada",
+      config: HOST_CONFIG as OpenClawPluginApi["config"],
       pluginConfig: api.pluginConfig,
       registerService: (registered) => {
         service = registered;

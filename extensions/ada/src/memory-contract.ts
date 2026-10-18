@@ -124,6 +124,21 @@ export type WakeState = {
   openTodoIdsJson: string | null;
 };
 
+/** The wake state of a number that has no memory yet. */
+export const EMPTY_WAKE_STATE: WakeState = {
+  lastLawyerInboundAtMs: null,
+  lastReconcileAtMs: null,
+  lastCollectAtMs: null,
+  lastDigestAtMs: null,
+  heldPlanJson: null,
+  heldPlanAttempts: 0,
+  heldPlanNextAttemptAtMs: null,
+  heldPlanTemplateAttemptedAtMs: null,
+  heldPlanAtMs: null,
+  watchExpirationMs: null,
+  openTodoIdsJson: null,
+};
+
 export const DEADLINE_TYPES = ["deadline", "hearing"] as const;
 export type DeadlineType = (typeof DEADLINE_TYPES)[number];
 
@@ -259,4 +274,6 @@ export type AdaMemoryOperations = {
   /** True when `number` had no welcome marker and now has one; false when it was already marked. */
   claimWelcome: Operation<{ number: string; atMs: number }, boolean>;
   releaseWelcome: Operation<{ number: string }, undefined>;
+  /** Writes a consistent copy of this database to `path` with the welcome markers left out. */
+  exportSnapshot: Operation<{ path: string }, undefined>;
 };

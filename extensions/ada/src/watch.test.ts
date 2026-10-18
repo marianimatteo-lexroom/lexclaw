@@ -7,6 +7,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const runCollect = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock("./service.js", () => ({ runAdaCollectPass: runCollect }));
 vi.mock("./memory.js", () => ({ openAdaMemoryFromApi: vi.fn(async () => ({})) }));
+const ACCOUNTS = vi.hoisted(() => ({
+  byOwner: new Map<string, { email: string }>([
+    ["393331111111", { email: "Lawyer@Example.com" }],
+    ["393332222222", { email: "bruno@example.com" }],
+  ]),
+}));
+vi.mock("./google-account.js", () => ({
+  openAdaGoogleAccountDbFromApi: async () => ({
+    listOwners: async () => [...ACCOUNTS.byOwner.keys()],
+    readAccount: async (owner: string) => ACCOUNTS.byOwner.get(owner) ?? null,
+  }),
+}));
 
 import { createNotifyState, handleAdaGoogleNotify, NOTIFY_MIN_INTERVAL_MS } from "./watch.js";
 
@@ -91,9 +103,22 @@ describe("handleAdaGoogleNotify", () => {
     certs = { getKey: vi.fn(async (kid: string) => (kid === "kid-1" ? pair.publicKey : null)) };
   });
 
-  it("collects for a valid Google OIDC token", async () => {
+  it("collects for a valid Google OIDC token, for the number that owns the mailbox only", async () => {
     expect(await call(JWT_CONFIG, { bearer: jwt(), body: push(100) })).toBe(204);
     expect(runCollect).toHaveBeenCalledTimes(1);
+    expect(runCollect).toHaveBeenCalledWith(expect.objectContaining({ owner: "393331111111" }));
+  });
+
+  it("acknowledges a push for a mailbox no number connected without collecting for anyone", async () => {
+    const stranger = JSON.stringify({
+      message: {
+        data: Buffer.from(
+          JSON.stringify({ emailAddress: "stranger@example.com", historyId: 5 }),
+        ).toString("base64"),
+      },
+    });
+    expect(await call(JWT_CONFIG, { bearer: jwt(), body: stranger })).toBe(204);
+    expect(runCollect).not.toHaveBeenCalled();
   });
 
   it("rejects invalid, expired, wrong-audience, and missing credentials", async () => {

@@ -13,12 +13,14 @@ const outcome: ResearchOutcome = {
 };
 
 const log = vi.fn();
+const OWNER = "393331111111";
+const OTHER = "393332222222";
 
 function start(
   run: (signal: AbortSignal) => Promise<ResearchOutcome | LexroomFailure>,
   deadlineMs = 10_000,
 ) {
-  const started = startResearchJob({ matterId: "m", deadlineMs, run, log });
+  const started = startResearchJob({ owner: OWNER, matterId: "m", deadlineMs, run, log });
   if (!started.ok) {
     throw new Error(started.message);
   }
@@ -48,13 +50,17 @@ describe("research jobs", () => {
     const started = start(() => research.promise);
     expect(started).toMatchObject({ ok: true, state: "running", matterId: "m" });
     expect(started.jobId).toMatch(/^rj_[0-9a-f]{12}$/u);
-    await expect(readResearchJob({ jobId: started.jobId, waitSeconds: 0 })).resolves.toMatchObject({
+    await expect(
+      readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 0 }),
+    ).resolves.toMatchObject({
       ok: true,
       state: "running",
       jobId: started.jobId,
     });
     research.resolve(outcome);
-    await expect(readResearchJob({ jobId: started.jobId, waitSeconds: 1 })).resolves.toEqual({
+    await expect(
+      readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 1 }),
+    ).resolves.toEqual({
       ...outcome,
       jobId: started.jobId,
       state: "done",
@@ -64,7 +70,7 @@ describe("research jobs", () => {
   it("waits up to waitSeconds for the result and returns early when it arrives", async () => {
     const research = deferred<ResearchOutcome>();
     const started = start(() => research.promise);
-    const waiting = readResearchJob({ jobId: started.jobId, waitSeconds: 20 });
+    const waiting = readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 20 });
     await vi.advanceTimersByTimeAsync(5000);
     research.resolve(outcome);
     await expect(waiting).resolves.toMatchObject({
@@ -83,7 +89,7 @@ describe("research jobs", () => {
         }),
       600_000,
     );
-    const waiting = readResearchJob({ jobId: started.jobId, waitSeconds: 500 });
+    const waiting = readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 500 });
     await vi.advanceTimersByTimeAsync(30_000);
     await expect(waiting).resolves.toMatchObject({ ok: true, state: "running", elapsedSec: 30 });
     expect(vi.getTimerCount()).toBe(1);
@@ -95,7 +101,9 @@ describe("research jobs", () => {
       reason: "not_connected",
       error: "Lexroom is not connected.",
     }));
-    await expect(readResearchJob({ jobId: started.jobId, waitSeconds: 1 })).resolves.toEqual({
+    await expect(
+      readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 1 }),
+    ).resolves.toEqual({
       ok: false,
       reason: "not_connected",
       error: "Lexroom is not connected.",
@@ -108,7 +116,9 @@ describe("research jobs", () => {
     const started = start(async () => {
       throw new Error("store exploded");
     });
-    await expect(readResearchJob({ jobId: started.jobId, waitSeconds: 1 })).resolves.toMatchObject({
+    await expect(
+      readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 1 }),
+    ).resolves.toMatchObject({
       ok: false,
       state: "failed",
       error: "store exploded",
@@ -123,7 +133,7 @@ describe("research jobs", () => {
         // Never settles.
       });
     }, 5000);
-    const waiting = readResearchJob({ jobId: started.jobId, waitSeconds: 30 });
+    const waiting = readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 30 });
     await vi.advanceTimersByTimeAsync(5000);
     await expect(waiting).resolves.toEqual({
       ok: false,
@@ -158,15 +168,34 @@ describe("research jobs", () => {
       600_000,
     );
     abortResearchJobs();
-    await expect(readResearchJob({ jobId: started.jobId, waitSeconds: 0 })).resolves.toMatchObject({
+    await expect(
+      readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 0 }),
+    ).resolves.toMatchObject({
       ok: false,
       state: "failed",
       error: expect.stringContaining("Ada stopped"),
     });
   });
 
+  it("lets only the number that started a research read it", async () => {
+    const research = deferred<ResearchOutcome>();
+    const started = start(() => research.promise);
+    research.resolve({ ...outcome, researchUrl: "https://app.lexroom.ai/research/r1" });
+    await expect(
+      readResearchJob({ requester: OTHER, jobId: started.jobId, waitSeconds: 1 }),
+    ).resolves.toMatchObject({ ok: false, reason: "unknown_job" });
+    expect(takeResearchLinks("", OTHER)).toEqual([]);
+    await expect(
+      readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 1 }),
+    ).resolves.toMatchObject({ ok: true, state: "done", answer: "Risposta [1]" });
+    expect(takeResearchLinks("", OTHER)).toEqual([]);
+    expect(takeResearchLinks("", OWNER)).toEqual(["https://app.lexroom.ai/research/r1"]);
+  });
+
   it("answers an unknown handle plainly", async () => {
-    await expect(readResearchJob({ jobId: "rj_nope", waitSeconds: 0 })).resolves.toMatchObject({
+    await expect(
+      readResearchJob({ requester: OWNER, jobId: "rj_nope", waitSeconds: 0 }),
+    ).resolves.toMatchObject({
       ok: false,
       reason: "unknown_job",
     });
@@ -176,6 +205,7 @@ describe("research jobs", () => {
     const open = Array.from({ length: 4 }, () => deferred<ResearchOutcome>());
     const handles = open.map((research) => start(() => research.promise));
     const refused = startResearchJob({
+      owner: OWNER,
       matterId: "m",
       deadlineMs: 10_000,
       run: async () => outcome,
@@ -183,9 +213,15 @@ describe("research jobs", () => {
     });
     expect(refused).toMatchObject({ ok: false, reason: "busy" });
     open[0]?.resolve(outcome);
-    await readResearchJob({ jobId: handles[0]?.jobId ?? "", waitSeconds: 1 });
+    await readResearchJob({ requester: OWNER, jobId: handles[0]?.jobId ?? "", waitSeconds: 1 });
     expect(
-      startResearchJob({ matterId: "m", deadlineMs: 10_000, run: async () => outcome, log }),
+      startResearchJob({
+        owner: OWNER,
+        matterId: "m",
+        deadlineMs: 10_000,
+        run: async () => outcome,
+        log,
+      }),
     ).toMatchObject({ ok: true });
     for (const research of open) {
       research.resolve(outcome);
@@ -194,10 +230,12 @@ describe("research jobs", () => {
 
   it("forgets finished jobs after an hour", async () => {
     const started = start(async () => outcome);
-    await readResearchJob({ jobId: started.jobId, waitSeconds: 1 });
+    await readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 1 });
     await vi.advanceTimersByTimeAsync(60 * 60 * 1000 + 1);
     start(async () => outcome);
-    await expect(readResearchJob({ jobId: started.jobId, waitSeconds: 0 })).resolves.toMatchObject({
+    await expect(
+      readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 0 }),
+    ).resolves.toMatchObject({
       ok: false,
       reason: "unknown_job",
     });
@@ -205,13 +243,13 @@ describe("research jobs", () => {
 
   it("logs each job's start and end without the question or the answer", async () => {
     const started = start(async () => outcome);
-    await readResearchJob({ jobId: started.jobId, waitSeconds: 1 });
+    await readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 1 });
     expect(log.mock.calls.map(([event]) => event)).toEqual(["job.started", "job.finished"]);
     expect(JSON.stringify(log.mock.calls)).not.toContain("Risposta");
   });
 
   it("makes the link ready only when a finished research is read, and logs each read", async () => {
-    takeResearchLinks("");
+    takeResearchLinks("", OWNER);
     const withLink: ResearchOutcome = {
       ...outcome,
       researchUrl: "https://app.lexroom.ai/research/r1",
@@ -219,24 +257,24 @@ describe("research jobs", () => {
     const running = deferred<ResearchOutcome>();
     const started = start(() => running.promise);
     const reads = vi.fn();
-    await readResearchJob({ jobId: started.jobId, waitSeconds: 0, log: reads });
-    expect(takeResearchLinks("")).toEqual([]);
+    await readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 0, log: reads });
+    expect(takeResearchLinks("", OWNER)).toEqual([]);
     running.resolve(withLink);
-    await readResearchJob({ jobId: started.jobId, waitSeconds: 1, log: reads });
+    await readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 1, log: reads });
     expect(reads.mock.calls).toEqual([
       ["job.read", { job: started.jobId, state: "running", researchUrl: "absent" }],
       ["job.read", { job: started.jobId, state: "done", researchUrl: "present" }],
     ]);
-    expect(takeResearchLinks("")).toEqual(["https://app.lexroom.ai/research/r1"]);
+    expect(takeResearchLinks("", OWNER)).toEqual(["https://app.lexroom.ai/research/r1"]);
 
     const failed = start(async () => ({ ok: false, error: "no" }));
-    await readResearchJob({ jobId: failed.jobId, waitSeconds: 1 });
-    expect(takeResearchLinks("")).toEqual([]);
+    await readResearchJob({ requester: OWNER, jobId: failed.jobId, waitSeconds: 1 });
+    expect(takeResearchLinks("", OWNER)).toEqual([]);
   });
 
   it("logs a read of a job that does not exist", async () => {
     const reads = vi.fn();
-    await readResearchJob({ jobId: "rj_missing", waitSeconds: 0, log: reads });
+    await readResearchJob({ requester: OWNER, jobId: "rj_missing", waitSeconds: 0, log: reads });
     expect(reads).toHaveBeenCalledWith("job.read", { state: "unknown" });
   });
 
@@ -249,7 +287,14 @@ describe("research jobs", () => {
       run: () => Promise<ResearchOutcome | LexroomFailure>,
       deliver: () => Promise<"sent" | "held">,
     ) => {
-      const started = startResearchJob({ matterId: "m", deadlineMs: 10_000, run, deliver, log });
+      const started = startResearchJob({
+        owner: OWNER,
+        matterId: "m",
+        deadlineMs: 10_000,
+        run,
+        deliver,
+        log,
+      });
       if (!started.ok) {
         throw new Error(started.message);
       }
@@ -257,12 +302,16 @@ describe("research jobs", () => {
     };
 
     it("hands the model no answer to repeat, only that the lawyer has it", async () => {
-      takeResearchLinks("");
+      takeResearchLinks("", OWNER);
       const started = startDelivered(
         async () => withLink,
         async () => "sent",
       );
-      const read = await readResearchJob({ jobId: started.jobId, waitSeconds: 1 });
+      const read = await readResearchJob({
+        requester: OWNER,
+        jobId: started.jobId,
+        waitSeconds: 1,
+      });
       expect(read).toMatchObject({
         ok: true,
         state: "delivered",
@@ -275,7 +324,7 @@ describe("research jobs", () => {
       expect(read).not.toHaveProperty("sources");
       expect(read).not.toHaveProperty("researchUrl");
       expect(JSON.stringify(read)).not.toContain("Risposta");
-      expect(takeResearchLinks("")).toEqual([]);
+      expect(takeResearchLinks("", OWNER)).toEqual([]);
     });
 
     it("already treats it as delivered while the push is still being sent", async () => {
@@ -285,7 +334,7 @@ describe("research jobs", () => {
         () => sending.promise,
       );
       await expect(
-        readResearchJob({ jobId: started.jobId, waitSeconds: 1 }),
+        readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 1 }),
       ).resolves.toMatchObject({
         state: "delivered",
         delivery: "sending",
@@ -293,7 +342,7 @@ describe("research jobs", () => {
       sending.resolve("held");
       await vi.advanceTimersByTimeAsync(0);
       await expect(
-        readResearchJob({ jobId: started.jobId, waitSeconds: 0 }),
+        readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 0 }),
       ).resolves.toMatchObject({
         state: "delivered",
         delivery: "held",
@@ -307,7 +356,7 @@ describe("research jobs", () => {
         async () => "sent",
       );
       await expect(
-        readResearchJob({ jobId: started.jobId, waitSeconds: 1 }),
+        readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 1 }),
       ).resolves.toMatchObject({
         ok: true,
         state: "delivered",
@@ -316,23 +365,23 @@ describe("research jobs", () => {
     });
 
     it("hands over the full result when the push itself broke, so nobody is left without it", async () => {
-      takeResearchLinks("");
+      takeResearchLinks("", OWNER);
       const started = startDelivered(
         async () => withLink,
         async () => {
           throw new Error("push exploded");
         },
       );
-      await readResearchJob({ jobId: started.jobId, waitSeconds: 1 });
+      await readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 1 });
       await vi.advanceTimersByTimeAsync(0);
       await expect(
-        readResearchJob({ jobId: started.jobId, waitSeconds: 0 }),
+        readResearchJob({ requester: OWNER, jobId: started.jobId, waitSeconds: 0 }),
       ).resolves.toMatchObject({
         ok: true,
         state: "done",
         answer: "Risposta [1]",
       });
-      expect(takeResearchLinks("")).toEqual(["https://app.lexroom.ai/research/r1"]);
+      expect(takeResearchLinks("", OWNER)).toEqual(["https://app.lexroom.ai/research/r1"]);
     });
 
     it("pushes a job that timed out, with the structured failure", async () => {
@@ -358,27 +407,5 @@ describe("research jobs", () => {
       abortResearchJobs();
       expect(deliver).toHaveBeenCalledTimes(1);
     });
-  });
-
-  it("lets only the number that started a job read it, and anyone read a job with no owner", async () => {
-    const started = startResearchJob({
-      matterId: "m",
-      owner: "390000000001",
-      deadlineMs: 10_000,
-      run: async () => outcome,
-      log,
-    });
-    if (!started.ok) {
-      throw new Error(started.message);
-    }
-    const read = (requester?: string) =>
-      readResearchJob({ jobId: started.jobId, requester, waitSeconds: 1 });
-    expect(await read("390000000002")).toMatchObject({ ok: false, reason: "unknown_job" });
-    expect(await read(undefined)).toMatchObject({ ok: false, reason: "unknown_job" });
-    expect(await read("390000000001")).toMatchObject({ ok: true, state: "done" });
-    const open = start(async () => outcome);
-    await expect(
-      readResearchJob({ jobId: open.jobId, requester: "390000000002", waitSeconds: 1 }),
-    ).resolves.toMatchObject({ ok: true, state: "done" });
   });
 });

@@ -19,7 +19,7 @@ import {
   type DigestDispatchRequest,
   type DigestDispatchResult,
 } from "./dispatch-digest.js";
-import { openAdaGoogleAccountFromApi } from "./google-account.js";
+import { openAdaGoogleAccountDbFromApi, openAdaGoogleAccountFromApi } from "./google-account.js";
 import {
   listInboxMessages,
   listUpcomingEvents,
@@ -27,10 +27,10 @@ import {
   watchGmailInbox,
 } from "./google-api.js";
 import { googleConnectConfigFrom, readGoogleConnectConfig } from "./google-connect.js";
-import { isConfiguredLawyerSender } from "./google-notify.js";
-import { logInboundSkip } from "./inbound-log.js";
+import { maskNumber, logInboundSkip } from "./inbound-log.js";
 import { abortResearchJobs } from "./lexroom-jobs.js";
-import { openAdaMemoryFromApi, type MemoryStore } from "./memory.js";
+import { openAdaMemoryFromApi, openAdaMemoryIfExistsFromApi, type MemoryStore } from "./memory.js";
+import { lawyerOwner, toOwner } from "./owner.js";
 import { buildDailyTimelineRecord, buildOnePagerRecord } from "./reconcile.js";
 import { nextSlotMs, previousSlotMs } from "./schedule.js";
 import {
@@ -110,12 +110,12 @@ function dayKey(now: Date, timeZone: string): string {
   }).format(now);
 }
 
-async function loadGoogleReads(api: OpenClawPluginApi, now: Date) {
+async function loadGoogleReads(api: OpenClawPluginApi, owner: string, now: Date) {
   const config = readGoogleConnectConfig(googleConnectConfigFrom(api.pluginConfig));
   if (!config.ok) {
     return { ok: false as const, error: config.error };
   }
-  const store = await openAdaGoogleAccountFromApi(api);
+  const store = await openAdaGoogleAccountFromApi(api, owner);
   const account = await store.readAccount();
   if (!account) {
     return { ok: false as const, error: "not_connected" };
@@ -165,6 +165,9 @@ export type AdaCollectOutcome = {
 
 export type AdaCollectPassParams = {
   api: OpenClawPluginApi;
+  /** The WhatsApp number this pass is for: its Google account, its memory, its digest. */
+  owner: string;
+  /** That number's own memory store. */
   memory: MemoryStore;
   now: Date;
   forceMorning: boolean;
@@ -179,6 +182,8 @@ export type AdaCollectPassParams = {
 export type AdaCollectLogEvent = {
   event: "ada.collect";
   at: string;
+  /** The number the pass was for, masked. */
+  owner: string;
   trigger: AdaCollectTrigger;
   /** `collected` advances lastCollectAt; `skipped` means Google was unavailable; `error` threw. */
   result: "collected" | "skipped" | "error";
@@ -218,6 +223,7 @@ export function logAdaCollectEvent(
 export function runAdaCollectPass(params: AdaCollectPassParams): Promise<AdaCollectOutcome> {
   return runCollectExclusive(() => runLoggedCollectPass(params), {
     coalesce: !params.forceMorning,
+    key: params.owner,
   });
 }
 
@@ -226,6 +232,7 @@ async function runLoggedCollectPass(params: AdaCollectPassParams): Promise<AdaCo
   const base = {
     event: "ada.collect" as const,
     at: params.now.toISOString(),
+    owner: maskNumber(params.owner),
     trigger: params.trigger,
     forceMorning: params.forceMorning,
   };
@@ -294,14 +301,14 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
     }
   }
 
-  const google = await loadGoogleReads(params.api, params.now);
+  const google = await loadGoogleReads(params.api, params.owner, params.now);
   if (!google.ok) {
     if (params.forceMorning && !params.catchUp && google.error === "not_connected") {
       const day = dayKey(params.now, DEFAULT_TZ);
       const dispatch = await dispatchSafely(dispatchDigestTurn, {
+        owner: params.owner,
         plan: { deliver: false, reason: "nothing_cleared_the_bar" },
-        sessionKey: `hook:vera:connect:${day}`,
-        idempotencyKey: `vera-connect:${day}`,
+        idempotencyKey: `connect:${params.owner}:${day}`,
         connectOnly: true,
       });
       return {
@@ -462,7 +469,8 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
     if (needsTemplate && template) {
       const send =
         params.sendDigestReadyNotice ??
-        ((value: KapsoTemplate) => sendDigestReadyNotice({ api: params.api, template: value }));
+        ((value: KapsoTemplate) =>
+          sendDigestReadyNotice({ api: params.api, template: value, to: `+${params.owner}` }));
       try {
         await send(template);
       } catch (error) {
@@ -488,9 +496,9 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
     ? decision.plan.deadlines?.map((line) => line.id).join(",")
     : undefined;
   const dispatch = await dispatchSafely(dispatchDigestTurn, {
+    owner: params.owner,
     plan: decision.plan,
-    sessionKey: `hook:vera:digest:${day}`,
-    idempotencyKey: `vera-digest:${day}:${itemIds}${deadlineIds ? `:${deadlineIds}` : ""}`,
+    idempotencyKey: `digest:${params.owner}:${day}:${itemIds}${deadlineIds ? `:${deadlineIds}` : ""}`,
   });
   if (!dispatch.ok) {
     // An exhausted plan reaching here was re-armed by a morning slot or lawyer message.
@@ -692,11 +700,13 @@ export function registerAdaService(deps: AdaServiceDeps): void {
     apiVersion: 2,
     async start(ctx) {
       stopped = false;
-      const tick = async (forceMorning: boolean, catchUp = false) => {
+      /** One number's pass: its Google account, its memory, its digest. */
+      const tickOwner = async (owner: string, forceMorning: boolean, catchUp = false) => {
         try {
-          const memory = await openAdaMemoryFromApi(api);
+          const memory = await openAdaMemoryFromApi(api, owner);
           await runAdaCollectPass({
             api,
+            owner,
             memory,
             now: now(),
             forceMorning,
@@ -711,15 +721,30 @@ export function registerAdaService(deps: AdaServiceDeps): void {
           }
         } catch (error) {
           api.logger.error(
-            `ada service tick failed: ${error instanceof Error ? error.message : "unknown"}`,
+            `ada service tick failed owner=${maskNumber(owner)}: ${error instanceof Error ? error.message : "unknown"}`,
           );
+        }
+      };
+      /** Every number with a Google connection, and the lawyer, who is asked to connect. */
+      const tick = async (forceMorning: boolean, catchUp = false) => {
+        let owners: string[] = [];
+        try {
+          owners = await listCollectOwners(api);
+        } catch (error) {
+          api.logger.error(
+            `ada service could not list accounts: ${error instanceof Error ? error.message : "unknown"}`,
+          );
+        }
+        for (const owner of owners) {
+          await tickOwner(owner, forceMorning, catchUp);
         }
       };
 
       const resolveTimeZone = async (): Promise<string> => {
         try {
-          const memory = await openAdaMemoryFromApi(api);
-          const timeZone = (await memory.readProfile())?.timezone ?? DEFAULT_TZ;
+          const lawyer = lawyerOwner(api.config);
+          const memory = lawyer ? await openAdaMemoryIfExistsFromApi(api, lawyer) : null;
+          const timeZone = (await memory?.readProfile())?.timezone ?? DEFAULT_TZ;
           // An unknown zone name throws here instead of inside the slot math.
           new Intl.DateTimeFormat("en-GB", { timeZone }).format(0);
           return timeZone;
@@ -758,21 +783,28 @@ export function registerAdaService(deps: AdaServiceDeps): void {
       // A restart can straddle the 07:40 slot. When nothing was collected since the
       // latest slot, run the morning pass once shortly after boot.
       const armCatchUp = async (): Promise<void> => {
-        const memory = await openAdaMemoryFromApi(api);
-        const { lastCollectAtMs } = await memory.readWake();
-        if (lastCollectAtMs === null) {
-          return;
-        }
         const clock = now().getTime();
         const slotMs = previousSlotMs(clock, await resolveTimeZone());
-        if (lastCollectAtMs >= slotMs) {
+        const stale: string[] = [];
+        for (const owner of await listCollectOwners(api)) {
+          const memory = await openAdaMemoryIfExistsFromApi(api, owner);
+          const lastCollectAtMs = memory ? (await memory.readWake()).lastCollectAtMs : null;
+          if (lastCollectAtMs !== null && lastCollectAtMs < slotMs) {
+            stale.push(owner);
+          }
+        }
+        if (stale.length === 0) {
           return;
         }
         scheduleOnce({
           scheduler: ctx.scheduler,
           id: "ada-catch-up",
           atMs: clock + CATCH_UP_DELAY_MS,
-          run: () => tick(true, true),
+          run: async () => {
+            for (const owner of stale) {
+              await tickOwner(owner, true, true);
+            }
+          },
         });
       };
 
@@ -810,12 +842,46 @@ export function registerAdaService(deps: AdaServiceDeps): void {
   });
 }
 
-export async function recordLawyerInbound(params: {
+/** Every number that has a Google connection, plus the lawyer; the passes the service runs. */
+export async function listCollectOwners(api: OpenClawPluginApi): Promise<string[]> {
+  const owners = new Set(await (await openAdaGoogleAccountDbFromApi(api)).listOwners());
+  const lawyer = lawyerOwner(api.config);
+  if (lawyer) {
+    owners.add(lawyer);
+  }
+  return [...owners].toSorted();
+}
+
+/**
+ * A number's digest window opens when it writes. A connection made by a link counts as a message:
+ * the person had just been chatting with Ada to get the link, and the confirmation is sent in
+ * that window.
+ */
+export async function openWakeWindow(
+  api: OpenClawPluginApi,
+  owner: string,
+  atMs = Date.now(),
+): Promise<void> {
+  try {
+    await (await openAdaMemoryFromApi(api, owner)).writeWake({ lastLawyerInboundAtMs: atMs });
+  } catch (error) {
+    api.logger.error(
+      `ada could not open the digest window owner=${maskNumber(owner)}: ${error instanceof Error ? error.message : "unknown"}`,
+    );
+  }
+}
+
+/**
+ * Records that a number wrote, which opens its paid WhatsApp window and releases a digest held
+ * for that number, and only that number's. A number with no memory yet has no digest to release,
+ * so nothing is created for it: its window starts when it first connects an account.
+ */
+export async function recordSenderInbound(params: {
   api: OpenClawPluginApi;
   atMs: number;
-  /** Only Kapso WhatsApp from the lawyer should open the Cloud API window. */
+  /** Only Kapso WhatsApp messages open the Cloud API window. */
   channelId?: string;
-  /** Sender ids from the inbound event; one must be the configured lawyer number. */
+  /** Sender ids from the inbound event; the first that is a phone number is the owner. */
   senders: unknown[];
 }): Promise<void> {
   if (params.channelId && params.channelId !== "kapso-whatsapp") {
@@ -826,17 +892,24 @@ export async function recordLawyerInbound(params: {
     });
     return;
   }
-  // Anyone may chat with the bot, but only the configured lawyer's message opens the paid
-  // WhatsApp window and releases a held digest. Other senders are normal traffic, not a warning.
-  if (!isConfiguredLawyerSender(params.api.config, ...params.senders)) {
+  const owner = params.senders.map(toOwner).find((value) => value !== null);
+  if (!owner) {
     logInboundSkip(params.api.logger, {
       stage: "wake_window",
-      reason: "not_the_configured_lawyer",
+      reason: "sender_not_a_phone_number",
       sender: params.senders,
     });
     return;
   }
-  const memory = await openAdaMemoryFromApi(params.api);
+  const memory = await openAdaMemoryIfExistsFromApi(params.api, owner);
+  if (!memory) {
+    logInboundSkip(params.api.logger, {
+      stage: "wake_window",
+      reason: "no_digest_for_sender",
+      sender: owner,
+    });
+    return;
+  }
   await memory.writeWake({ lastLawyerInboundAtMs: params.atMs });
   // Read the held plan under the collect lock: a pass that is mid-hold has either written
   // its plan before this read or is not holding one, so the release is never stranded.
@@ -848,6 +921,7 @@ export async function recordLawyerInbound(params: {
     // Re-collect so a stale held plan cannot fire after the calendar moved on.
     await runLoggedCollectPass({
       api: params.api,
+      owner,
       memory,
       now: new Date(params.atMs),
       forceMorning: true,

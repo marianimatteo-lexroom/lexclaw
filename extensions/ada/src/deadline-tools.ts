@@ -11,10 +11,10 @@ import type { LexroomConfig } from "./lexroom-client.js";
 import type { LexroomConnectConfig } from "./lexroom-connect.js";
 import { runDeadlineResearch } from "./lexroom-tools.js";
 import type { DeadlineItem, DeadlineStatus } from "./memory-contract.js";
-import { openAdaMemoryFromApi, type MemoryStore } from "./memory.js";
+import { openAdaMemoryIfExistsFromApi, type MemoryStore } from "./memory.js";
 import { markResearchLinkReady } from "./research-link-outbound.js";
 
-type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger">;
+type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger" | "config">;
 
 /** The plugin config slice these tools read: Lexroom access plus the intake flag. */
 export type DeadlineToolConfig = LexroomConfig &
@@ -38,15 +38,17 @@ const DISABLED: ToolFailure = {
 /** Test seams: a ready memory store and the fetch Lexroom research uses. */
 export type DeadlineToolDeps = { memory?: MemoryStore; fetchImpl?: typeof fetch };
 
+/** The owner's own memory; null when they have none, so there is nothing to list or answer. */
 async function openMemory(
   api: StoreApi,
+  owner: string,
   deps: DeadlineToolDeps,
-): Promise<MemoryStore | ToolFailure> {
+): Promise<MemoryStore | null | ToolFailure> {
   if (deps.memory) {
     return deps.memory;
   }
   try {
-    return await openAdaMemoryFromApi(api);
+    return await openAdaMemoryIfExistsFromApi(api, owner);
   } catch (error) {
     api.logger.error(
       `ada memory store failed: ${error instanceof Error ? error.message : "unknown"}`,
@@ -55,8 +57,8 @@ async function openMemory(
   }
 }
 
-function isFailure(value: MemoryStore | ToolFailure): value is ToolFailure {
-  return "ok" in value;
+function isFailure(value: MemoryStore | null | ToolFailure): value is ToolFailure {
+  return value !== null && "ok" in value;
 }
 
 function view(item: DeadlineItem, label: string, config: DeadlineIntakeConfig, nowMs: number) {
@@ -98,6 +100,7 @@ async function labelFor(memory: MemoryStore, matterId: string): Promise<string> 
 export async function executeAdaDeadlineList(
   config: DeadlineToolConfig,
   api: StoreApi,
+  owner: string,
   now = new Date(),
   deps: DeadlineToolDeps = {},
 ) {
@@ -105,9 +108,12 @@ export async function executeAdaDeadlineList(
   if (!settings.enabled) {
     return DISABLED;
   }
-  const memory = await openMemory(api, deps);
+  const memory = await openMemory(api, owner, deps);
   if (isFailure(memory)) {
     return memory;
+  }
+  if (!memory) {
+    return { ok: true as const, items: [] };
   }
   const items = (await memory.listDeadlines()).filter(
     (item) =>
@@ -131,7 +137,7 @@ function resolveRef(items: readonly DeadlineItem[], ref: string): DeadlineItem |
 }
 
 /**
- * The lawyer's reply to a digest line. "research" confirms tracking and runs Lexroom
+ * The user's reply to a digest line. "research" confirms tracking and runs Lexroom
  * research; "track" confirms tracking only; "dismiss" and "done" close the item.
  * Nothing here sends email or touches the calendar.
  */
@@ -139,6 +145,7 @@ export async function executeAdaDeadlineReply(
   params: { ref: string; action: DeadlineReplyAction },
   config: DeadlineToolConfig,
   api: StoreApi,
+  owner: string,
   signal?: AbortSignal,
   now = new Date(),
   deps: DeadlineToolDeps = {},
@@ -147,13 +154,13 @@ export async function executeAdaDeadlineReply(
   if (!settings.enabled) {
     return DISABLED;
   }
-  const memory = await openMemory(api, deps);
+  const memory = await openMemory(api, owner, deps);
   if (isFailure(memory)) {
     return memory;
   }
   const nowMs = now.getTime();
-  const found = resolveRef(await memory.listDeadlines(), params.ref);
-  if (!found) {
+  const found = resolveRef(memory ? await memory.listDeadlines() : [], params.ref);
+  if (!found || !memory) {
     return {
       ok: false as const,
       reason: "not_found" as const,
@@ -216,6 +223,7 @@ export async function executeAdaDeadlineReply(
 
   const profile = await memory.readProfile();
   const research = await runDeadlineResearch({
+    owner,
     item: tracked,
     matterLabel: label,
     language: profile?.language ?? null,
@@ -247,7 +255,7 @@ export async function executeAdaDeadlineReply(
     nowMs,
   );
   if (research.researchUrl) {
-    markResearchLinkReady(research.researchUrl);
+    markResearchLinkReady(research.researchUrl, owner);
   }
   return {
     ok: true as const,

@@ -9,13 +9,14 @@ import type {
   executeSqliteQuerySync as ExecuteSqliteQuerySync,
   executeSqliteQueryTakeFirstSync as ExecuteSqliteQueryTakeFirstSync,
   getNodeSqliteKysely as GetNodeSqliteKysely,
+  iterateSqliteQuerySync as IterateSqliteQuerySync,
   openNodeSqliteDatabase as OpenNodeSqliteDatabase,
   runSqliteImmediateTransactionSync as RunSqliteImmediateTransactionSync,
   SqliteWorkerBackend,
   SqliteWorkerCommand,
 } from "openclaw/plugin-sdk/sqlite-worker-runtime";
 import {
-  ADA_GOOGLE_ACCOUNT_ID,
+  LEGACY_GOOGLE_ACCOUNT_ID,
   type GoogleAccountRecord,
   type AdaGoogleOperations,
 } from "./google-account-contract.js";
@@ -73,6 +74,10 @@ const executeSqliteQueryTakeFirstSync = sdkFunction<typeof ExecuteSqliteQueryTak
   sqliteRuntime,
   "executeSqliteQueryTakeFirstSync",
 );
+const iterateSqliteQuerySync = sdkFunction<typeof IterateSqliteQuerySync>(
+  sqliteRuntime,
+  "iterateSqliteQuerySync",
+);
 const getNodeSqliteKysely = sdkFunction<typeof GetNodeSqliteKysely>(
   sqliteRuntime,
   "getNodeSqliteKysely",
@@ -108,9 +113,11 @@ CREATE TABLE IF NOT EXISTS vera_google_account (
 `;
 
 const SCOPES_COLUMN_SQL = "ALTER TABLE vera_google_account ADD COLUMN scopes TEXT";
+const PENDING_OWNER_COLUMN_SQL =
+  "ALTER TABLE vera_google_pending ADD COLUMN owner TEXT NOT NULL DEFAULT ''";
 
 type AdaGoogleDatabase = {
-  vera_google_pending: { nonce: string; expires_at_ms: number };
+  vera_google_pending: { nonce: string; owner: string; expires_at_ms: number };
   vera_google_account: {
     id: string;
     email: string;
@@ -135,6 +142,14 @@ function chmodIfExists(file: string): void {
     if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
       throw error;
     }
+  }
+}
+
+const OWNER = /^\d{7,15}$/u;
+
+function assertOwner(owner: string): void {
+  if (!OWNER.test(owner)) {
+    throw new Error("Ada Google account owner is invalid");
   }
 }
 
@@ -178,35 +193,35 @@ class AdaGoogleDatabaseStore {
     runSqliteImmediateTransactionSync(
       this.db,
       () => {
-        const row = executeSqliteQueryTakeFirstSync(
-          this.db,
-          this.query
-            .selectFrom("vera_google_account")
-            .select(["refresh_token", "access_token"])
-            .where("id", "=", ADA_GOOGLE_ACCOUNT_ID),
+        const rows = Array.from(
+          iterateSqliteQuerySync(
+            this.db,
+            this.query
+              .selectFrom("vera_google_account")
+              .select(["id", "refresh_token", "access_token"]),
+          ),
         );
-        if (!row) {
-          return;
+        for (const row of rows) {
+          const refresh = this.cipher.open(row.refresh_token, REFRESH_TOKEN_CONTEXT);
+          const access =
+            row.access_token === null
+              ? null
+              : this.cipher.open(row.access_token, ACCESS_TOKEN_CONTEXT);
+          if (!refresh.legacy && !access?.legacy) {
+            continue;
+          }
+          executeSqliteQuerySync(
+            this.db,
+            this.query
+              .updateTable("vera_google_account")
+              .set({
+                refresh_token: this.cipher.seal(refresh.value, REFRESH_TOKEN_CONTEXT),
+                access_token:
+                  access === null ? null : this.cipher.seal(access.value, ACCESS_TOKEN_CONTEXT),
+              })
+              .where("id", "=", row.id),
+          );
         }
-        const refresh = this.cipher.open(row.refresh_token, REFRESH_TOKEN_CONTEXT);
-        const access =
-          row.access_token === null
-            ? null
-            : this.cipher.open(row.access_token, ACCESS_TOKEN_CONTEXT);
-        if (!refresh.legacy && !access?.legacy) {
-          return;
-        }
-        executeSqliteQuerySync(
-          this.db,
-          this.query
-            .updateTable("vera_google_account")
-            .set({
-              refresh_token: this.cipher.seal(refresh.value, REFRESH_TOKEN_CONTEXT),
-              access_token:
-                access === null ? null : this.cipher.seal(access.value, ACCESS_TOKEN_CONTEXT),
-            })
-            .where("id", "=", ADA_GOOGLE_ACCOUNT_ID),
-        );
       },
       {
         busyTimeoutMs: 5000,
@@ -216,7 +231,66 @@ class AdaGoogleDatabaseStore {
     );
   }
 
-  replacePending(nonce: string, expiresAtMs: number): undefined {
+  /**
+   * Accounts used to be one row for the whole install, stored under a fixed id. Moves it to the
+   * configured lawyer's number so the current owner keeps working without reconnecting. A row
+   * the number already has wins, and the old one is dropped so it cannot belong to anyone else.
+   */
+  adoptLegacy(owner: string): boolean {
+    assertOwner(owner);
+    return runSqliteImmediateTransactionSync(
+      this.db,
+      () => {
+        const legacy = executeSqliteQueryTakeFirstSync(
+          this.db,
+          this.query
+            .selectFrom("vera_google_account")
+            .select("id")
+            .where("id", "=", LEGACY_GOOGLE_ACCOUNT_ID),
+        );
+        if (!legacy) {
+          return false;
+        }
+        const existing = executeSqliteQueryTakeFirstSync(
+          this.db,
+          this.query.selectFrom("vera_google_account").select("id").where("id", "=", owner),
+        );
+        if (existing) {
+          executeSqliteQuerySync(
+            this.db,
+            this.query.deleteFrom("vera_google_account").where("id", "=", LEGACY_GOOGLE_ACCOUNT_ID),
+          );
+          return false;
+        }
+        executeSqliteQuerySync(
+          this.db,
+          this.query
+            .updateTable("vera_google_account")
+            .set({ id: owner })
+            .where("id", "=", LEGACY_GOOGLE_ACCOUNT_ID),
+        );
+        return true;
+      },
+      {
+        busyTimeoutMs: 5000,
+        databaseLabel: "ada google account",
+        operationLabel: "ada.google.account.adopt-legacy",
+      },
+    );
+  }
+
+  listOwners(): string[] {
+    return Array.from(
+      iterateSqliteQuerySync(
+        this.db,
+        this.query.selectFrom("vera_google_account").select("id").orderBy("id"),
+      ),
+      (row) => row.id,
+    ).filter((id) => OWNER.test(id));
+  }
+
+  replacePending(owner: string, nonce: string, expiresAtMs: number): undefined {
+    assertOwner(owner);
     assertNonce(nonce);
     if (!Number.isFinite(expiresAtMs)) {
       throw new Error("Ada Google connect expiry is invalid");
@@ -226,12 +300,13 @@ class AdaGoogleDatabaseStore {
       () => {
         executeSqliteQuerySync(
           this.db,
-          this.query.deleteFrom("vera_google_pending").where("expires_at_ms", ">", 0),
+          this.query.deleteFrom("vera_google_pending").where("owner", "=", owner),
         );
         executeSqliteQuerySync(
           this.db,
           this.query.insertInto("vera_google_pending").values({
             nonce,
+            owner,
             expires_at_ms: expiresAtMs,
           }),
         );
@@ -245,7 +320,8 @@ class AdaGoogleDatabaseStore {
     return undefined;
   }
 
-  consumePending(nonce: string, nowMs: number): boolean {
+  consumePending(owner: string, nonce: string, nowMs: number): boolean {
+    assertOwner(owner);
     assertNonce(nonce);
     return runSqliteImmediateTransactionSync(
       this.db,
@@ -254,10 +330,10 @@ class AdaGoogleDatabaseStore {
           this.db,
           this.query
             .selectFrom("vera_google_pending")
-            .select(["nonce", "expires_at_ms"])
+            .select(["nonce", "owner", "expires_at_ms"])
             .where("nonce", "=", nonce),
         );
-        if (!row) {
+        if (!row || row.owner !== owner) {
           return false;
         }
         executeSqliteQuerySync(
@@ -274,19 +350,20 @@ class AdaGoogleDatabaseStore {
     );
   }
 
-  upsertAccount(account: GoogleAccountRecord): undefined {
+  upsertAccount(owner: string, account: GoogleAccountRecord): undefined {
+    assertOwner(owner);
     assertAccount(account);
     runSqliteImmediateTransactionSync(
       this.db,
       () => {
         executeSqliteQuerySync(
           this.db,
-          this.query.deleteFrom("vera_google_account").where("id", "=", ADA_GOOGLE_ACCOUNT_ID),
+          this.query.deleteFrom("vera_google_account").where("id", "=", owner),
         );
         executeSqliteQuerySync(
           this.db,
           this.query.insertInto("vera_google_account").values({
-            id: ADA_GOOGLE_ACCOUNT_ID,
+            id: owner,
             email: account.email,
             refresh_token: this.cipher.seal(account.refreshToken, REFRESH_TOKEN_CONTEXT),
             access_token:
@@ -308,7 +385,8 @@ class AdaGoogleDatabaseStore {
     return undefined;
   }
 
-  readAccount(): GoogleAccountRecord | null {
+  readAccount(owner: string): GoogleAccountRecord | null {
+    assertOwner(owner);
     const row = executeSqliteQueryTakeFirstSync(
       this.db,
       this.query
@@ -321,7 +399,7 @@ class AdaGoogleDatabaseStore {
           "connected_at_ms",
           "scopes",
         ])
-        .where("id", "=", ADA_GOOGLE_ACCOUNT_ID),
+        .where("id", "=", owner),
     );
     if (!row) {
       return null;
@@ -339,10 +417,11 @@ class AdaGoogleDatabaseStore {
     };
   }
 
-  clearAccount(): undefined {
+  clearAccount(owner: string): undefined {
+    assertOwner(owner);
     executeSqliteQuerySync(
       this.db,
-      this.query.deleteFrom("vera_google_account").where("id", "=", ADA_GOOGLE_ACCOUNT_ID),
+      this.query.deleteFrom("vera_google_account").where("id", "=", owner),
     );
     return undefined;
   }
@@ -382,6 +461,14 @@ function openAdaGoogleDatabase(dbPath: string): AdaGoogleDatabaseStore {
     if (!columns.some((column) => column.name === "scopes")) {
       db.exec(SCOPES_COLUMN_SQL);
     }
+    const pendingColumns = db
+      .prepare("SELECT name FROM pragma_table_info('vera_google_pending')")
+      .all() as Array<{ name: string }>;
+    if (!pendingColumns.some((column) => column.name === "owner")) {
+      db.exec(PENDING_OWNER_COLUMN_SQL);
+    }
+    // A link issued before links named a number cannot be bound to anyone, so it is dropped.
+    db.exec("DELETE FROM vera_google_pending WHERE owner = ''");
     for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`]) {
       chmodIfExists(file);
     }
@@ -407,15 +494,27 @@ export function createSqliteWorkerBackend(
     execute(command: SqliteWorkerCommand<AdaGoogleOperations>) {
       switch (command.type) {
         case "replacePending":
-          return database.replacePending(command.input.nonce, command.input.expiresAtMs);
+          return database.replacePending(
+            command.input.owner,
+            command.input.nonce,
+            command.input.expiresAtMs,
+          );
         case "consumePending":
-          return database.consumePending(command.input.nonce, command.input.nowMs);
+          return database.consumePending(
+            command.input.owner,
+            command.input.nonce,
+            command.input.nowMs,
+          );
         case "upsertAccount":
-          return database.upsertAccount(command.input);
+          return database.upsertAccount(command.input.owner, command.input.account);
         case "readAccount":
-          return database.readAccount();
+          return database.readAccount(command.input.owner);
         case "clearAccount":
-          return database.clearAccount();
+          return database.clearAccount(command.input.owner);
+        case "listOwners":
+          return database.listOwners();
+        case "adoptLegacy":
+          return database.adoptLegacy(command.input.owner);
       }
       throw new Error("Unexpected Ada Google command");
     },

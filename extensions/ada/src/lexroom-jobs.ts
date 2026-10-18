@@ -29,8 +29,8 @@ type Settled = ResearchOutcome | LexroomFailure;
 type Job = {
   id: string;
   matterId: string;
-  /** The WhatsApp number that started it; only that number may read it. Unset when unknown. */
-  owner?: string;
+  /** The WhatsApp number that started it; only that number may read it. */
+  owner: string;
   startedAtMs: number;
   finishedAtMs?: number;
   controller: AbortController;
@@ -105,8 +105,8 @@ export function abortResearchJobs(): void {
  */
 export function startResearchJob(params: {
   matterId: string;
-  /** The WhatsApp number that asked, when known. */
-  owner?: string;
+  /** The WhatsApp number that asked; only that number can read the job. */
+  owner: string;
   deadlineMs: number;
   run: (signal: AbortSignal) => Promise<Settled>;
   log: LexroomLog;
@@ -130,7 +130,7 @@ export function startResearchJob(params: {
   const job: Job = {
     id,
     matterId: params.matterId,
-    ...(params.owner ? { owner: params.owner } : {}),
+    owner: params.owner,
     startedAtMs,
     controller,
     settled: new Promise<void>((resolve) => {
@@ -226,15 +226,15 @@ function snapshot(job: Job, nowMs: number) {
  */
 export async function readResearchJob(params: {
   jobId: string;
-  /** The WhatsApp number reading, when known; a job with an owner is read by its owner only. */
-  requester?: string;
+  /** The WhatsApp number reading; a job is read by the number that started it, and by no other. */
+  requester: string;
   waitSeconds?: number;
   now?: () => number;
   log?: LexroomLog;
 }) {
   const now = params.now ?? Date.now;
   const found = jobs.get(params.jobId.trim());
-  const job = found && (!found.owner || found.owner === params.requester) ? found : undefined;
+  const job = found && found.owner === params.requester ? found : undefined;
   if (!job) {
     params.log?.("job.read", { state: "unknown" });
     return failure(
@@ -258,7 +258,7 @@ export async function readResearchJob(params: {
   const url = "researchUrl" in view ? view.researchUrl : undefined;
   if (url) {
     // The model now holds this research, so the next final reply must end with its link.
-    markResearchLinkReady(url, now());
+    markResearchLinkReady(url, job.owner, now());
   }
   params.log?.("job.read", {
     job: job.id,
