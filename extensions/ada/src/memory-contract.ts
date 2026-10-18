@@ -225,6 +225,9 @@ export type DeadlineUpsertResult = {
   updated: DeadlineItem[];
 };
 
+export type EmbeddingCandidate = { id: string; text: string };
+export type EmbeddingItem = EmbeddingCandidate & { vector: number[] };
+
 type Operation<Input, Output> = { input: Input; output: Output };
 
 export type AdaMemoryOperations = {
@@ -234,7 +237,15 @@ export type AdaMemoryOperations = {
     { record: MemoryRecord; reason: RevisionReason; atMs: number },
     undefined
   >;
-  searchRecords: Operation<{ query: string; matterId: string }, MemoryRecord[]>;
+  /** With a query vector the keyword match is blended with similarity to vectors of `model`. */
+  searchRecords: Operation<
+    { query: string; matterId: string; queryVector?: number[]; model?: string },
+    MemoryRecord[]
+  >;
+  /** Current notes with no vector of `model` yet, newest first. */
+  listUnembedded: Operation<{ model: string; limit: number }, EmbeddingCandidate[]>;
+  /** Stores vectors for notes whose text still equals what was embedded; returns how many. */
+  storeEmbeddings: Operation<{ model: string; items: EmbeddingItem[] }, number>;
   listRecords: Operation<{ folder: MemoryFolder; matterId: string }, MemoryRecord[]>;
   getRecord: Operation<{ id: string; matterId: string }, MemoryRecord | null>;
   history: Operation<{ id: string; matterId: string }, MemoryRevision[]>;

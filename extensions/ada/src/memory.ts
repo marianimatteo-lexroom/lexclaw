@@ -10,6 +10,8 @@ import type {
   DeadlineItem,
   DeadlinePatch,
   DeadlineUpsertResult,
+  EmbeddingCandidate,
+  EmbeddingItem,
   GmailSnapshotRow,
   LawyerProfile,
   MemoryFolder,
@@ -20,6 +22,7 @@ import type {
   AdaMemoryOperations,
   WakeState,
 } from "./memory-contract.js";
+import { voyageEmbedder, withEmbeddings, type VoyageEmbedder } from "./memory-voyage.js";
 import { isOwner, lawyerOwner } from "./owner.js";
 import { adaStatePath } from "./state-paths.js";
 
@@ -27,7 +30,13 @@ export type MemoryStore = {
   upsertProfile(profile: LawyerProfile): Promise<void>;
   readProfile(): Promise<LawyerProfile | null>;
   upsertRecord(record: MemoryRecord, reason: RevisionReason, atMs: number): Promise<void>;
-  searchRecords(query: string, matterId: string): Promise<MemoryRecord[]>;
+  searchRecords(
+    query: string,
+    matterId: string,
+    semantic?: { queryVector: number[]; model: string },
+  ): Promise<MemoryRecord[]>;
+  listUnembedded(model: string, limit: number): Promise<EmbeddingCandidate[]>;
+  storeEmbeddings(model: string, items: EmbeddingItem[]): Promise<number>;
   listRecords(folder: MemoryFolder, matterId: string): Promise<MemoryRecord[]>;
   getRecord(id: string, matterId: string): Promise<MemoryRecord | null>;
   history(id: string, matterId: string): Promise<MemoryRevision[]>;
@@ -74,8 +83,17 @@ export function wrapMemoryWorker(worker: SqliteWorkerStore<AdaMemoryOperations>)
     upsertRecord(record, reason, atMs) {
       return worker.execute({ type: "upsertRecord", input: { record, reason, atMs } });
     },
-    searchRecords(query, matterId) {
-      return worker.execute({ type: "searchRecords", input: { query, matterId } });
+    searchRecords(query, matterId, semantic) {
+      return worker.execute({
+        type: "searchRecords",
+        input: { query, matterId, queryVector: semantic?.queryVector, model: semantic?.model },
+      });
+    },
+    listUnembedded(model, limit) {
+      return worker.execute({ type: "listUnembedded", input: { model, limit } });
+    },
+    storeEmbeddings(model, items) {
+      return worker.execute({ type: "storeEmbeddings", input: { model, items } });
     },
     listRecords(folder, matterId) {
       return worker.execute({ type: "listRecords", input: { folder, matterId } });
@@ -167,6 +185,8 @@ type MemoryLocation = {
   log?: (message: string) => void;
   /** How a database file becomes a store; the SQLite worker unless a test supplies one. */
   open?: (databasePath: string) => Promise<MemoryStore>;
+  /** Where note embeddings come from; Voyage unless a test supplies one. */
+  embedder?: VoyageEmbedder;
 };
 
 function createStore(location: MemoryLocation, databasePath: string): Promise<MemoryStore> {
@@ -254,7 +274,11 @@ export function openAdaMemory(
     if (params.owner === params.lawyer) {
       await adoptLegacyMemory(params, params.owner);
     }
-    return await createStore(params, databasePath);
+    return withEmbeddings(await createStore(params, databasePath), {
+      owner: params.owner,
+      embedder: params.embedder ?? voyageEmbedder,
+      log: params.log,
+    });
   })();
   stores.set(databasePath, opening);
   opening.catch(() => {
