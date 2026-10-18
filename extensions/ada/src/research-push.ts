@@ -222,10 +222,10 @@ function connectOffer(result: ResearchOutcome | LexroomFailure): ConnectOfferKin
 
 export async function researchMessage(
   result: ResearchOutcome | LexroomFailure,
-  deps: Pick<PushDeps, "readProfileLanguage">,
+  deps: Pick<PushDeps, "readProfileLanguage"> & Partial<Pick<PushDeps, "recipient">>,
 ): Promise<string> {
   if (result.ok) {
-    const language = await resolveLanguage(result.answer, deps.readProfileLanguage);
+    const language = await resolveLanguage(result.answer, deps.readProfileLanguage, deps.recipient);
     return fitResearchText({
       answer: result.answer,
       sources: result.sources.length
@@ -234,7 +234,7 @@ export async function researchMessage(
       link: result.researchUrl ? researchLinkLine(language, result.researchUrl) : "",
     });
   }
-  const language = await resolveLanguage("", deps.readProfileLanguage);
+  const language = await resolveLanguage("", deps.readProfileLanguage, deps.recipient);
   const strings = STRINGS[language];
   const reason =
     result.reason === "timeout"
@@ -318,14 +318,14 @@ async function sendText(text: string, deps: PushDeps): Promise<SendResult> {
 /** Builds the research PDF, or returns undefined and logs a warning. Never throws. */
 async function prepareResearchPdf(
   params: { jobId: string; query: string; result: ResearchOutcome | LexroomFailure },
-  deps: Pick<PushDeps, "readProfileLanguage" | "log" | "sendDocument">,
+  deps: Pick<PushDeps, "readProfileLanguage" | "recipient" | "log" | "sendDocument">,
 ): Promise<ResearchPdf | undefined> {
   const { result } = params;
   if (!deps.sendDocument || !result.ok || !result.answer.trim()) {
     return undefined;
   }
   try {
-    const language = await resolveLanguage(result.answer, deps.readProfileLanguage);
+    const language = await resolveLanguage(result.answer, deps.readProfileLanguage, deps.recipient);
     return await buildResearchPdf({
       query: params.query,
       answer: result.answer,
@@ -378,7 +378,7 @@ export async function sendResearchAck(
   deps: PushDeps,
 ): Promise<boolean> {
   const startedAt = (deps.now ?? Date.now)();
-  const language = await resolveLanguage(params.query, deps.readProfileLanguage);
+  const language = await resolveLanguage(params.query, deps.readProfileLanguage, deps.recipient);
   const result = await deps.send(researchAckText(language));
   if (result.ok) {
     deps.log("ack.sent", { job: params.jobId, language, ms: (deps.now ?? Date.now)() - startedAt });

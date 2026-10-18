@@ -1,11 +1,12 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   googleConnectedText,
   readAdaWhatsAppTarget,
   sendAdaWhatsAppText,
   sendGoogleConnectedNotice,
 } from "./google-notify.js";
+import { clearInboundLanguages, recordInboundLanguage } from "./research-link-outbound.js";
 
 const config = {
   channels: {
@@ -14,38 +15,69 @@ const config = {
 } as OpenClawPluginApi["config"];
 
 describe("sendGoogleConnectedNotice", () => {
-  it("texts the number that connected the account, and never the configured lawyer", async () => {
+  const OWNER = "393331111111";
+  beforeEach(() => {
+    clearInboundLanguages();
+  });
+
+  async function confirmation(owner = OWNER): Promise<string> {
     const sendText = vi.fn(async () => ({ ok: true }));
     const result = await sendGoogleConnectedNotice({
       config,
-      owner: "393331111111",
+      owner,
       email: "anna@example.com",
       loadAdapter: async () => ({ sendText }),
     });
     expect(result).toEqual({ ok: true });
-    expect(readAdaWhatsAppTarget(config)).toBe("+390000000000");
     expect(sendText).toHaveBeenCalledExactlyOnceWith({
       cfg: config,
-      to: "+393331111111",
-      text: "Gmail and Calendar are connected. I can send mail when you say so.",
+      to: `+${owner}`,
+      text: expect.any(String),
     });
+    return (sendText.mock.calls[0] as unknown as [{ text: string }])[0].text;
+  }
+
+  it("texts the number that connected the account, and never the configured lawyer", async () => {
+    recordInboundLanguage(OWNER, "Give me a new link");
+    expect(readAdaWhatsAppTarget(config)).toBe("+390000000000");
+    expect(await confirmation()).toBe(
+      "Gmail and Calendar are connected. I can send mail when you say so.",
+    );
+  });
+
+  it("confirms in the language of the latest message, and keeps it through an ambiguous one", async () => {
+    recordInboundLanguage(OWNER, "Give me a new link");
+    recordInboundLanguage(OWNER, "Ok e Google?");
+    expect(await confirmation()).toBe(googleConnectedText("it"));
+    recordInboundLanguage(OWNER, "ok");
+    recordInboundLanguage(OWNER, "https://example.com/neu 👍");
+    expect(await confirmation()).toBe(googleConnectedText("it"));
+    recordInboundLanguage(OWNER, "Run a digest for me now");
+    recordInboundLanguage(OWNER, "ok");
+    expect(await confirmation()).toBe(googleConnectedText("en"));
+  });
+
+  it("keeps each number's language apart, and falls back to Italian when none is known", async () => {
+    recordInboundLanguage(OWNER, "Run a digest for me now");
+    expect(await confirmation("393332222222")).toBe(googleConnectedText("it"));
+    expect(await confirmation(OWNER)).toBe(googleConnectedText("en"));
+  });
+
+  it("has a variant in every language, never carrying the address", () => {
+    const texts = (["it", "en", "es", "fr", "de"] as const).map(googleConnectedText);
+    expect(new Set(texts).size).toBe(5);
+    expect(texts.join("")).not.toContain("@");
   });
 
   it("does not send when the adapter is missing", async () => {
-    const sendText = vi.fn();
     expect(
       await sendGoogleConnectedNotice({
         config,
-        owner: "393331111111",
+        owner: OWNER,
         email: "lawyer\n@example.com",
         loadAdapter: async () => undefined,
       }),
     ).toEqual({ ok: false, error: "kapso-whatsapp outbound is unavailable" });
-    expect(googleConnectedText("lawyer\n@example.com")).toBe(
-      "Gmail and Calendar are connected. I can send mail when you say so.",
-    );
-    expect(googleConnectedText("lawyer\n@example.com")).not.toContain("@");
-    expect(sendText).not.toHaveBeenCalled();
   });
 });
 

@@ -15,6 +15,7 @@ import {
   sendLexroomConnectedNotice,
   startAdaResearch,
 } from "./lexroom-tools.js";
+import { clearInboundLanguages, recordInboundLanguage } from "./research-link-outbound.js";
 import { expandShortLink } from "./short-link-test-support.js";
 
 const NOW = new Date("2026-10-10T12:00:00.000Z");
@@ -479,23 +480,58 @@ describe("Lexroom accounts belong to one number each", () => {
 describe("sendLexroomConnectedNotice", () => {
   const config = { channels: { "kapso-whatsapp": { defaultTo: "+10000000000" } } } as never;
 
-  it("sends the connected text to the number that connected, never to the configured lawyer", async () => {
-    const sendText = vi.fn(async () => ({}));
-    const loadAdapter = vi.fn(async () => ({ sendText }));
+  beforeEach(() => {
+    clearInboundLanguages();
+  });
+
+  async function sentText(owner: string): Promise<string> {
+    const sendText = vi.fn(async (_params: { text: string }) => ({}));
     const result = await sendLexroomConnectedNotice({
+      config,
+      owner,
+      email: "anna@example.com",
+      loadAdapter: async () => ({ sendText }),
+    });
+    expect(result).toEqual({ ok: true });
+    expect(sendText).toHaveBeenCalledExactlyOnceWith({
+      cfg: config,
+      to: `+${owner}`,
+      text: expect.any(String),
+    });
+    return sendText.mock.calls[0]?.[0].text ?? "";
+  }
+
+  it("sends the connected text to the number that connected, never to the configured lawyer", async () => {
+    const loadAdapter = vi.fn(async () => ({ sendText: vi.fn(async () => ({})) }));
+    await sendLexroomConnectedNotice({
       config,
       owner: OTHER,
       email: "anna@example.com",
       loadAdapter,
     });
-    expect(result).toEqual({ ok: true });
     expect(loadAdapter).toHaveBeenCalledWith("kapso-whatsapp");
-    expect(sendText).toHaveBeenCalledExactlyOnceWith({
-      cfg: config,
-      to: `+${OTHER}`,
-      text: lexroomConnectedText("anna@example.com"),
-    });
-    expect(lexroomConnectedText("anna@example.com")).not.toContain("anna@example.com");
+    expect(await sentText(OTHER)).not.toContain("anna@example.com");
+  });
+
+  it("confirms in English after an English message and in Italian after an Italian one", async () => {
+    recordInboundLanguage(OTHER, "Give me a new link");
+    expect(await sentText(OTHER)).toBe(
+      "Lexroom is connected. I can run research and drafts when you ask.",
+    );
+    recordInboundLanguage(OTHER, "Ok e Google?");
+    expect(await sentText(OTHER)).toBe(lexroomConnectedText("it"));
+  });
+
+  it("keeps the previous language through an ambiguous message, and defaults to Italian when none is known", async () => {
+    expect(await sentText(OTHER)).toBe(lexroomConnectedText("it"));
+    recordInboundLanguage(OTHER, "Run a digest for me now");
+    recordInboundLanguage(OTHER, "ok");
+    expect(await sentText(OTHER)).toBe(lexroomConnectedText("en"));
+  });
+
+  it("has a variant in every language", () => {
+    const texts = (["it", "en", "es", "fr", "de"] as const).map(lexroomConnectedText);
+    expect(new Set(texts).size).toBe(5);
   });
 
   it("reports an unavailable outbound adapter", async () => {

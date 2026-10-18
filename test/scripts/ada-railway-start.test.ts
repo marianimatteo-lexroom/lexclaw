@@ -201,12 +201,14 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
     const SOUL = "You are Vera. Do not ask what you should be called.\nVERA never lies.\n";
     const BLOCK =
       "<!-- ada:multi-user -->\n## Who Ada serves\n\nAda serves everyone who writes to her on WhatsApp, each in a private chat, with their own Lexroom, Gmail and Calendar connections. She never says she works for one person only. Any older line saying she works for one lawyer or one person is out of date.\n<!-- /ada:multi-user -->\n";
+    const LANGUAGE_BLOCK =
+      "<!-- ada:language -->\n## Language\n\nAda always replies in the language of the most recent message from the person she is talking to, and switches when they switch. That overrides any older line that names a language or says to answer in Italian, and the language of earlier messages, profiles, notes and tool output.\n<!-- /ada:language -->\n";
     const IDENTITY_NOW =
       IDENTITY.replace("**Name:** Vera", "**Name:** Ada").replace(
         "assistant for one lawyer",
         "assistant for everyone who writes to her",
       ) + `\n${BLOCK}`;
-    const SOUL_NOW = `You are Ada. Do not ask what you should be called.\nADA never lies.\n\n${BLOCK}`;
+    const SOUL_NOW = `You are Ada. Do not ask what you should be called.\nADA never lies.\n\n${BLOCK}\n${LANGUAGE_BLOCK}`;
     const USER = "Cliente: Vera Bianchi (Rossi SRL)\n";
 
     function seeded(config: Record<string, unknown> = {}) {
@@ -243,7 +245,7 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
       );
       expect(deploy.run().status).toBe(0);
       expect(read(deploy, "SOUL.md")).toBe(
-        `Lavori per chiunque le scriva e per chiunque le scriva.\n\n${BLOCK}`,
+        `Lavori per chiunque le scriva e per chiunque le scriva.\n\n${BLOCK}\n${LANGUAGE_BLOCK}`,
       );
       expect(read(deploy, "SOUL.md.pre-ada")).toBe(
         "Lavori per una persona sola e per un solo avvocato.",
@@ -264,6 +266,43 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
       expect(read(deploy, "SOUL.md")).toBe(SOUL_NOW);
       expect(read(deploy, "IDENTITY.md").split("<!-- ada:multi-user -->")).toHaveLength(2);
       expect(`${third.stdout}${third.stderr}`).not.toContain("updated the assistant identity");
+    });
+
+    it("renames the word in the other instruction files, and leaves the client files alone", () => {
+      const deploy = seeded();
+      const files = {
+        "AGENTS.md": "Ciao, sono Vera. Vera answers on WhatsApp.\n",
+        "TOOLS.md": "Notes for Vera: use /vera/status.\n",
+        "HEARTBEAT.md": "Vera checks mail.\n",
+        "BOOTSTRAP.md": "Tell them you are Vera.\n",
+        "MEMORY.md": "Il cliente Vera Rossi ha una causa.\n",
+      };
+      for (const [name, text] of Object.entries(files)) {
+        writeFileSync(join(deploy.workspace, name), text);
+      }
+      expect(deploy.run().status).toBe(0);
+      expect(read(deploy, "AGENTS.md")).toBe("Ciao, sono Ada. Ada answers on WhatsApp.\n");
+      expect(read(deploy, "TOOLS.md")).toBe("Notes for Ada: use /vera/status.\n");
+      expect(read(deploy, "HEARTBEAT.md")).toBe("Ada checks mail.\n");
+      expect(read(deploy, "BOOTSTRAP.md")).toBe("Tell them you are Ada.\n");
+      expect(read(deploy, "AGENTS.md.pre-ada")).toBe(files["AGENTS.md"]);
+      expect(read(deploy, "MEMORY.md")).toBe(files["MEMORY.md"]);
+      expect(read(deploy, "AGENTS.md")).not.toContain("ada:multi-user");
+      expect(read(deploy, "SOUL.md")).toContain(
+        "replies in the language of the most recent message",
+      );
+    });
+
+    it("adds the language section to a SOUL.md that already has the serves-everyone section", () => {
+      const deploy = boot(ENV);
+      mkdirSync(deploy.workspace, { recursive: true });
+      writeFileSync(join(deploy.workspace, "SOUL.md"), `Rispondi sempre in italiano.\n\n${BLOCK}`);
+      expect(deploy.run().status).toBe(0);
+      expect(read(deploy, "SOUL.md")).toBe(
+        `Rispondi sempre in italiano.\n\n${BLOCK}\n${LANGUAGE_BLOCK}`,
+      );
+      expect(deploy.run().status).toBe(0);
+      expect(read(deploy, "SOUL.md").split("<!-- ada:language -->")).toHaveLength(2);
     });
 
     it("boots on an empty workspace without creating identity files", () => {

@@ -33,7 +33,7 @@ export async function releaseMailboxFromOtherOwners(
     await db.clearAccount(other);
     api.logger.info(`ada google mailbox moved from=${maskNumber(other)} to=${maskNumber(owner)}`);
     const profile = await (await openAdaMemoryIfExistsFromApi(api, other))?.readProfile();
-    const language = await resolveLanguage("", async () => profile?.language);
+    const language = await resolveLanguage("", async () => profile?.language, other);
     const sent = await sendAdaWhatsAppText({ api, to: `+${other}`, text: MOVED[language] });
     if (sent.ok) {
       noteConnectOffer(other, "google");

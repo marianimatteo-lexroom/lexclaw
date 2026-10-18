@@ -5,7 +5,7 @@ description: "List upcoming hearings and deadlines in the digest with one-tap re
 
 # Ada deadline and hearing intake
 
-Applies only when the digest plan JSON has a `deadlines` array, when the person replies to such a digest, or when `ada_deadline_list` is relevant. The feature is off unless `plugins.entries.ada.config.deadlineIntake.enabled` is true; tools then return `reason: "disabled"` and you say nothing about it. Reply in the language the person writes in, Italian when unclear.
+Applies only when the digest plan JSON has a `deadlines` array, when the person replies to such a digest, or when `ada_deadline_list` is relevant. The feature is off unless `plugins.entries.ada.config.deadlineIntake.enabled` is true; tools then return `reason: "disabled"` and you say nothing about it. Reply in the language of the person's most recent message, even when earlier messages, their profile or the tool output are in another language.
 
 ## What the collector did
 

@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ADA_PERSONA } from "./persona.js";
 
@@ -11,9 +13,34 @@ describe("Ada's persona", () => {
     expect(ADA_PERSONA).not.toMatch(/for one lawyer|for lawyers\b/u);
   });
 
-  it("answers in the user's language and defaults to Italian", () => {
-    expect(ADA_PERSONA).toMatch(/answer in the language the person writes in/u);
-    expect(ADA_PERSONA).toMatch(/answer in Italian/u);
+  it("replies in the language of the latest message, as a hard rule that overrides every other source", () => {
+    expect(ADA_PERSONA).toMatch(
+      /hard rule: always reply in the language of the person's most recent message/u,
+    );
+    expect(ADA_PERSONA).toMatch(
+      /overrides the language of earlier messages in the conversation, the language in their profile, notes and memory, and the language of tool results, the digest and Lexroom data/u,
+    );
+    expect(ADA_PERSONA).toMatch(/switch with them in that very reply/u);
+    expect(ADA_PERSONA).toMatch(/keep the language of the conversation so far/u);
+  });
+
+  it("uses Italian only when there is no message to go by, and never as a default for an English writer", () => {
+    expect(ADA_PERSONA).toMatch(/Use Italian only when there is no message from them to go by/u);
+    expect(ADA_PERSONA).toMatch(/Never answer in Italian just because Lexroom/u);
+    expect(ADA_PERSONA).not.toMatch(/when (it is )?not clear[^.]*Italian|Italian when unclear/iu);
+  });
+
+  it("is not contradicted by a skill telling the model to default to Italian", () => {
+    const dir = join(import.meta.dirname, "..", "skills");
+    const skills = readdirSync(dir, { withFileTypes: true, recursive: true })
+      .filter((entry) => entry.isFile() && entry.name === "SKILL.md")
+      .map((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8"));
+    expect(skills.length).toBeGreaterThan(0);
+    for (const skill of skills) {
+      expect(skill).not.toMatch(
+        /Italian when unclear|default to Italian|always (use|reply in) Italian/iu,
+      );
+    }
   });
 
   it("helps without an account and sends the connect link instead of sending people away", () => {

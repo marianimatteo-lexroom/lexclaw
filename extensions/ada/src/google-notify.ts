@@ -1,5 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { withDeadline } from "./lexroom-timeout.js";
+import { resolveLanguage, type Language } from "./research-link-outbound.js";
 
 export const ADA_WHATSAPP_CHANNEL = "kapso-whatsapp";
 
@@ -11,12 +12,20 @@ type TextSender = (params: {
 
 export type GoogleConnectedNotice = { ok: true } | { ok: false; error: string };
 
+const GOOGLE_CONNECTED: Record<Language, string> = {
+  it: "Gmail e Calendar sono collegati. Posso inviare email quando me lo chiedi.",
+  en: "Gmail and Calendar are connected. I can send mail when you say so.",
+  es: "Gmail y Calendar están conectados. Puedo enviar correos cuando me lo pidas.",
+  fr: "Gmail et Google Agenda sont connectés. Je peux envoyer des e-mails quand vous me le demandez.",
+  de: "Gmail und Kalender sind verbunden. Ich kann E-Mails senden, wenn Sie es mir sagen.",
+};
+
 /**
  * WhatsApp turns a raw email address into a contact card and covers the
  * message, so the confirmation names the products and not the address.
  */
-export function googleConnectedText(_email: string): string {
-  return "Gmail and Calendar are connected. I can send mail when you say so.";
+export function googleConnectedText(language: Language): string {
+  return GOOGLE_CONNECTED[language];
 }
 
 export function readAdaWhatsAppTarget(config: unknown): string | null {
@@ -94,7 +103,7 @@ export async function sendGoogleConnectedNotice(params: {
     await send({
       cfg: params.config,
       to,
-      text: googleConnectedText(params.email),
+      text: googleConnectedText(await resolveLanguage("", undefined, params.owner)),
     });
   } catch (error) {
     return {

@@ -5,13 +5,13 @@ description: "Offer to connect the person's own Gmail and Google Calendar in pla
 
 # Ada Google connect
 
-Ada reads a person's own Gmail and Google Calendar only after that person connects them. One link covers both. Reply in the language the person writes in, Italian when unclear. Copy the URL unchanged.
+Ada reads a person's own Gmail and Google Calendar only after that person connects them. One link covers both. Reply in the language of the person's most recent message, even when earlier messages, their profile or the tool output are in another language. Copy the URL unchanged.
 
 ## When to offer, and when to send the link
 
 Never tell the person to type a command, a keyword or a special phrase; talk like a person.
 
-- When a request needs their mail or calendar and it is not connected (`ada_read_inbox`, `ada_read_calendar` or `ada_send_email` returns `reason: "not_connected"`, or the connection expired or was refused), say so naturally in one sentence and ask whether they want to connect it, for example "Per farlo devo collegarmi al tuo Gmail, ti mando il link?". Do not call `ada_google_connect` yet.
+- When a request needs their mail or calendar and it is not connected (`ada_read_inbox`, `ada_read_calendar` or `ada_send_email` returns `reason: "not_connected"`, or the connection expired or was refused), say so naturally in one sentence and ask whether they want to connect it, for example "to do this I need to connect to your Gmail, shall I send you the link?", in their language. Do not call `ada_google_connect` yet.
 - When they say yes in any form (sì, ok, certo, vai, yes, 👍, ...), call `ada_google_connect` and send the link. The model reads the answer in context; there is no keyword list. When they say no, carry on without it and do not ask again.
 - When the person says on their own that they want to connect Gmail or Google Calendar, call `ada_google_connect` and send the link straight away.
 - A note headed "Question you just asked" in your context means Ada's code asked that question in a message that is not in the conversation: read their reply as the answer to it.
