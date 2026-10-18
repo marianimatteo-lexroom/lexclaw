@@ -1,5 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { logInboundSkip } from "./inbound-log.js";
 import { lexroomLogger } from "./lexroom-log.js";
+import { sessionKeyOwner, toOwner } from "./owner.js";
 
 /**
  * The link to a research in the Lexroom app is added to the reply by code, not by the model: a
@@ -12,29 +14,37 @@ import { lexroomLogger } from "./lexroom-log.js";
 const READY_TTL_MS = 30 * 60 * 1000;
 const MAX_READY = 20;
 
-const ready = new Map<string, number>();
+/** Links waiting for the next reply, by the WhatsApp number whose research they belong to. */
+const ready = new Map<string, Map<string, number>>();
 
-/** A research result with this link has just been handed to the model. */
-export function markResearchLinkReady(url: string, nowMs = Date.now()): void {
-  ready.delete(url);
-  ready.set(url, nowMs);
-  if (ready.size > MAX_READY) {
-    ready.delete(ready.keys().next().value ?? url);
+/** A research result with this link has just been handed to the model for `owner`. */
+export function markResearchLinkReady(url: string, owner: string, nowMs = Date.now()): void {
+  const links = ready.get(owner) ?? new Map<string, number>();
+  links.delete(url);
+  links.set(url, nowMs);
+  if (links.size > MAX_READY) {
+    links.delete(links.keys().next().value ?? url);
   }
+  ready.set(owner, links);
 }
 
 /**
- * The ready links `text` does not carry yet. Every ready link is consumed: one that is already in
- * the text needs nothing, and one that is returned is about to be appended.
+ * The ready links of `owner` that `text` does not carry yet. Every one of that owner's ready links
+ * is consumed: one that is already in the text needs nothing, and one that is returned is about
+ * to be appended. Another number's links are never touched, so a reply never carries them.
  */
-export function takeResearchLinks(text: string, nowMs = Date.now()): string[] {
+export function takeResearchLinks(text: string, owner: string, nowMs = Date.now()): string[] {
+  const links = ready.get(owner);
+  if (!links) {
+    return [];
+  }
   const missing: string[] = [];
-  for (const [url, markedAtMs] of ready) {
+  for (const [url, markedAtMs] of links) {
     if (nowMs - markedAtMs <= READY_TTL_MS && !text.includes(url)) {
       missing.push(url);
     }
   }
-  ready.clear();
+  ready.delete(owner);
   return missing;
 }
 
@@ -129,9 +139,14 @@ export async function resolveLanguage(
  */
 export async function withResearchLinks(
   text: string,
-  options: { readProfileLanguage?: () => Promise<string | undefined>; nowMs?: number } = {},
+  options: {
+    /** The number the reply goes to; without one nothing is appended. */
+    owner: string | null;
+    readProfileLanguage?: () => Promise<string | undefined>;
+    nowMs?: number;
+  },
 ): Promise<string> {
-  const urls = takeResearchLinks(text, options.nowMs);
+  const urls = options.owner ? takeResearchLinks(text, options.owner, options.nowMs) : [];
   if (urls.length === 0) {
     return text;
   }
@@ -146,21 +161,37 @@ export async function withResearchLinks(
  */
 export function registerResearchLinkHooks(
   api: Pick<OpenClawPluginApi, "on" | "logger">,
-  readProfileLanguage?: () => Promise<string | undefined>,
+  readProfileLanguage?: (owner: string) => Promise<string | undefined>,
 ): void {
   const log = lexroomLogger(api.logger);
   let payloadHookRuns = false;
-  const append = async (text: string, via: string): Promise<string> => {
-    const next = await withResearchLinks(text, { readProfileLanguage });
+  /** The number a reply goes to: its own session, else the conversation or recipient. */
+  const ownerOf = (
+    ctx: { sessionKey?: string; conversationId?: string } | undefined,
+    to?: string,
+  ) => sessionKeyOwner(ctx?.sessionKey) ?? toOwner(ctx?.conversationId) ?? toOwner(to);
+  const append = async (text: string, owner: string | null, via: string): Promise<string> => {
+    const next = await withResearchLinks(text, {
+      owner,
+      readProfileLanguage:
+        owner && readProfileLanguage ? () => readProfileLanguage(owner) : undefined,
+    });
     if (next !== text) {
       log("link.appended", { via });
     }
     return next;
   };
 
-  api.on("reply_payload_sending", async (event) => {
+  api.on("reply_payload_sending", async (event, ctx) => {
     payloadHookRuns = true;
     const text = event.payload.text;
+    if (event.kind === "final" && typeof text === "string" && text.trim() === "NO_REPLY") {
+      logInboundSkip(api.logger, {
+        stage: "reply",
+        reason: "model_answered_no_reply",
+        sender: ctx?.sessionKey ? ctx.sessionKey.split(":") : undefined,
+      });
+    }
     if (
       event.kind !== "final" ||
       typeof text !== "string" ||
@@ -169,15 +200,15 @@ export function registerResearchLinkHooks(
     ) {
       return undefined;
     }
-    const next = await append(text, "reply_payload_sending");
+    const next = await append(text, ownerOf(ctx), "reply_payload_sending");
     return next === text ? undefined : { payload: { ...event.payload, text: next } };
   });
 
-  api.on("message_sending", async (event) => {
+  api.on("message_sending", async (event, ctx) => {
     if (payloadHookRuns || !event.content.trim() || event.content.trim() === "NO_REPLY") {
       return undefined;
     }
-    const next = await append(event.content, "message_sending");
+    const next = await append(event.content, ownerOf(ctx, event.to), "message_sending");
     return next === event.content ? undefined : { content: next };
   });
 }

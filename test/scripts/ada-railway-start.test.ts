@@ -109,8 +109,24 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
     expect(config['channels["kapso-whatsapp"].dmSecurity']).toBe("open");
     expect(config['channels["kapso-whatsapp"].allowFrom']).toEqual(["*"]);
     expect(config['channels["kapso-whatsapp"].defaultTo']).toBe("+390000000000");
+    expect(config["session.dmScope"]).toBe("per-channel-peer");
     expect(config["tools.alsoAllow"]).toContain("ada_lexroom_connect");
     expect(JSON.stringify(config["tools.alsoAllow"])).not.toContain("vera_");
+  });
+
+  it("gives every WhatsApp number its own session, on every boot, over any saved scope", () => {
+    const deploy = boot(
+      { ADA_PUBLIC_ORIGIN: "https://ada.example.com" },
+      { "session.dmScope": "main" },
+    );
+    expect(deploy.run().status).toBe(0);
+    expect(deploy.store()["session.dmScope"]).toBe("per-channel-peer");
+
+    expect(deploy.run().status).toBe(0);
+    expect(deploy.store()["session.dmScope"]).toBe("per-channel-peer");
+    expect(
+      deploy.calls().filter((call) => call === 'config set session.dmScope "per-channel-peer"'),
+    ).toHaveLength(2);
   });
 
   it("lets ADA_* win over VERA_* when both are set", () => {
@@ -179,6 +195,14 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
     const IDENTITY =
       "# IDENTITY.md\n\n- **Name:** Vera\n- **Emoji:** ⚖️\n- Theme: Lexroom's assistant for one lawyer\n\nHost vera.verus.legal, route /vera/status, VERA_TOKEN_KEY stay.\n";
     const SOUL = "You are Vera. Do not ask what you should be called.\nVERA never lies.\n";
+    const BLOCK =
+      "<!-- ada:multi-user -->\n## Who Ada serves\n\nAda serves everyone who writes to her on WhatsApp, each in a private chat, with their own Lexroom, Gmail and Calendar connections. She never says she works for one person only. Any older line saying she works for one lawyer or one person is out of date.\n<!-- /ada:multi-user -->\n";
+    const IDENTITY_NOW =
+      IDENTITY.replace("**Name:** Vera", "**Name:** Ada").replace(
+        "assistant for one lawyer",
+        "assistant for everyone who writes to her",
+      ) + `\n${BLOCK}`;
+    const SOUL_NOW = `You are Ada. Do not ask what you should be called.\nADA never lies.\n\n${BLOCK}`;
     const USER = "Cliente: Vera Bianchi (Rossi SRL)\n";
 
     function seeded(config: Record<string, unknown> = {}) {
@@ -192,18 +216,34 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
     const read = (deploy: { workspace: string }, name: string) =>
       readFileSync(join(deploy.workspace, name), "utf8");
 
-    it("renames the word in the identity files, keeps a copy, and leaves everything else alone", () => {
+    it("renames the word, drops the one-lawyer wording, keeps a copy, and leaves everything else alone", () => {
       const deploy = seeded();
       const first = deploy.run();
       expect(first.status).toBe(0);
-      expect(read(deploy, "IDENTITY.md")).toBe(IDENTITY.replace("**Name:** Vera", "**Name:** Ada"));
-      expect(read(deploy, "SOUL.md")).toBe(
-        "You are Ada. Do not ask what you should be called.\nADA never lies.\n",
-      );
+      expect(read(deploy, "IDENTITY.md")).toBe(IDENTITY_NOW);
+      expect(read(deploy, "SOUL.md")).toBe(SOUL_NOW);
       expect(read(deploy, "USER.md")).toBe(USER);
       expect(read(deploy, "IDENTITY.md.pre-ada")).toBe(IDENTITY);
       expect(read(deploy, "SOUL.md.pre-ada")).toBe(SOUL);
-      expect(`${first.stdout}${first.stderr}`).toContain("renamed Vera to Ada in IDENTITY.md");
+      expect(`${first.stdout}${first.stderr}`).toContain(
+        "updated the assistant identity in IDENTITY.md",
+      );
+    });
+
+    it("also neutralizes the Italian wording and a file with no trailing newline", () => {
+      const deploy = boot(ENV);
+      mkdirSync(deploy.workspace, { recursive: true });
+      writeFileSync(
+        join(deploy.workspace, "SOUL.md"),
+        "Lavori per una persona sola e per un solo avvocato.",
+      );
+      expect(deploy.run().status).toBe(0);
+      expect(read(deploy, "SOUL.md")).toBe(
+        `Lavori per chiunque le scriva e per chiunque le scriva.\n\n${BLOCK}`,
+      );
+      expect(read(deploy, "SOUL.md.pre-ada")).toBe(
+        "Lavori per una persona sola e per un solo avvocato.",
+      );
     });
 
     it("is idempotent and never overwrites the first copy", () => {
@@ -217,7 +257,9 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
       expect(read(deploy, "IDENTITY.md.pre-ada")).toBe(IDENTITY);
       const third = deploy.run();
       expect(read(deploy, "IDENTITY.md")).toBe(`${identity}Ada again.\n`);
-      expect(`${third.stdout}${third.stderr}`).not.toContain("renamed Vera to Ada");
+      expect(read(deploy, "SOUL.md")).toBe(SOUL_NOW);
+      expect(read(deploy, "IDENTITY.md").split("<!-- ada:multi-user -->")).toHaveLength(2);
+      expect(`${third.stdout}${third.stderr}`).not.toContain("updated the assistant identity");
     });
 
     it("boots on an empty workspace without creating identity files", () => {

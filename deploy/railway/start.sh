@@ -184,10 +184,13 @@ migrate_legacy_plugin() {
 migrate_legacy_plugin
 
 # A volume from before the rename can still name the assistant Vera in the workspace identity
-# files and in the agent's configured name, and a deploy never rewrites either. Rename the
-# standalone word in IDENTITY.md and SOUL.md (the first time, a .pre-ada copy of each stays
-# beside it) and in agents.entries.main.identity.name, leaving every other character, other
-# workspace files, paths, domains and VERA_* names alone. Running it again changes nothing.
+# files and in the agent's configured name, and describe her as working for one lawyer only; a
+# deploy never rewrites any of it. In IDENTITY.md and SOUL.md: rename the standalone word Vera,
+# turn the known "one lawyer / one person only" phrases into "everyone who writes to her", and
+# append one marked section that says she serves every sender (once; the marker makes a second
+# run a no-op). The first change keeps a .pre-ada copy of each file beside it. Every other
+# character, other workspace files, paths, domains and VERA_* names are left alone. The plugin's
+# per-turn persona says the same and overrides these files either way.
 migrate_identity_name() {
   node -e '
     const fs = require("node:fs");
@@ -195,11 +198,24 @@ migrate_identity_name() {
     const word = /(?<![\w./@:-])vera(?![\w@/-]|\.\w)/giu;
     const ada = (found) =>
       found === found.toUpperCase() ? "ADA" : found === found.toLowerCase() ? "ada" : "Ada";
+    const onePerson = [
+      [/\b(for|to|with) (?:one|a single|just one) (?:lawyer|person|user|client)(?: only)?\b/giu, "$1 everyone who writes to her"],
+      [/\bper (?:una|un) (?:sola persona|solo avvocato|persona sola|avvocato solo)\b/giu, "per chiunque le scriva"],
+    ];
+    const MARK = "<!-- ada:multi-user -->";
+    const block =
+      MARK +
+      "\n## Who Ada serves\n\nAda serves everyone who writes to her on WhatsApp, each in a private chat, with their own Lexroom, Gmail and Calendar connections. She never says she works for one person only. Any older line saying she works for one lawyer or one person is out of date.\n<!-- /ada:multi-user -->\n";
     for (const name of ["IDENTITY.md", "SOUL.md"]) {
       const file = path.join(process.argv[1], name);
       if (!fs.existsSync(file)) continue;
       const before = fs.readFileSync(file, "utf8");
-      const after = before.replace(word, ada);
+      let after = before.replace(word, ada);
+      const at = after.indexOf(MARK);
+      let head = at < 0 ? after : after.slice(0, at);
+      const tail = at < 0 ? "" : after.slice(at);
+      for (const [pattern, text] of onePerson) head = head.replace(pattern, text);
+      after = at < 0 ? head.replace(/\s*$/u, "") + "\n\n" + block : head + tail;
       if (after === before) continue;
       try {
         fs.copyFileSync(file, file + ".pre-ada", fs.constants.COPYFILE_EXCL);
@@ -207,9 +223,9 @@ migrate_identity_name() {
         if (error.code !== "EEXIST") throw error;
       }
       fs.writeFileSync(file, after);
-      console.log("[start] renamed Vera to Ada in " + name);
+      console.log("[start] updated the assistant identity in " + name);
     }
-  ' "${WORKSPACE_DIR}" || log "WARNING: could not update the workspace identity files; the plugin still tells the model its name is Ada"
+  ' "${WORKSPACE_DIR}" || log "WARNING: could not update the workspace identity files; the plugin still tells the model its name is Ada and that she serves everyone"
   local current
   current="$(oc config get agents.entries.main.identity.name --json 2>/dev/null || true)"
   if printf '%s' "${current}" | grep -qiE '(^|[^[:alnum:]])vera([^[:alnum:]]|$)'; then
@@ -238,6 +254,10 @@ config_set 'channels["kapso-whatsapp"].defaultTo' "$(json_of_env KAPSO_DEFAULT_T
 # digest window), but it no longer gates who can chat.
 config_set 'channels["kapso-whatsapp"].dmSecurity' '"open"'
 config_set 'channels["kapso-whatsapp"].allowFrom' '["*"]'
+# With the default "main" scope every DM shares one conversation, so anyone could read what
+# another number said. One isolated session per WhatsApp number keeps chats apart; the lawyer's
+# own chat moves to a session of its own too (the default scope's shared history is not copied).
+config_set session.dmScope '"per-channel-peer"'
 config_set agents.defaults.model.primary "$(json_of_env ADA_MODEL)"
 # Ada's own service owns the 15-minute poll and the 07:40 Europe/Rome pass.
 config_set agents.defaults.heartbeat.every '"0m"'

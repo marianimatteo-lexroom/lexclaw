@@ -1,7 +1,9 @@
+import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { openSqliteWorkerStore, type SqliteWorkerStore } from "openclaw/plugin-sdk/sqlite-runtime";
+import { maskNumber } from "./inbound-log.js";
 import type {
   CalendarSnapshotRow,
   DeadlineCandidate,
@@ -18,6 +20,7 @@ import type {
   AdaMemoryOperations,
   WakeState,
 } from "./memory-contract.js";
+import { isOwner, lawyerOwner } from "./owner.js";
 import { adaStatePath } from "./state-paths.js";
 
 export type MemoryStore = {
@@ -49,6 +52,9 @@ export type MemoryStore = {
   ): Promise<void>;
   filterUnscannedMessages(ids: string[]): Promise<string[]>;
   markMessagesScanned(ids: string[], atMs: number): Promise<void>;
+  claimWelcome(number: string, atMs: number): Promise<boolean>;
+  releaseWelcome(number: string): Promise<void>;
+  exportSnapshot(destination: string): Promise<void>;
 };
 
 const stores = new Map<string, Promise<MemoryStore>>();
@@ -131,23 +137,55 @@ export function wrapMemoryWorker(worker: SqliteWorkerStore<AdaMemoryOperations>)
     markMessagesScanned(ids, atMs) {
       return worker.execute({ type: "markMessagesScanned", input: { ids, atMs } });
     },
+    claimWelcome(number, atMs) {
+      return worker.execute({ type: "claimWelcome", input: { number, atMs } });
+    },
+    releaseWelcome(number) {
+      return worker.execute({ type: "releaseWelcome", input: { number } });
+    },
+    exportSnapshot(destination) {
+      return worker.execute({ type: "exportSnapshot", input: { path: destination } });
+    },
   };
 }
 
-export function openAdaMemory(params: {
+/**
+ * Matter memory, profile, todos, digest state and held plans are one SQLite file per WhatsApp
+ * number under `memory/`, so no query can reach another number's rows: a number has no way to
+ * name any file but its own. The old single file, `memory.sqlite`, stays as the registry of who
+ * was welcomed, and its contents move to the configured lawyer's number the first time that
+ * number's memory is opened.
+ */
+const REGISTRY_FILE = "memory.sqlite";
+const ADOPTED_MARKER = "memory/legacy-adopted";
+const memoryFile = (owner: string) => `memory/${owner}.sqlite`;
+
+type MemoryLocation = {
   runtimeSource: string;
   stateDir: string;
-}): Promise<MemoryStore> {
-  const databasePath = adaStatePath(params.stateDir, "memory.sqlite");
+  /** Where the one-time adoption of the old memory is announced. */
+  log?: (message: string) => void;
+  /** How a database file becomes a store; the SQLite worker unless a test supplies one. */
+  open?: (databasePath: string) => Promise<MemoryStore>;
+};
+
+function createStore(location: MemoryLocation, databasePath: string): Promise<MemoryStore> {
+  return (
+    location.open?.(databasePath) ??
+    openSqliteWorkerStore<AdaMemoryOperations>({
+      moduleUrl: adaMemoryWorkerUrl(location.runtimeSource),
+      databasePath,
+      input: undefined,
+    }).then(wrapMemoryWorker)
+  );
+}
+
+function openStoreAt(location: MemoryLocation, databasePath: string): Promise<MemoryStore> {
   const cached = stores.get(databasePath);
   if (cached) {
     return cached;
   }
-  const opening = openSqliteWorkerStore<AdaMemoryOperations>({
-    moduleUrl: adaMemoryWorkerUrl(params.runtimeSource),
-    databasePath,
-    input: undefined,
-  }).then(wrapMemoryWorker);
+  const opening = createStore(location, databasePath);
   stores.set(databasePath, opening);
   opening.catch(() => {
     stores.delete(databasePath);
@@ -155,14 +193,109 @@ export function openAdaMemory(params: {
   return opening;
 }
 
-export function openAdaMemoryFromApi(
-  api: Pick<OpenClawPluginApi, "runtimeSource" | "runtime">,
+/** The registry file: who was welcomed. It holds no one's working memory any more. */
+export function openAdaRegistry(location: MemoryLocation): Promise<MemoryStore> {
+  return openStoreAt(location, adaStatePath(location.stateDir, REGISTRY_FILE));
+}
+
+/**
+ * Copies the pre-per-number memory to the lawyer's own file, once. The copy is a SQLite snapshot
+ * (consistent even while the registry is open), the old file is left where it is as a backup, and
+ * a marker names the number that took it so a changed lawyer number never inherits it twice.
+ */
+async function adoptLegacyMemory(location: MemoryLocation, owner: string): Promise<void> {
+  const destination = adaStatePath(location.stateDir, memoryFile(owner));
+  const marker = adaStatePath(location.stateDir, ADOPTED_MARKER);
+  if (
+    fs.existsSync(destination) ||
+    fs.existsSync(marker) ||
+    !fs.existsSync(adaStatePath(location.stateDir, REGISTRY_FILE))
+  ) {
+    return;
+  }
+  fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
+  const temporary = `${destination}.adopting`;
+  fs.rmSync(temporary, { force: true });
+  await (await openAdaRegistry(location)).exportSnapshot(temporary);
+  fs.chmodSync(temporary, 0o600);
+  fs.renameSync(temporary, destination);
+  fs.writeFileSync(marker, owner, { mode: 0o600 });
+  location.log?.(`ada legacy memory adopted owner=${maskNumber(owner)}`);
+}
+
+/** Whether `owner` has working memory yet, so a read never creates a database for a stranger. */
+export function adaMemoryExists(
+  location: Pick<MemoryLocation, "stateDir">,
+  owner: string,
+  lawyer: string | null,
+): boolean {
+  if (fs.existsSync(adaStatePath(location.stateDir, memoryFile(owner)))) {
+    return true;
+  }
+  return (
+    owner === lawyer &&
+    !fs.existsSync(adaStatePath(location.stateDir, ADOPTED_MARKER)) &&
+    fs.existsSync(adaStatePath(location.stateDir, REGISTRY_FILE))
+  );
+}
+
+export function openAdaMemory(
+  params: MemoryLocation & { owner: string; lawyer?: string | null },
 ): Promise<MemoryStore> {
+  if (!isOwner(params.owner)) {
+    throw new Error("Ada memory store needs the owner's WhatsApp number");
+  }
+  const databasePath = adaStatePath(params.stateDir, memoryFile(params.owner));
+  const cached = stores.get(databasePath);
+  if (cached) {
+    return cached;
+  }
+  const opening = (async () => {
+    if (params.owner === params.lawyer) {
+      await adoptLegacyMemory(params, params.owner);
+    }
+    return await createStore(params, databasePath);
+  })();
+  stores.set(databasePath, opening);
+  opening.catch(() => {
+    stores.delete(databasePath);
+  });
+  return opening;
+}
+
+type MemoryApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "config"> & {
+  logger?: OpenClawPluginApi["logger"];
+};
+
+function locationOf(api: MemoryApi): MemoryLocation {
   if (!api.runtimeSource) {
     throw new Error("Ada memory store needs the plugin runtime source");
   }
-  return openAdaMemory({
+  return {
     runtimeSource: api.runtimeSource,
     stateDir: api.runtime.state.resolveStateDir(process.env),
-  });
+    log: (message) => api.logger?.info(message),
+  };
+}
+
+/** One number's memory, created on first use. Every number sees only its own. */
+export function openAdaMemoryFromApi(api: MemoryApi, owner: string): Promise<MemoryStore> {
+  return openAdaMemory({ ...locationOf(api), owner, lawyer: lawyerOwner(api.config) });
+}
+
+/** One number's memory, or null when it has none yet; never creates a database. */
+export async function openAdaMemoryIfExistsFromApi(
+  api: MemoryApi,
+  owner: string,
+): Promise<MemoryStore | null> {
+  const location = locationOf(api);
+  const lawyer = lawyerOwner(api.config);
+  if (!isOwner(owner) || !adaMemoryExists(location, owner, lawyer)) {
+    return null;
+  }
+  return await openAdaMemory({ ...location, owner, lawyer });
+}
+
+export function openAdaRegistryFromApi(api: MemoryApi): Promise<MemoryStore> {
+  return openAdaRegistry(locationOf(api));
 }

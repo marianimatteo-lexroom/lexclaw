@@ -2,15 +2,15 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { whatsappWindowOpen } from "./collector.js";
 import {
   ADA_WHATSAPP_CHANNEL,
-  isConfiguredLawyerSender,
   normalizeWhatsAppNumber,
   sendAdaWhatsAppText,
 } from "./google-notify.js";
+import { logInboundSkip } from "./inbound-log.js";
 import { sendKapsoPdf } from "./kapso-document.js";
 import { formatSources } from "./lexroom-citations.js";
 import type { LexroomFailure, ResearchOutcome } from "./lexroom-client.js";
 import { lexroomLogger, type LexroomLog } from "./lexroom-log.js";
-import { openAdaMemoryFromApi } from "./memory.js";
+import { openAdaMemoryIfExistsFromApi } from "./memory.js";
 import { researchLinkLine, resolveLanguage, type Language } from "./research-link-outbound.js";
 import { buildResearchPdf, type ResearchPdf } from "./research-pdf.js";
 import { readDigestReadyTemplate, sendDigestReadyNotice } from "./whatsapp-template.js";
@@ -450,17 +450,16 @@ export async function releaseHeldResearch(deps: PushDeps): Promise<number> {
 }
 
 /**
- * The sender, window check and nudge of a running Ada for one WhatsApp number. The profile
- * language is the configured lawyer's, so it is only used for the lawyer.
+ * The sender, window check and nudge of a running Ada for one WhatsApp number. The window and the
+ * profile language come from that number's own memory, when it has one.
  */
 export function livePushDeps(
   api: Pick<OpenClawPluginApi, "config" | "runtime" | "runtimeSource" | "logger" | "pluginConfig">,
   log: LexroomLog,
   recipient: string,
 ): PushDeps {
-  const memory = () => openAdaMemoryFromApi(api);
+  const memory = () => openAdaMemoryIfExistsFromApi(api, recipient);
   const to = `+${recipient}`;
-  const isLawyer = isConfiguredLawyerSender(api.config, recipient);
   return {
     recipient,
     send: (text) => sendAdaWhatsAppText({ api, to, text }),
@@ -472,9 +471,14 @@ export function livePushDeps(
         bytes: document.bytes,
       }),
     windowOpen: async () => {
-      const seen =
-        lastInboundAtMs.get(recipient) ??
-        (isLawyer ? (await (await memory()).readWake()).lastLawyerInboundAtMs : null);
+      let seen = lastInboundAtMs.get(recipient) ?? null;
+      if (seen === null) {
+        try {
+          seen = (await (await memory())?.readWake())?.lastLawyerInboundAtMs ?? null;
+        } catch {
+          seen = null;
+        }
+      }
       return seen === null ? null : whatsappWindowOpen(seen, Date.now());
     },
     nudge: async () => {
@@ -485,9 +489,7 @@ export function livePushDeps(
       const result = await sendDigestReadyNotice({ api, template, to });
       return result.ok ? "sent" : "failed";
     },
-    ...(isLawyer
-      ? { readProfileLanguage: async () => (await (await memory()).readProfile())?.language }
-      : {}),
+    readProfileLanguage: async () => (await (await memory())?.readProfile())?.language,
     log,
   };
 }
@@ -515,7 +517,20 @@ export function onSenderInbound(params: {
 }): void {
   const { api } = params;
   const recipient = senderNumber(...params.senders);
-  if ((params.channelId !== undefined && params.channelId !== ADA_WHATSAPP_CHANNEL) || !recipient) {
+  if (params.channelId !== undefined && params.channelId !== ADA_WHATSAPP_CHANNEL) {
+    logInboundSkip(api.logger, {
+      stage: "held_research",
+      reason: "not_whatsapp_channel",
+      sender: params.senders,
+    });
+    return;
+  }
+  if (!recipient) {
+    logInboundSkip(api.logger, {
+      stage: "held_research",
+      reason: "sender_not_a_phone_number",
+      sender: params.senders,
+    });
     return;
   }
   recordSenderInbound(recipient, params.atMs);

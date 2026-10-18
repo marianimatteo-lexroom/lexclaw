@@ -71,13 +71,12 @@ export function isConfiguredLawyerSender(config: unknown, ...senders: unknown[])
 
 export async function sendGoogleConnectedNotice(params: {
   config: OpenClawPluginApi["config"];
+  /** The WhatsApp number that connected the account; the confirmation goes to it alone. */
+  owner: string;
   email: string;
   loadAdapter: (channelId: string) => Promise<{ sendText?: TextSender } | null | undefined>;
 }): Promise<GoogleConnectedNotice> {
-  const to = readAdaWhatsAppTarget(params.config);
-  if (!to) {
-    return { ok: false, error: "kapso-whatsapp defaultTo is not set" };
-  }
+  const to = `+${params.owner}`;
   let adapter: { sendText?: TextSender } | null | undefined;
   try {
     adapter = await params.loadAdapter(ADA_WHATSAPP_CHANNEL);
@@ -109,19 +108,17 @@ export async function sendGoogleConnectedNotice(params: {
 const WHATSAPP_SEND_TIMEOUT_MS = 20_000;
 
 /**
- * One text through the Kapso channel to `to`, or to the configured lawyer when none is given.
+ * One text through the Kapso channel to `to`.
  * Never throws and never waits longer than the limit: a send that hangs is reported as a failure.
  */
 export async function sendAdaWhatsAppText(params: {
   api: Pick<OpenClawPluginApi, "config" | "runtime">;
   text: string;
-  to?: string;
+  /** The recipient. There is no default: a send always names the number it is for. */
+  to: string;
   timeoutMs?: number;
 }): Promise<GoogleConnectedNotice> {
-  const to = params.to ?? readAdaWhatsAppTarget(params.api.config);
-  if (!to) {
-    return { ok: false, error: "kapso-whatsapp defaultTo is not set" };
-  }
+  const { to } = params;
   const limitMs = params.timeoutMs ?? WHATSAPP_SEND_TIMEOUT_MS;
   try {
     return await withDeadline(

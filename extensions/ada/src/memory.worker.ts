@@ -231,6 +231,11 @@ CREATE TABLE IF NOT EXISTS vera_deadline_scanned (
   scanned_at_ms INTEGER NOT NULL
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS vera_welcomed (
+  number TEXT PRIMARY KEY,
+  welcomed_at_ms INTEGER NOT NULL
+) STRICT;
+
 CREATE INDEX IF NOT EXISTS vera_deadlines_due ON vera_deadlines (due_at_ms);
 CREATE INDEX IF NOT EXISTS vera_deadlines_matter ON vera_deadlines (matter_id);
 CREATE INDEX IF NOT EXISTS vera_records_matter ON vera_records (matter_id);
@@ -334,6 +339,10 @@ type AdaMemoryDatabase = {
   vera_deadline_scanned: {
     message_id: string;
     scanned_at_ms: number;
+  };
+  vera_welcomed: {
+    number: string;
+    welcomed_at_ms: number;
   };
 };
 
@@ -1271,6 +1280,57 @@ class AdaMemoryDatabaseStore {
     return undefined;
   }
 
+  claimWelcome(number: string, atMs: number): boolean {
+    return runSqliteImmediateTransactionSync(
+      this.db,
+      () => {
+        const existing = executeSqliteQueryTakeFirstSync(
+          this.db,
+          this.query.selectFrom("vera_welcomed").select("number").where("number", "=", number),
+        );
+        if (existing) {
+          return false;
+        }
+        executeSqliteQuerySync(
+          this.db,
+          this.query.insertInto("vera_welcomed").values({ number, welcomed_at_ms: atMs }),
+        );
+        return true;
+      },
+      {
+        busyTimeoutMs: 5000,
+        databaseLabel: "ada memory",
+        operationLabel: "ada.memory.welcome.claim",
+      },
+    );
+  }
+
+  exportSnapshot(destination: string): undefined {
+    if (
+      !path.isAbsolute(destination) ||
+      destination.includes("\u0000") ||
+      fs.existsSync(destination)
+    ) {
+      throw new Error("Ada memory snapshot needs a new absolute path");
+    }
+    this.db.prepare("VACUUM INTO ?").run(destination);
+    const copy = openNodeSqliteDatabase(destination);
+    try {
+      copy.exec("DELETE FROM vera_welcomed");
+    } finally {
+      copy.close();
+    }
+    return undefined;
+  }
+
+  releaseWelcome(number: string): undefined {
+    executeSqliteQuerySync(
+      this.db,
+      this.query.deleteFrom("vera_welcomed").where("number", "=", number),
+    );
+    return undefined;
+  }
+
   close(): void {
     try {
       this.maintenance.close();
@@ -1400,6 +1460,12 @@ export function createSqliteWorkerBackend(
           return database.filterUnscannedMessages(command.input.ids);
         case "markMessagesScanned":
           return database.markMessagesScanned(command.input.ids, command.input.atMs);
+        case "claimWelcome":
+          return database.claimWelcome(command.input.number, command.input.atMs);
+        case "releaseWelcome":
+          return database.releaseWelcome(command.input.number);
+        case "exportSnapshot":
+          return database.exportSnapshot(command.input.path);
       }
       throw new Error("Unexpected Ada memory command");
     },

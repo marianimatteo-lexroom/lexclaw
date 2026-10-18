@@ -81,15 +81,23 @@ Also needed for a working gateway, but not checked by `start.sh`: `OPENCLAW_GATE
 | `ADA_DEADLINE_INTAKE_ENABLED`       | `deadlineIntake.enabled`       | `true` or `false` (case-insensitive), default `false`. Written on every boot, so removing the variable turns intake off. Any other value fails the boot.                                                                                                                                   |
 | `ADA_DEADLINE_REMINDERS`            | `deadlineIntake.reminders`     | Comma-separated cadence such as `7d,2d,morning-of`. Unset keeps the plugin default (`7d,2d,morning-of`). An invalid value fails the boot, because the plugin would reject it.                                                                                                              |
 
-WhatsApp status reactions (read from the gateway environment; validated by `start.sh`):
+**Per-number sessions.** `start.sh` sets `session.dmScope` to `per-channel-peer` on every boot, so each WhatsApp number has its own conversation and chats are not visible across numbers. The lawyer's chat (`KAPSO_DEFAULT_TO`) starts a new session of its own on the first message after this deploy; the earlier shared history is not copied. Accounts, matter memory, digests and held research results are all keyed by WhatsApp number (see "Accounts and privacy" in the Ada README), not by session.
 
-| Variable                 | Effect                                                                                                         |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| `ADA_STATUS_REACTIONS`  | `true` or `false` (case-insensitive), default `true`. Any other value fails the boot.                          |
-| `ADA_REACTION_ACK`      | Emoji on receipt of the lawyer's message. Default `👀`.                                                        |
-| `ADA_REACTION_THINKING` | Emoji while Ada thinks or runs tools. Default `⏳`. Skipped when the reply completes within about one second. |
-| `ADA_REACTION_DONE`     | Emoji when the run completes. Default `✅`.                                                                    |
-| `ADA_REACTION_ERROR`    | Emoji when the run fails. Default `❌`.                                                                        |
+First-message welcome (read by the plugin from the gateway environment; not validated by `start.sh`):
+
+| Variable              | Effect                                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `ADA_WELCOME_ENABLED` | `false` (also `0`, `off`, `no`) stops Ada from sending the welcome to a number's first message. Default on. See the Ada README. |
+
+WhatsApp status reactions (read from the gateway environment; validated by `start.sh`). Reactions are sent by Ada herself straight through Kapso (the channel plugin cannot send them), so these variables are the only place they are configured. By default the inbound message shows `👀` while Ada works and the reaction is removed (an empty emoji) when the run ends, however it ends: no `⏳`, no `✅` and no `❌`.
+
+| Variable                | Effect                                                                                                                  |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `ADA_STATUS_REACTIONS`  | `true` or `false` (case-insensitive), default `true`. Any other value fails the boot. `false` sends no reactions at all. |
+| `ADA_REACTION_ACK`      | Emoji on receipt of a message. Default `👀`.                                                                            |
+| `ADA_REACTION_THINKING` | Optional emoji while Ada runs tools. Unset: none.                                                                       |
+| `ADA_REACTION_DONE`     | Optional emoji when a run succeeds. Unset: the `👀` is removed.                                                         |
+| `ADA_REACTION_ERROR`    | Optional emoji when a run fails or declines. Unset: the `👀` is removed.                                                |
 
 The Ada plugin sends these reactions directly through the Kapso API on the inbound message, replacing the previous emoji, because `@kapso/openclaw-whatsapp` 0.1.4 cannot send reactions. Failures are logged as warnings and never affect the reply. OpenClaw's `messages.ackReaction` and `messages.statusReactions` do nothing on Kapso and are not used. The final emoji follows the agent run, not WhatsApp delivery, so a failed outbound send does not turn it into `❌`.
 

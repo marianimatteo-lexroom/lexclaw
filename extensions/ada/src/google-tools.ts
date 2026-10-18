@@ -17,12 +17,12 @@ import {
   type GoogleConnectResult,
 } from "./google-connect.js";
 
-type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger">;
+type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger" | "config">;
 
 type ToolFailure = {
   ok: false;
   error: string;
-  reason?: "not_connected" | "needs_send_scope" | "confirmation_required";
+  reason?: "not_connected" | "needs_send_scope" | "confirmation_required" | "private_chat_required";
 };
 
 function clamp(value: number | undefined, fallback: number, min: number, max: number): number {
@@ -32,9 +32,9 @@ function clamp(value: number | undefined, fallback: number, min: number, max: nu
   return Math.min(max, Math.max(min, value));
 }
 
-async function openStore(api: StoreApi): Promise<GoogleAccountStore | ToolFailure> {
+async function openStore(api: StoreApi, owner: string): Promise<GoogleAccountStore | ToolFailure> {
   try {
-    return await openAdaGoogleAccountFromApi(api);
+    return await openAdaGoogleAccountFromApi(api, owner);
   } catch (error) {
     api.logger.error(
       `ada google account store failed: ${error instanceof Error ? error.message : "unknown"}`,
@@ -48,17 +48,19 @@ function isStoreFailure(store: GoogleAccountStore | ToolFailure): store is ToolF
 }
 
 export async function executeAdaGoogleConnect(
+  owner: string,
   config: GoogleConnectConfig,
   api: StoreApi,
   now = new Date(),
 ): Promise<GoogleConnectResult | ToolFailure> {
-  const store = await openStore(api);
+  const store = await openStore(api, owner);
   if (isStoreFailure(store)) {
     return store;
   }
   try {
     const account = await store.readAccount();
     return await prepareGoogleConnect({
+      owner,
       config,
       now,
       account: account ? { email: account.email, scopes: account.scopes } : null,
@@ -205,7 +207,7 @@ export async function sendConnectedEmail(params: {
       ok: false,
       reason: "confirmation_required",
       error:
-        "Ask the lawyer to confirm the recipient, subject, and body. Call again with confirmed true only after they agree.",
+        "Ask the user to confirm the recipient, subject, and body. Call again with confirmed true only after they agree.",
     };
   }
   const to = params.to.trim();
@@ -273,12 +275,13 @@ export async function sendConnectedEmail(params: {
 }
 
 export async function executeAdaSendEmail(
+  owner: string,
   config: GoogleConnectConfig,
   api: StoreApi,
   input: { to: string; subject: string; text: string; confirmed: boolean },
   signal?: AbortSignal,
 ): Promise<{ ok: true; email: string; id: string } | ToolFailure> {
-  const store = await openStore(api);
+  const store = await openStore(api, owner);
   if (isStoreFailure(store)) {
     return store;
   }
@@ -286,12 +289,13 @@ export async function executeAdaSendEmail(
 }
 
 export async function executeAdaReadInbox(
+  owner: string,
   config: GoogleConnectConfig,
   api: StoreApi,
   max: number | undefined,
   signal?: AbortSignal,
 ): Promise<{ ok: true; email: string; messages: InboxMessage[] } | ToolFailure> {
-  const store = await openStore(api);
+  const store = await openStore(api, owner);
   if (isStoreFailure(store)) {
     return store;
   }
@@ -299,12 +303,13 @@ export async function executeAdaReadInbox(
 }
 
 export async function executeAdaReadCalendar(
+  owner: string,
   config: GoogleConnectConfig,
   api: StoreApi,
   hours: number | undefined,
   signal?: AbortSignal,
 ): Promise<{ ok: true; email: string; events: CalendarEvent[] } | ToolFailure> {
-  const store = await openStore(api);
+  const store = await openStore(api, owner);
   if (isStoreFailure(store)) {
     return store;
   }

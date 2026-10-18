@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createConnectState } from "./connect-state.js";
 import { isAdaPath } from "./http-paths.js";
 
 /**
@@ -9,7 +9,6 @@ import { isAdaPath } from "./http-paths.js";
 const LEXROOM_CONNECT_SUFFIX = "/lexroom/connect";
 export const LEXROOM_CONNECT_PATH = `/ada${LEXROOM_CONNECT_SUFFIX}`;
 
-const STATE_TTL_MS = 30 * 60 * 1000;
 const ACCESS_SKEW_MS = 60_000;
 
 export type LexroomConnectConfig = {
@@ -128,53 +127,7 @@ export function readLexroomConnectConfig(
   };
 }
 
-export function createConnectState(
-  stateSecret: string,
-  now: Date,
-): { state: string; nonce: string; expiresAtMs: number } {
-  const nonce = randomBytes(32).toString("base64url");
-  const expiresAtMs = now.getTime() + STATE_TTL_MS;
-  const payload = Buffer.from(JSON.stringify({ nonce, exp: expiresAtMs })).toString("base64url");
-  const signature = createHmac("sha256", stateSecret).update(payload).digest("base64url");
-  return { state: `${payload}.${signature}`, nonce, expiresAtMs };
-}
-
-export function readConnectState(
-  stateSecret: string,
-  state: string,
-  now: Date,
-): { nonce: string } | null {
-  const parts = state.split(".");
-  if (parts.length !== 2) {
-    return null;
-  }
-  const [payload, signature] = parts;
-  if (!payload || !signature) {
-    return null;
-  }
-  const expected = createHmac("sha256", stateSecret).update(payload).digest("base64url");
-  const actualBuf = Buffer.from(signature);
-  const expectedBuf = Buffer.from(expected);
-  if (actualBuf.length !== expectedBuf.length || !timingSafeEqual(actualBuf, expectedBuf)) {
-    return null;
-  }
-  let parsed: { nonce?: unknown; exp?: unknown };
-  try {
-    parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
-      nonce?: unknown;
-      exp?: unknown;
-    };
-  } catch {
-    return null;
-  }
-  if (typeof parsed.nonce !== "string" || typeof parsed.exp !== "number") {
-    return null;
-  }
-  if (parsed.exp <= now.getTime()) {
-    return null;
-  }
-  return { nonce: parsed.nonce };
-}
+export { createConnectState, readConnectState } from "./connect-state.js";
 
 export function buildLexroomConnectUrl(params: { connectUri: string; state: string }): string {
   const url = new URL(params.connectUri);
@@ -225,6 +178,8 @@ export function isLexroomAccessLive(params: {
 }
 
 export async function prepareLexroomConnect(params: {
+  /** The WhatsApp number that asked; the link, and the account it saves, belong to it. */
+  owner: string;
   config: LexroomConnectConfig;
   now: Date;
   account: { email: string; accessToken: string; accessExpiresAtMs: number | null } | null;
@@ -246,7 +201,7 @@ export async function prepareLexroomConnect(params: {
   if (!config.ok) {
     return config;
   }
-  const issued = createConnectState(config.settings.stateSecret, params.now);
+  const issued = createConnectState(config.settings.stateSecret, params.now, params.owner);
   await params.savePending(issued.nonce, issued.expiresAtMs);
   const url = buildLexroomConnectUrl({
     connectUri: config.settings.connectUri,

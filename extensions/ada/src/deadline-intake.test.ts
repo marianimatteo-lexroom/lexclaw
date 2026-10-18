@@ -27,9 +27,15 @@ const NOV_05 = new Date("2026-11-05T06:40:00.000Z");
 const NOV_10 = new Date("2026-11-10T06:40:00.000Z");
 const NOV_12 = new Date("2026-11-12T06:40:00.000Z");
 
+const OWNER = "393331111111";
 const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 const api = { pluginConfig: ENABLED, logger };
-const toolApi = { runtimeSource: undefined, runtime: undefined, logger } as never;
+const toolApi = {
+  runtimeSource: undefined,
+  runtime: undefined,
+  logger,
+  config: { channels: { "kapso-whatsapp": { defaultTo: `+${OWNER}` } } },
+} as never;
 
 function seed() {
   return openTestMemory(tempDirs.make("ada-intake-"));
@@ -465,6 +471,7 @@ describe("replying to a digest line", () => {
         { ref: "1", action: "research" },
         LEXROOM_CONFIG,
         toolApi,
+        OWNER,
         undefined,
         OCT_14,
         { memory, fetchImpl: lexroom.fetchImpl },
@@ -488,7 +495,7 @@ describe("replying to a digest line", () => {
           researchUrl: "https://app.lexroom.ai/research/res-1",
         },
       });
-      expect(takeResearchLinks("")).toEqual(["https://app.lexroom.ai/research/res-1"]);
+      expect(takeResearchLinks("", OWNER)).toEqual(["https://app.lexroom.ai/research/res-1"]);
       const query = (lexroom.bodies[0] as { query: string; search_on_user_data: boolean }).query;
       expect(query).toContain('matter "Rossi c. Bianchi"');
       expect(query).toContain("hearing on 2026-11-12 09:30 (Europe/Rome)");
@@ -517,6 +524,7 @@ describe("replying to a digest line", () => {
         { ref: "1", action: "brief" },
         LEXROOM_CONFIG,
         toolApi,
+        OWNER,
         undefined,
         OCT_14,
         deps,
@@ -526,6 +534,7 @@ describe("replying to a digest line", () => {
         { ref: "1", action: "research" },
         LEXROOM_CONFIG,
         toolApi,
+        OWNER,
         undefined,
         OCT_14,
         deps,
@@ -534,6 +543,7 @@ describe("replying to a digest line", () => {
         { ref: "1", action: "brief" },
         LEXROOM_CONFIG,
         toolApi,
+        OWNER,
         undefined,
         OCT_14,
         deps,
@@ -558,6 +568,7 @@ describe("replying to a digest line", () => {
         { ref: "1", action: "research" },
         ENABLED,
         toolApi,
+        OWNER,
         undefined,
         OCT_14,
         { memory },
@@ -581,6 +592,7 @@ describe("replying to a digest line", () => {
         { ref: "1", action: "track" },
         LEXROOM_CONFIG,
         toolApi,
+        OWNER,
         undefined,
         OCT_14,
         deps,
@@ -591,6 +603,7 @@ describe("replying to a digest line", () => {
         { ref: "7", action: "research" },
         LEXROOM_CONFIG,
         toolApi,
+        OWNER,
         undefined,
         OCT_14,
         deps,
@@ -601,6 +614,7 @@ describe("replying to a digest line", () => {
         { ref: "1", action: "dismiss" },
         LEXROOM_CONFIG,
         toolApi,
+        OWNER,
         undefined,
         OCT_14,
         deps,
@@ -612,6 +626,7 @@ describe("replying to a digest line", () => {
         { ref: id, action: "research" },
         LEXROOM_CONFIG,
         toolApi,
+        OWNER,
         undefined,
         new Date("2026-11-13T10:00:00.000Z"),
         deps,
@@ -632,12 +647,13 @@ describe("replying to a digest line", () => {
           { ref: "1", action: "research" },
           off,
           toolApi,
+          OWNER,
           undefined,
           OCT_14,
           { memory },
         ),
       ).toMatchObject({ ok: false, reason: "disabled" });
-      expect(await executeAdaDeadlineList(off, toolApi, OCT_14, { memory })).toMatchObject({
+      expect(await executeAdaDeadlineList(off, toolApi, OWNER, OCT_14, { memory })).toMatchObject({
         ok: false,
         reason: "disabled",
       });
@@ -650,7 +666,7 @@ describe("replying to a digest line", () => {
   it("lists upcoming open items with their numbers", async () => {
     const { memory, close } = await offered();
     try {
-      const list = await executeAdaDeadlineList(ENABLED, toolApi, OCT_14, { memory });
+      const list = await executeAdaDeadlineList(ENABLED, toolApi, OWNER, OCT_14, { memory });
       expect(list).toMatchObject({
         ok: true,
         items: [{ offerNo: 1, status: "candidate", due: "2026-11-12 09:30", reminders: [] }],
@@ -671,6 +687,7 @@ describe("reminders", () => {
       { ref: "1", action: "track" },
       ENABLED,
       toolApi,
+      OWNER,
       undefined,
       OCT_14,
       { memory },
@@ -844,6 +861,7 @@ describe("reminders", () => {
         { ref: "1", action: "dismiss" },
         ENABLED,
         toolApi,
+        OWNER,
         undefined,
         OCT_14,
         { memory },

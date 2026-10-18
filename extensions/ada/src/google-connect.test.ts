@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { adaGoogleWorkerUrl } from "./google-account.js";
 import {
@@ -55,11 +56,34 @@ describe("readGoogleConnectConfig", () => {
   });
 });
 
+const OWNER = "393331111111";
+
 describe("connect state", () => {
+  it("names the number that asked for the link and rejects a state that names no one", () => {
+    const secret = CONFIG.googleStateSecret;
+    const issued = createConnectState(secret, NOW, OWNER);
+    expect(readConnectState(secret, issued.state, NOW)).toEqual({
+      nonce: issued.nonce,
+      owner: OWNER,
+    });
+    const payload = (owner: unknown) =>
+      Buffer.from(JSON.stringify({ nonce: issued.nonce, exp: issued.expiresAtMs, owner })).toString(
+        "base64url",
+      );
+    const sign = (body: string) => createHmac("sha256", secret).update(body).digest("base64url");
+    const legacy = payload(undefined);
+    expect(readConnectState(secret, `${legacy}.${sign(legacy)}`, NOW)).toBeNull();
+    const notANumber = payload("lawyer");
+    expect(readConnectState(secret, `${notANumber}.${sign(notANumber)}`, NOW)).toBeNull();
+    const forged = payload("393332222222");
+    expect(readConnectState(secret, `${forged}.${issued.state.split(".")[1]}`, NOW)).toBeNull();
+  });
+
   it("round-trips a signed state and rejects tampering and expiry", () => {
-    const issued = createConnectState(CONFIG.googleStateSecret, NOW);
+    const issued = createConnectState(CONFIG.googleStateSecret, NOW, OWNER);
     expect(readConnectState(CONFIG.googleStateSecret, issued.state, NOW)).toEqual({
       nonce: issued.nonce,
+      owner: OWNER,
     });
     const tampered = `${issued.state.slice(0, -1)}${issued.state.endsWith("a") ? "b" : "a"}`;
     expect(readConnectState(CONFIG.googleStateSecret, tampered, NOW)).toBeNull();
@@ -73,6 +97,7 @@ describe("prepareGoogleConnect", () => {
   it("asks for Gmail and Google Calendar with one Google link", async () => {
     const pending: Array<{ nonce: string; expiresAtMs: number }> = [];
     const result = await prepareGoogleConnect({
+      owner: OWNER,
       config: CONFIG,
       now: NOW,
       account: null,
@@ -108,6 +133,7 @@ describe("prepareGoogleConnect", () => {
   it("does not mint a link when the account can already send mail", async () => {
     let saved = false;
     const result = await prepareGoogleConnect({
+      owner: OWNER,
       config: CONFIG,
       now: NOW,
       account: {
@@ -129,6 +155,7 @@ describe("prepareGoogleConnect", () => {
 
   it("asks again when the saved connection cannot send mail", async () => {
     const result = await prepareGoogleConnect({
+      owner: OWNER,
       config: CONFIG,
       now: NOW,
       account: { email: "lawyer@example.com", scopes: null },

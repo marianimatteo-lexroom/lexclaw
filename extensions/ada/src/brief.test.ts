@@ -48,7 +48,7 @@ function record(overrides: Partial<MemoryRecord> & Pick<MemoryRecord, "id">): Me
 describe("renderLawyerProfile", () => {
   it("lists the profile fields and a generation date", () => {
     expect(renderLawyerProfile(PROFILE).split("\n")).toEqual([
-      "# Lawyer profile",
+      "# Profile",
       "- Name: Test Lawyer",
       "- Timezone: Europe/Rome",
       "- Email: lawyer@example.com",
@@ -166,7 +166,7 @@ describe("buildInjectedBrief", () => {
     });
     const blocks = text.split("\n\n");
     expect(blocks).toHaveLength(3);
-    expect(blocks[0]).toMatch(/^# Lawyer profile/u);
+    expect(blocks[0]).toMatch(/^# Profile/u);
     expect(blocks[1]).toMatch(/^# Open loops/u);
     expect(blocks[2]).toBe("# Session\n- id: session-123");
   });

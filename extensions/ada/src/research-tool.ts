@@ -1,22 +1,21 @@
-import { jsonResult } from "openclaw/plugin-sdk/agent-runtime";
 import type {
   AnyAgentTool,
   OpenClawPluginApi,
   OpenClawPluginToolContext,
 } from "openclaw/plugin-sdk/plugin-entry";
-import { Type, type Static } from "typebox";
+import { Type } from "typebox";
 import type { LexroomConfig } from "./lexroom-client.js";
 import { readResearchJob } from "./lexroom-jobs.js";
 import { lexroomLogger } from "./lexroom-log.js";
 import { startAdaResearch } from "./lexroom-tools.js";
-import { senderNumber } from "./research-push.js";
+import { ownerToolFactory } from "./owner-tool.js";
 
 /** The model-facing definition of `ada_research`, shared by its static metadata and its factory. */
 export const researchToolDefinition = {
   name: "ada_research",
   label: "Lexroom research",
   description:
-    "Start Lexroom research for one matter. It runs in the background for one to three minutes and returns a jobId at once. When a WhatsApp number asked, Ada has already told that number on WhatsApp that it is running and sends it the answer, the sources and the link to the Lexroom app herself when it is ready: do not poll, do not write a link, and end that turn with exactly NO_REPLY. Only when the result has no requesterNotified field (Ada could not tell who asked, or it was a group chat, so she sends nothing) call ada_research_status with the jobId to read the answer; even when requesterNotified is false Ada still sends the answer herself. Pass modules (for example Civile) to pick what is searched; otherwise every module the Lexroom user may search is used. Pass libraryDocumentIds only for documents that belong to that matter. The private library is not searched unless those ids are present.",
+    "Start Lexroom research for one matter. It runs in the background for one to three minutes and returns a jobId at once. It runs with the Lexroom account of the person asking in this private chat, never anyone else's, and Ada has already told that person on WhatsApp that it is running and sends them the answer, the sources and the link to the Lexroom app herself when it is ready: do not poll, do not write a link, and end that turn with exactly NO_REPLY. When requesterNotified is false Ada still sends the answer herself. When the person has not connected Lexroom the result says not_connected: call ada_lexroom_connect and send the link. Pass modules (for example Civile) to pick what is searched; otherwise every module the Lexroom user may search is used. Pass libraryDocumentIds only for documents that belong to that matter. The private library is not searched unless those ids are present.",
   parameters: Type.Object(
     {
       matterId: Type.String({ minLength: 1 }),
@@ -38,23 +37,10 @@ export function createResearchTool(params: {
   config: LexroomConfig;
   toolContext: OpenClawPluginToolContext;
 }): AnyAgentTool {
-  const { api, config, toolContext } = params;
-  return {
-    ...researchToolDefinition,
-    execute: async (_toolCallId, args: Static<typeof researchToolDefinition.parameters>) =>
-      jsonResult(
-        await startAdaResearch({
-          args,
-          config,
-          api,
-          requester: {
-            senderId: toolContext.requesterSenderId,
-            channel: toolContext.messageChannel,
-            conversationId: toolContext.nativeChannelId,
-          },
-        }),
-      ),
-  };
+  return ownerToolFactory<typeof researchToolDefinition.parameters, LexroomConfig>(
+    researchToolDefinition,
+    (args, { owner, api, config }) => startAdaResearch({ owner, args, config, api }),
+  )(params);
 }
 
 /** The model-facing definition of `ada_research_status`. */
@@ -77,17 +63,14 @@ export function createResearchStatusTool(params: {
   api: OpenClawPluginApi;
   toolContext: OpenClawPluginToolContext;
 }): AnyAgentTool {
-  const { api, toolContext } = params;
-  return {
-    ...researchStatusToolDefinition,
-    execute: async (_toolCallId, args: Static<typeof researchStatusToolDefinition.parameters>) =>
-      jsonResult(
-        await readResearchJob({
-          jobId: args.jobId,
-          waitSeconds: args.waitSeconds,
-          requester: senderNumber(toolContext.requesterSenderId) ?? undefined,
-          log: lexroomLogger(api.logger),
-        }),
-      ),
-  };
+  return ownerToolFactory<typeof researchStatusToolDefinition.parameters, undefined>(
+    researchStatusToolDefinition,
+    (args, { owner, api }) =>
+      readResearchJob({
+        jobId: args.jobId,
+        waitSeconds: args.waitSeconds,
+        requester: owner,
+        log: lexroomLogger(api.logger),
+      }),
+  )({ ...params, config: undefined });
 }

@@ -4,19 +4,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const openAdaLexroomAccountFromApi = vi.hoisted(() => vi.fn());
 const openAdaGoogleAccountFromApi = vi.hoisted(() => vi.fn());
-const openAdaMemoryFromApi = vi.hoisted(() => vi.fn());
-const recordLawyerInbound = vi.hoisted(() => vi.fn());
+const openAdaMemoryIfExistsFromApi = vi.hoisted(() => vi.fn());
+const recordSenderInbound = vi.hoisted(() => vi.fn());
 
 vi.mock("./src/lexroom-account.js", () => ({ openAdaLexroomAccountFromApi }));
-vi.mock("./src/google-account.js", () => ({ openAdaGoogleAccountFromApi }));
-vi.mock("./src/memory.js", () => ({ openAdaMemoryFromApi }));
+vi.mock("./src/google-account.js", () => ({
+  openAdaGoogleAccountFromApi,
+  openAdaGoogleAccountDbFromApi: vi.fn(),
+}));
+vi.mock("./src/memory.js", () => ({
+  openAdaMemoryFromApi: vi.fn(),
+  openAdaMemoryIfExistsFromApi,
+  openAdaRegistryFromApi: vi.fn(),
+}));
 vi.mock("./src/service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./src/service.js")>()),
-  recordLawyerInbound,
+  recordSenderInbound,
 }));
 
 import plugin from "./index.js";
-import { takeResearchLinks } from "./src/research-link-outbound.js";
+import { markResearchLinkReady, takeResearchLinks } from "./src/research-link-outbound.js";
 
 const GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send";
 const KAPSO_URL = "https://api.kapso.ai/meta/whatsapp/v23.0/100000000000000/messages";
@@ -31,9 +38,16 @@ const PLUGIN_CONFIG = {
   googleStateSecret: "state-secret-test-value",
 };
 
+const LAWYER = "390000000000";
+const SESSION = `agent:main:kapso-whatsapp:direct:${LAWYER}`;
+
 const HOST_CONFIG = {
   channels: {
-    "kapso-whatsapp": { apiKey: KAPSO_KEY, phoneNumberId: "100000000000000" },
+    "kapso-whatsapp": {
+      apiKey: KAPSO_KEY,
+      phoneNumberId: "100000000000000",
+      defaultTo: `+${LAWYER}`,
+    },
   },
 };
 
@@ -48,12 +62,28 @@ type RegisteredHook = {
 
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 
-/** What the host knows about who is asking; by default nobody known, so not the lawyer. */
-type ToolContext = { requesterSenderId?: string; messageChannel?: string };
+/** Every text Ada sent through the fake Kapso adapter: research results go to the asking number. */
+const pushed: string[] = [];
+const sendText = vi.fn(async (params: { to: string; text: string }) => {
+  pushed.push(params.text);
+});
+
+/** The result message of a research: the second text, after the "started" acknowledgment. */
+const researchResult = (nth = 1) =>
+  vi.waitFor(() => {
+    const text = pushed.filter((entry) => !entry.startsWith("Ho avviato la ricerca"))[nth - 1];
+    if (text === undefined) {
+      throw new Error("research result not sent yet");
+    }
+    return text;
+  });
+
+/** What the host knows about who is asking; by default the configured lawyer in a private chat. */
+type ToolContext = { requesterSenderId?: string; messageChannel?: string; sessionKey?: string };
 
 function registerAda(
   pluginConfig: Record<string, unknown> = PLUGIN_CONFIG,
-  toolContext: ToolContext = {},
+  toolContext: ToolContext = { requesterSenderId: LAWYER, messageChannel: "kapso-whatsapp" },
 ) {
   const tools = new Map<string, RegisteredTool>();
   const hooks = new Map<string, RegisteredHook>();
@@ -63,6 +93,9 @@ function registerAda(
     config: HOST_CONFIG as OpenClawPluginApi["config"],
     pluginConfig,
     runtimeSource: "/fake/ada/index.ts",
+    runtime: {
+      channel: { outbound: { loadAdapter: async () => ({ sendText }) } },
+    } as unknown as OpenClawPluginApi["runtime"],
     registerTool(tool) {
       if (typeof tool === "function") {
         const built = tool(toolContext as never);
@@ -179,12 +212,13 @@ function useGoogleAccount(account: ReturnType<typeof googleAccount> | null) {
 }
 
 beforeEach(() => {
-  takeResearchLinks("");
+  pushed.length = 0;
+  takeResearchLinks("", LAWYER);
   vi.clearAllMocks();
   fetchMock.mockReset();
   vi.stubGlobal("fetch", fetchMock);
   vi.stubEnv("ADA_STATUS_REACTIONS", "false");
-  recordLawyerInbound.mockResolvedValue(undefined);
+  recordSenderInbound.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -390,16 +424,10 @@ describe("ada_research", () => {
         query: "Onere della prova",
         libraryDocumentIds: ["doc-1"],
       }),
-    ).toEqual({
-      ok: true,
-      jobId: expect.stringMatching(/^rj_/u),
-      state: "done",
-      matterId: "matter-a",
-      researchId: "res-1",
-      status: "DONE",
-      answer: "Il datore prova il fatto [1].",
-      sources: [{ id: 1, title: "Cass. civ. 1/2024" }],
-    });
+    ).toMatchObject({ ok: true, state: "delivered", matterId: "matter-a", researchId: "res-1" });
+    const text = await researchResult();
+    expect(text).toContain("Il datore prova il fatto [1].");
+    expect(text).toContain("[1] Cass. civ. 1/2024");
     expect(seen.map((call) => call.url)).toEqual([
       "https://lexroom.example/v1/user/modules",
       "https://lexroom.example/v1/ask_me_anything",
@@ -417,7 +445,7 @@ describe("ada_research", () => {
     expect(seen[1]?.body).not.toHaveProperty("documents");
   });
 
-  it("gives the finished research a link to the Lexroom app through ada_research_status", async () => {
+  it("sends the finished research with its link to the Lexroom app to the asking number", async () => {
     useLexroomAccount(lexroomAccount({ accessToken: "research-link-token" }));
     fetchMock.mockImplementation(
       async (input) =>
@@ -427,31 +455,29 @@ describe("ada_research", () => {
     const { research } = registerAda({ ...PLUGIN_CONFIG, baseUrl: undefined });
     expect(await research({ matterId: "matter-a", query: "Question" })).toMatchObject({
       ok: true,
-      state: "done",
+      state: "delivered",
       researchId: "res-link",
-      researchUrl: "https://app.lexroom.ai/research/res-link",
     });
+    expect(await researchResult()).toContain(
+      "Continua su Lexroom: https://app.lexroom.ai/research/res-link",
+    );
   });
 
   describe("the final reply", () => {
     const ITALIAN =
       "Il termine per proporre opposizione a decreto ingiuntivo è di quaranta giorni dalla notifica, come previsto dalla legge, e non può essere prorogato.";
 
-    async function researchWith(config: Record<string, unknown>, token: string, id: string) {
-      useLexroomAccount(lexroomAccount({ accessToken: token }));
-      fetchMock.mockImplementation(
-        async (input) =>
-          modulesRoute(input) ?? ndjson({ research: { id, status: "DONE", answer: "ok" } }),
-      );
+    /** A research result the model read (a deadline brief): its link waits for the next reply. */
+    async function researchWith(config: Record<string, unknown>, _token: string, id: string) {
       const ada = registerAda(config);
-      await ada.research({ matterId: "matter-a", query: "Question", parentResearchId: undefined });
+      markResearchLinkReady(`https://app.lexroom.ai/research/${id}`, LAWYER);
       return ada;
     }
 
     const finalReply = async (ada: ReturnType<typeof registerAda>, text: string) =>
       (await ada.hook("reply_payload_sending")(
         { kind: "final", channel: "kapso-whatsapp", payload: { text } },
-        { channelId: "kapso-whatsapp" },
+        { channelId: "kapso-whatsapp", sessionKey: SESSION },
       )) as { payload?: { text?: string } } | undefined;
 
     it("ends with the research link even though the model never wrote one", async () => {
@@ -491,11 +517,9 @@ describe("ada_research", () => {
       );
       const ada = registerAda({ ...PLUGIN_CONFIG, baseUrl: undefined });
       await ada.research({ matterId: "matter-a", query: "First" });
-      await finalReply(ada, ITALIAN);
+      await researchResult(1);
       await ada.research({ matterId: "matter-a", query: "Second", parentResearchId: "thread-1" });
-      expect((await finalReply(ada, ITALIAN))?.payload?.text).toContain(
-        "https://app.lexroom.ai/research/thread-1",
-      );
+      expect(await researchResult(2)).toContain("https://app.lexroom.ai/research/thread-1");
     });
   });
 
@@ -541,9 +565,10 @@ describe("ada_research", () => {
     useLexroomAccount(null);
     const { research } = registerAda();
     expect(await research({ matterId: "matter-a", query: "Question" })).toMatchObject({
-      ok: false,
-      reason: "not_connected",
+      ok: true,
+      state: "delivered",
     });
+    expect(await researchResult()).toContain("Lexroom non è collegato");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -563,23 +588,22 @@ describe("ada_research", () => {
     fetchMock.mockImplementation(
       async (input) => modulesRoute(input) ?? json({ detail: "boom" }, 500),
     );
-    expect(await research({ matterId: "matter-a", query: "Q" })).toEqual({
-      ok: false,
-      state: "failed",
-      jobId: expect.stringMatching(/^rj_/u),
-      error: "Lexroom returned 500: boom",
+    expect(await research({ matterId: "matter-a", query: "Q" })).toMatchObject({
+      ok: true,
+      state: "delivered",
     });
+    expect(await researchResult()).toContain("Lexroom returned 500: boom");
+    pushed.length = 0;
     fetchMock.mockImplementation(
       async (input) =>
         modulesRoute(input) ??
         ndjson({ research: { id: "res-4", status: "RUNNING", error: "model unavailable" } }),
     );
-    expect(await research({ matterId: "matter-a", query: "Q" })).toEqual({
-      ok: false,
-      state: "failed",
-      jobId: expect.stringMatching(/^rj_/u),
-      error: "model unavailable",
+    expect(await research({ matterId: "matter-a", query: "Q" })).toMatchObject({
+      ok: true,
+      state: "delivered",
     });
+    expect(await researchResult()).toContain("model unavailable");
   });
 });
 
@@ -716,7 +740,7 @@ describe("message_received hook", () => {
       status: "read",
       message_id: MESSAGE_ID,
     });
-    expect(recordLawyerInbound).toHaveBeenCalledWith({
+    expect(recordSenderInbound).toHaveBeenCalledWith({
       api: expect.anything(),
       atMs: Date.parse("2026-10-10T09:00:00.000Z"),
       channelId: "kapso-whatsapp",
@@ -731,7 +755,7 @@ describe("message_received hook", () => {
     const { hook } = registerAda();
     await hook("message_received")({ channel: "kapso-whatsapp", messageId: MESSAGE_ID }, {});
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(recordLawyerInbound).toHaveBeenCalledWith(
+    expect(recordSenderInbound).toHaveBeenCalledWith(
       expect.objectContaining({ channelId: "kapso-whatsapp" }),
     );
   });
@@ -744,7 +768,7 @@ describe("message_received hook", () => {
       { channelId: "kapso-whatsapp", messageId: "390000000000:1791674081" },
     );
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(recordLawyerInbound).toHaveBeenCalledTimes(2);
+    expect(recordSenderInbound).toHaveBeenCalledTimes(2);
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
@@ -759,7 +783,7 @@ describe("message_received hook", () => {
       );
       expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(KAPSO_KEY);
       expect(logger.error).not.toHaveBeenCalled();
-      expect(recordLawyerInbound).toHaveBeenCalledTimes(1);
+      expect(recordSenderInbound).toHaveBeenCalledTimes(1);
     },
   );
 
@@ -770,7 +794,7 @@ describe("message_received hook", () => {
     expect(logger.warn).toHaveBeenCalledWith(
       "ada whatsapp read receipt failed: kapso read receipt request failed",
     );
-    expect(recordLawyerInbound).toHaveBeenCalledTimes(1);
+    expect(recordSenderInbound).toHaveBeenCalledTimes(1);
   });
 
   it("gives up after the 10 second read-receipt timeout without blocking the wake record", async () => {
@@ -786,7 +810,7 @@ describe("message_received hook", () => {
     const pending = hook("message_received")({}, inbound).then(settled);
     await vi.advanceTimersByTimeAsync(9_999);
     expect(settled).not.toHaveBeenCalled();
-    expect(recordLawyerInbound).toHaveBeenCalledTimes(1);
+    expect(recordSenderInbound).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
     await pending;
     expect(logger.warn).toHaveBeenCalledWith(
@@ -797,7 +821,7 @@ describe("message_received hook", () => {
 
   it("still sends the read receipt when recording the wake fails", async () => {
     fetchMock.mockImplementation(async () => json({ success: true }));
-    recordLawyerInbound.mockRejectedValue(new Error("sqlite is locked"));
+    recordSenderInbound.mockRejectedValue(new Error("sqlite is locked"));
     const { hook } = registerAda();
     await expect(hook("message_received")({}, inbound)).resolves.toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -806,7 +830,7 @@ describe("message_received hook", () => {
 
   it("logs both failures when Kapso and the wake record fail together", async () => {
     fetchMock.mockImplementation(async () => json({}, 500));
-    recordLawyerInbound.mockRejectedValue("not an error object");
+    recordSenderInbound.mockRejectedValue("not an error object");
     const { hook } = registerAda();
     await expect(hook("message_received")({}, inbound)).resolves.toBeUndefined();
     expect(logger.warn).toHaveBeenCalledTimes(1);
@@ -815,6 +839,7 @@ describe("message_received hook", () => {
 });
 
 describe("before_prompt_build hook", () => {
+  const TURN = { senderId: LAWYER, channelId: "kapso-whatsapp", sessionKey: SESSION };
   const PROFILE = {
     name: "Test Lawyer",
     timezone: "Europe/Rome",
@@ -845,7 +870,7 @@ describe("before_prompt_build hook", () => {
       listTodos: vi.fn(async () => [TODO]),
       ...overrides,
     };
-    openAdaMemoryFromApi.mockResolvedValue(memory);
+    openAdaMemoryIfExistsFromApi.mockResolvedValue(memory);
     return memory;
   }
 
@@ -869,33 +894,36 @@ describe("before_prompt_build hook", () => {
     const { hook } = registerAda();
     const result = await hook("before_prompt_build")(
       {},
-      { toolAuthority, sessionKey: "session-123" },
+      { ...TURN, toolAuthority, sessionKey: SESSION },
     );
     expect(toolAuthority.allows).toHaveBeenCalledWith("ada_memory_search");
     expect(memory.readProfile).toHaveBeenCalledTimes(1);
     const { prependContext } = result as { prependContext: string };
     const blocks = prependContext.split("\n\n");
-    expect(blocks[0]).toMatch(/^# Lawyer profile/u);
+    expect(blocks[0]).toMatch(/^# Profile/u);
     expect(blocks[1]).toBe(
       "# Open loops\n- [todo-1] matter-a / lawyer / pending: Confirm hearing date",
     );
-    expect(blocks[2]).toBe("# Session\n- id: session-123");
+    expect(blocks[2]).toBe(`# Session\n- id: ${SESSION}`);
     expect(prependContext).not.toContain("# Matter ");
   });
 
   it("still injects an empty open-loop index when there is no profile or todo", async () => {
     useMemory({ readProfile: async () => null, listTodos: async () => [] });
     const { hook } = registerAda();
-    expect(await hook("before_prompt_build")({}, { toolAuthority: authority(true) })).toEqual({
-      prependContext: "# Open loops\n(none)",
-    });
+    expect(
+      await hook("before_prompt_build")(
+        {},
+        { senderId: LAWYER, channelId: "kapso-whatsapp", toolAuthority: authority(true) },
+      ),
+    ).toEqual({ prependContext: "# Open loops\n(none)" });
   });
 
   it("injects nothing and never opens memory without tool authority", async () => {
     useMemory();
     const { hook } = registerAda();
     expect(await hook("before_prompt_build")({}, {})).toBeUndefined();
-    expect(openAdaMemoryFromApi).not.toHaveBeenCalled();
+    expect(openAdaMemoryIfExistsFromApi).not.toHaveBeenCalled();
   });
 
   it("injects nothing when the turn is not allowed to use memory tools", async () => {
@@ -904,7 +932,7 @@ describe("before_prompt_build hook", () => {
     expect(
       await hook("before_prompt_build")({}, { toolAuthority: authority(false) }),
     ).toBeUndefined();
-    expect(openAdaMemoryFromApi).not.toHaveBeenCalled();
+    expect(openAdaMemoryIfExistsFromApi).not.toHaveBeenCalled();
   });
 
   it("drops the brief when authority is revoked while memory was being read", async () => {
@@ -914,7 +942,7 @@ describe("before_prompt_build hook", () => {
       throw new Error("authority revoked");
     });
     const { hook } = registerAda();
-    expect(await hook("before_prompt_build")({}, { toolAuthority })).toBeUndefined();
+    expect(await hook("before_prompt_build")({}, { ...TURN, toolAuthority })).toBeUndefined();
     expect(logger.error).toHaveBeenCalledWith("ada brief inject failed: authority revoked");
   });
 
@@ -935,23 +963,23 @@ describe("before_prompt_build hook", () => {
       order.push("assertActive");
     });
     const { hook } = registerAda();
-    await hook("before_prompt_build")({}, { toolAuthority });
+    await hook("before_prompt_build")({}, { ...TURN, toolAuthority });
     expect(order.at(-1)).toBe("assertActive");
     expect(order).toHaveLength(3);
   });
 
   it("fails open with a logged error when the memory store cannot be opened", async () => {
-    openAdaMemoryFromApi.mockRejectedValue(new Error("worker crashed"));
+    openAdaMemoryIfExistsFromApi.mockRejectedValue(new Error("worker crashed"));
     const { hook } = registerAda();
     expect(
-      await hook("before_prompt_build")({}, { toolAuthority: authority(true) }),
+      await hook("before_prompt_build")({}, { ...TURN, toolAuthority: authority(true) }),
     ).toBeUndefined();
     expect(logger.error).toHaveBeenCalledWith("ada brief inject failed: worker crashed");
   });
 });
 
 describe("status reaction hooks", () => {
-  it("reacts on the inbound message through message_received, llm_input and agent_end", async () => {
+  it("reacts 👀 on the inbound message and removes it at agent_end, with no ⏳ or ✅", async () => {
     vi.useFakeTimers();
     vi.stubEnv("ADA_STATUS_REACTIONS", "true");
     fetchMock.mockImplementation(async () => json({ success: true }));
@@ -973,8 +1001,7 @@ describe("status reaction hooks", () => {
     const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
     expect(bodies.filter((body) => body.type === "reaction").map((body) => body.reaction)).toEqual([
       { message_id: MESSAGE_ID, emoji: "👀" },
-      { message_id: MESSAGE_ID, emoji: "⏳" },
-      { message_id: MESSAGE_ID, emoji: "✅" },
+      { message_id: MESSAGE_ID, emoji: "" },
     ]);
   });
 });

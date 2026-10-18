@@ -1,58 +1,82 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { renderDigestText, renderGoogleConnectText } from "./digest-text.js";
 import type { DigestPlan } from "./digest.js";
-
-export const DIGEST_TURN_TIMEOUT_SECONDS = 45;
+import { googleConnectConfigFrom } from "./google-connect.js";
+import { sendAdaWhatsAppText } from "./google-notify.js";
+import { executeAdaGoogleConnect } from "./google-tools.js";
+import { openAdaMemoryIfExistsFromApi } from "./memory.js";
+import { resolveLanguage } from "./research-link-outbound.js";
 
 export type DigestDispatchRequest = {
+  /** The WhatsApp number this digest is for: the only number it is ever sent to. */
+  owner: string;
   plan: DigestPlan;
-  sessionKey: string;
   idempotencyKey: string;
-  /** Ask the lawyer to connect Google instead of phrasing a digest. */
+  /** Ask the owner to connect Google instead of sending a digest. */
   connectOnly?: boolean;
-  /** The lawyer just texted, so the WhatsApp window is open for this send. */
+  /** The owner just texted, so the WhatsApp window is open for this send. */
   afterLawyerReply?: boolean;
 };
 
 export type DigestDispatchResult = { ok: boolean; reason?: string };
 
-function digestMessage(request: DigestDispatchRequest): string {
-  if (request.connectOnly) {
-    return "Follow the ada-google-connect skill now. Do not invent a digest.";
+const DEFAULT_TIME_ZONE = "Europe/Rome";
+const SENT_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** Digests already sent in this process, so a pass that retries after a late failure never repeats one. */
+const sent = new Map<string, number>();
+
+function alreadySent(key: string, nowMs: number): boolean {
+  for (const [known, at] of sent) {
+    if (nowMs - at > SENT_TTL_MS) {
+      sent.delete(known);
+    }
   }
-  return [
-    "Run the ada-morning-digest skill phrasing only.",
-    "The collector already ranked the plan. Do not invent signals.",
-    request.afterLawyerReply
-      ? "The lawyer just texted; write exactly one WhatsApp message from this fresh plan JSON, or NO_REPLY if deliver is false:"
-      : "Write exactly one WhatsApp message from this plan JSON, or NO_REPLY if deliver is false:",
-    JSON.stringify(request.plan),
-  ].join("\n");
+  return sent.has(key);
 }
 
-/** The one place Ada starts an isolated digest turn. */
+/** Forgets what was sent. For tests: this state is shared by the whole process. */
+export function clearSentDigests(): void {
+  sent.clear();
+}
+
+/**
+ * The one place Ada sends a digest or the Google connect ask: straight to `request.owner`'s
+ * WhatsApp number, with that number's own connect link and profile language. No model turn is
+ * involved, so nothing can deliver it to anyone else.
+ */
 export async function dispatchDigest(
-  api: Pick<OpenClawPluginApi, "runtime">,
+  api: Pick<OpenClawPluginApi, "runtime" | "runtimeSource" | "config" | "logger" | "pluginConfig">,
   request: DigestDispatchRequest,
 ): Promise<DigestDispatchResult> {
-  const hooks = api.runtime.hooks;
-  if (!hooks?.dispatchHookAgentTurn) {
-    return { ok: false, reason: "hooks_unavailable" };
+  const nowMs = Date.now();
+  const key = request.afterLawyerReply ? `held:${request.idempotencyKey}` : request.idempotencyKey;
+  if (alreadySent(key, nowMs)) {
+    return { ok: true };
   }
-  const result = await hooks.dispatchHookAgentTurn({
-    name: request.connectOnly
-      ? "Ada Google connect"
-      : request.afterLawyerReply
-        ? "Ada held digest"
-        : "Ada digest",
-    agentId: "main",
-    sessionKey: request.sessionKey,
-    message: digestMessage(request),
-    externalContentSource: "email",
-    deliver: true,
-    timeoutSeconds: DIGEST_TURN_TIMEOUT_SECONDS,
-    idempotencyKey: request.afterLawyerReply
-      ? `vera-held:${request.idempotencyKey}`
-      : request.idempotencyKey,
-  });
-  return result.ok ? { ok: true } : { ok: false, reason: result.reason };
+  const memory = await openAdaMemoryIfExistsFromApi(api, request.owner);
+  const profile = await memory?.readProfile();
+  const language = await resolveLanguage("", async () => profile?.language);
+  let text: string;
+  if (request.connectOnly) {
+    const connect = await executeAdaGoogleConnect(
+      request.owner,
+      googleConnectConfigFrom(api.pluginConfig),
+      api,
+    );
+    if (!connect.ok || connect.connected) {
+      return { ok: false, reason: connect.ok ? "already_connected" : "connect_unavailable" };
+    }
+    text = renderGoogleConnectText(language, connect.ask.url);
+  } else if (request.plan.deliver) {
+    text = renderDigestText(request.plan, language, profile?.timezone ?? DEFAULT_TIME_ZONE);
+  } else {
+    return { ok: false, reason: "nothing_to_send" };
+  }
+  const result = await sendAdaWhatsAppText({ api, to: `+${request.owner}`, text });
+  if (!result.ok) {
+    return { ok: false, reason: result.error };
+  }
+  sent.set(key, nowMs);
+  return { ok: true };
 }

@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   accessTokenExpiresAtMs,
@@ -54,11 +55,34 @@ describe("lexroom connect config", () => {
   });
 });
 
+const OWNER = "393331111111";
+
 describe("lexroom connect state", () => {
+  it("names the number that asked for the link and rejects a state that names no one", () => {
+    const now = new Date("2026-10-10T12:00:00.000Z");
+    const issued = createConnectState(SECRET, now, OWNER);
+    expect(readConnectState(SECRET, issued.state, now)).toEqual({
+      nonce: issued.nonce,
+      owner: OWNER,
+    });
+    const payload = (owner: unknown) =>
+      Buffer.from(JSON.stringify({ nonce: issued.nonce, exp: issued.expiresAtMs, owner })).toString(
+        "base64url",
+      );
+    const sign = (body: string) => createHmac("sha256", SECRET).update(body).digest("base64url");
+    const legacy = payload(undefined);
+    expect(readConnectState(SECRET, `${legacy}.${sign(legacy)}`, now)).toBeNull();
+    const forged = payload("393332222222");
+    expect(readConnectState(SECRET, `${forged}.${issued.state.split(".")[1]}`, now)).toBeNull();
+  });
+
   it("round-trips a signed state and rejects tampering", () => {
     const now = new Date("2026-10-10T12:00:00.000Z");
-    const issued = createConnectState(SECRET, now);
-    expect(readConnectState(SECRET, issued.state, now)).toEqual({ nonce: issued.nonce });
+    const issued = createConnectState(SECRET, now, OWNER);
+    expect(readConnectState(SECRET, issued.state, now)).toEqual({
+      nonce: issued.nonce,
+      owner: OWNER,
+    });
     expect(readConnectState(SECRET, `${issued.state}x`, now)).toBeNull();
     expect(
       readConnectState(SECRET, issued.state, new Date(issued.expiresAtMs + 1)),
@@ -77,6 +101,7 @@ describe("prepareLexroomConnect", () => {
     ].join(".");
     await expect(
       prepareLexroomConnect({
+        owner: OWNER,
         config: {
           googleRedirectUri: "https://gateway.example/ada/google/callback",
           googleStateSecret: SECRET,
@@ -102,6 +127,7 @@ describe("prepareLexroomConnect", () => {
     const now = new Date("2026-10-10T12:00:00.000Z");
     let saved: { nonce: string; expiresAtMs: number } | null = null;
     const result = await prepareLexroomConnect({
+      owner: OWNER,
       config: {
         googleRedirectUri: "https://gateway.example/ada/google/callback",
         googleStateSecret: SECRET,
@@ -120,7 +146,10 @@ describe("prepareLexroomConnect", () => {
     expect(result.ask.url.startsWith(`${CONNECT_URI}?state=`)).toBe(true);
     expect(result.ask.message).toContain(result.ask.url);
     const state = new URL(result.ask.url).searchParams.get("state") ?? "";
-    expect(readConnectState(SECRET, state, now)?.nonce).toBe(saved?.nonce);
+    expect(readConnectState(SECRET, state, now)).toMatchObject({
+      nonce: saved?.nonce,
+      owner: OWNER,
+    });
   });
 });
 

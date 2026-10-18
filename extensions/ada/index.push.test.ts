@@ -3,14 +3,18 @@ import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const openAdaLexroomAccountFromApi = vi.hoisted(() => vi.fn());
-const openAdaMemoryFromApi = vi.hoisted(() => vi.fn());
-const recordLawyerInbound = vi.hoisted(() => vi.fn());
+const openAdaMemoryIfExistsFromApi = vi.hoisted(() => vi.fn());
+const recordWake = vi.hoisted(() => vi.fn());
 
 vi.mock("./src/lexroom-account.js", () => ({ openAdaLexroomAccountFromApi }));
-vi.mock("./src/memory.js", () => ({ openAdaMemoryFromApi }));
+vi.mock("./src/memory.js", () => ({
+  openAdaMemoryFromApi: vi.fn(),
+  openAdaMemoryIfExistsFromApi,
+  openAdaRegistryFromApi: vi.fn(),
+}));
 vi.mock("./src/service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./src/service.js")>()),
-  recordLawyerInbound,
+  recordSenderInbound: recordWake,
 }));
 
 import plugin from "./index.js";
@@ -92,15 +96,15 @@ function registerAda(toolContext: { requesterSenderId?: string; messageChannel?:
 }
 
 beforeEach(() => {
-  takeResearchLinks("");
+  takeResearchLinks("", "390000000001");
   clearHeldResearch();
   sent.length = 0;
   vi.clearAllMocks();
   fetchMock.mockReset();
   vi.stubGlobal("fetch", fetchMock);
   vi.stubEnv("ADA_STATUS_REACTIONS", "false");
-  recordLawyerInbound.mockResolvedValue(undefined);
-  openAdaMemoryFromApi.mockRejectedValue(new Error("no memory store in this test"));
+  recordWake.mockResolvedValue(undefined);
+  openAdaMemoryIfExistsFromApi.mockResolvedValue(null);
   openAdaLexroomAccountFromApi.mockResolvedValue({
     readAccount: async () => ({
       email: "lawyer@example.com",

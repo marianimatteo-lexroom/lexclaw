@@ -1,5 +1,8 @@
-/** One lawyer per Ada install. The morning run has no WhatsApp sender id. */
-export const ADA_GOOGLE_ACCOUNT_ID = "lawyer";
+/**
+ * The storage key of the single row saved before accounts belonged to a number. It is only read
+ * to move that row to the configured lawyer's number and is never an owner.
+ */
+export const LEGACY_GOOGLE_ACCOUNT_ID = "lawyer";
 
 export type GoogleAccountRecord = {
   email: string;
@@ -11,6 +14,7 @@ export type GoogleAccountRecord = {
   scopes: string | null;
 };
 
+/** One owner's view of the Google account store: every call acts for that number only. */
 export type GoogleAccountStore = {
   replacePending(nonce: string, expiresAtMs: number): Promise<void>;
   consumePending(nonce: string, nowMs: number): Promise<boolean>;
@@ -19,12 +23,27 @@ export type GoogleAccountStore = {
   clearAccount(): Promise<void>;
 };
 
+/** The whole store; every operation names the owner it acts for. */
+export type GoogleAccountDb = {
+  replacePending(owner: string, nonce: string, expiresAtMs: number): Promise<void>;
+  consumePending(owner: string, nonce: string, nowMs: number): Promise<boolean>;
+  upsertAccount(owner: string, account: GoogleAccountRecord): Promise<void>;
+  readAccount(owner: string): Promise<GoogleAccountRecord | null>;
+  clearAccount(owner: string): Promise<void>;
+  /** Owners that have a connected Google account, for the background collector. */
+  listOwners(): Promise<string[]>;
+  /** Moves the pre-per-number row to `owner`; true when a row moved. */
+  adoptLegacy(owner: string): Promise<boolean>;
+};
+
 type Operation<Input, Output> = { input: Input; output: Output };
 
 export type AdaGoogleOperations = {
-  replacePending: Operation<{ nonce: string; expiresAtMs: number }, undefined>;
-  consumePending: Operation<{ nonce: string; nowMs: number }, boolean>;
-  upsertAccount: Operation<GoogleAccountRecord, undefined>;
-  readAccount: Operation<undefined, GoogleAccountRecord | null>;
-  clearAccount: Operation<undefined, undefined>;
+  replacePending: Operation<{ owner: string; nonce: string; expiresAtMs: number }, undefined>;
+  consumePending: Operation<{ owner: string; nonce: string; nowMs: number }, boolean>;
+  upsertAccount: Operation<{ owner: string; account: GoogleAccountRecord }, undefined>;
+  readAccount: Operation<{ owner: string }, GoogleAccountRecord | null>;
+  clearAccount: Operation<{ owner: string }, undefined>;
+  listOwners: Operation<undefined, string[]>;
+  adoptLegacy: Operation<{ owner: string }, boolean>;
 };

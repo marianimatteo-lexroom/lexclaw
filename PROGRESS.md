@@ -6,17 +6,17 @@ Last checked 2026-10-10 around 00:20 UTC. The gateway was live on OpenClaw `2026
 
 ## Product
 
-Ada is a WhatsApp assistant for one Lexroom lawyer. Working name is Ada. The lawyer texts a Lexroom business number. Clients, colleagues, and secretaries do not.
+Ada is Lexroom's legal assistant on WhatsApp. Working name is Ada. She serves every sender, each in a private chat, and every sender has their own Lexroom connection, Google (Gmail and Calendar) connection, matter memory, digests and held results. Nothing is shared between numbers: see "Accounts and privacy" in `extensions/ada/README.md`. The configured lawyer (`KAPSO_DEFAULT_TO`) owns what existed before accounts belonged to a number, and is the only number asked to connect Google proactively.
 
-Locked decisions:
+Locked decisions (written when Ada served one lawyer; read "lawyer" as "the person asking"):
 
-- One separate agent per lawyer. Lawyers cannot see each other's matters. Each chat is one Lexroom user.
+- One WhatsApp number is one owner: its own accounts and its own memory file (`memory/<number>.sqlite`). People cannot see each other's matters. Each chat is one Lexroom user.
 - Day-one Lexroom API is research and draft only. After a digest, offer exactly two next steps. Research runs first. Draft only after a separate confirmation. Never send email or change the calendar.
 - Morning digest: one message, ranked by cost of waiting. Stay silent when nothing clears the bar. The silent reply must be exactly `NO_REPLY`.
-- Collector owns Gmail/Calendar diffs and `planDigest`. The model phrases only when `deliver: true`. Quiet mornings do not open a session.
+- Collector owns Gmail/Calendar diffs and `planDigest`, one pass per connected number. When `deliver: true`, code writes the digest and sends it to that number (no model turn: the host can only deliver a hook turn to the last chat). Quiet mornings send nothing.
 - Email and calendar are optional and chosen by the lawyer (Gmail and/or Outlook, Google Calendar and/or Outlook). Outlook has no connector yet.
 - WhatsApp transport is Kapso (`@kapso/openclaw-whatsapp`), not Baileys.
-- Memory is Instinct-shaped, matter-scoped SQLite (`memory.sqlite`): aliases + keyword search, injected brief, daily reconcile writes, answering agent reads only.
+- Memory is Instinct-shaped, matter-scoped SQLite, one file per number (`memory/<number>.sqlite`; the old `memory.sqlite` is now the welcome registry and a backup): aliases + keyword search, injected brief, daily reconcile writes, answering agent reads only.
 - Disable the Gateway model heartbeat (`every: "0m"`). The Ada service owns the 15-minute poll and 07:40 Europe/Rome pass.
 - Case 1 (morning digest) plus event wakes for urgent calendar/mail are in the Instinct memory/wake build. Non-urgent mail waits for morning; drafts still need a separate yes.
 

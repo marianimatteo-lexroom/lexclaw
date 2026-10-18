@@ -2,15 +2,14 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const writeWake = vi.hoisted(() => vi.fn(async () => undefined));
+const openAdaMemoryIfExistsFromApi = vi.hoisted(() => vi.fn());
 vi.mock("./memory.js", () => ({
-  openAdaMemoryFromApi: vi.fn(async () => ({
-    readWake: async () => ({ heldPlanJson: null }),
-    writeWake,
-  })),
+  openAdaMemoryFromApi: vi.fn(),
+  openAdaMemoryIfExistsFromApi,
 }));
 
 import { isConfiguredLawyerSender, normalizeWhatsAppNumber } from "./google-notify.js";
-import { recordLawyerInbound } from "./service.js";
+import { recordSenderInbound } from "./service.js";
 
 function config(defaultTo: string | undefined) {
   return { channels: { "kapso-whatsapp": defaultTo ? { defaultTo } : {} } };
@@ -63,33 +62,70 @@ describe("isConfiguredLawyerSender", () => {
   });
 });
 
-describe("recordLawyerInbound", () => {
+describe("recordSenderInbound", () => {
   beforeEach(() => {
     writeWake.mockClear();
+    openAdaMemoryIfExistsFromApi.mockReset();
+    openAdaMemoryIfExistsFromApi.mockImplementation(async (_api: unknown, owner: string) =>
+      owner === "390000000002"
+        ? null
+        : { readWake: async () => ({ heldPlanJson: null }), writeWake },
+    );
   });
 
-  it("records the wake only for the configured lawyer", async () => {
+  it("opens the window of the sender who wrote, in that sender's own memory", async () => {
     const { api: ok } = api("+390000000001");
-    await recordLawyerInbound({
+    await recordSenderInbound({
       api: ok,
       atMs: 1,
       channelId: "kapso-whatsapp",
       senders: ["390000000001"],
     });
     expect(writeWake).toHaveBeenCalledWith({ lastLawyerInboundAtMs: 1 });
+    expect(openAdaMemoryIfExistsFromApi).toHaveBeenCalledExactlyOnceWith(ok, "390000000001");
+
+    writeWake.mockClear();
+    openAdaMemoryIfExistsFromApi.mockClear();
+    await recordSenderInbound({
+      api: ok,
+      atMs: 4,
+      channelId: "kapso-whatsapp",
+      senders: ["+39 333 111 1111"],
+    });
+    expect(openAdaMemoryIfExistsFromApi).toHaveBeenCalledExactlyOnceWith(ok, "393331111111");
+    expect(writeWake).toHaveBeenCalledWith({ lastLawyerInboundAtMs: 4 });
   });
 
-  it("does not record any other sender, quietly: they chat normally but never open the window", async () => {
+  it("creates nothing for a sender with no memory yet, and says why", async () => {
     const { api: other, logger } = api("+390000000001");
-    await recordLawyerInbound({
+    await recordSenderInbound({
       api: other,
       atMs: 2,
       channelId: "kapso-whatsapp",
       senders: ["+390000000002", undefined],
     });
-    await recordLawyerInbound({ api: other, atMs: 3, senders: [] });
     expect(writeWake).not.toHaveBeenCalled();
-    expect(logger.debug).toHaveBeenCalledTimes(2);
+    const lines = logger.info.mock.calls.map(([line]) => String(line));
+    expect(lines).toEqual([
+      expect.stringContaining("stage=wake_window reason=no_digest_for_sender sender=+39…0002"),
+    ]);
     expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("skips other channels and senders that are not phone numbers, and logs each", async () => {
+    const { api: other, logger } = api("+390000000001");
+    await recordSenderInbound({
+      api: other,
+      atMs: 3,
+      channelId: "telegram",
+      senders: ["390000000001"],
+    });
+    await recordSenderInbound({ api: other, atMs: 3, senders: [] });
+    await recordSenderInbound({ api: other, atMs: 3, senders: ["120363000000000000@g.us"] });
+    expect(writeWake).not.toHaveBeenCalled();
+    const lines = logger.info.mock.calls.map(([line]) => String(line));
+    expect(lines[0]).toContain("reason=not_whatsapp_channel");
+    expect(lines[1]).toContain("reason=sender_not_a_phone_number");
+    expect(lines[2]).toContain("reason=sender_not_a_phone_number");
   });
 });
