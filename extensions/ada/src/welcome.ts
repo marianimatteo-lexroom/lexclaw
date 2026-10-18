@@ -3,13 +3,13 @@ import { readAdaEnv } from "./ada-env.js";
 import {
   ADA_WHATSAPP_CHANNEL,
   isConfiguredLawyerSender,
-  normalizeWhatsAppNumber,
   sendAdaWhatsAppText,
 } from "./google-notify.js";
 import { logInboundSkip, maskNumber } from "./inbound-log.js";
 import { openAdaRegistryFromApi } from "./memory.js";
 import { detectLanguage, type Language } from "./research-link-outbound.js";
 import { senderNumber } from "./research-push.js";
+import { normalizeWhatsAppNumber } from "./whatsapp-number.js";
 
 /**
  * The first time a WhatsApp number writes to Ada she gets one fixed welcome, sent by code before

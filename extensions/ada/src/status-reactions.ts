@@ -1,6 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { readAdaEnv } from "./ada-env.js";
-import { normalizeWhatsAppNumber, ADA_WHATSAPP_CHANNEL } from "./google-notify.js";
+import { ADA_WHATSAPP_CHANNEL } from "./google-notify.js";
 import { logInboundSkip } from "./inbound-log.js";
 import {
   firstString,
@@ -8,6 +8,7 @@ import {
   postKapsoMessage,
   resolveKapsoAccount,
 } from "./kapso-api.js";
+import { normalizeWhatsAppNumber } from "./whatsapp-number.js";
 import { isWhatsAppMessageId } from "./whatsapp-read.js";
 
 const REACTION_TIMEOUT_MS = 5_000;

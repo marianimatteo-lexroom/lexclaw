@@ -2,7 +2,7 @@ import {
   ADA_WHATSAPP_CHANNEL,
   normalizeWhatsAppNumber,
   readAdaWhatsAppTarget,
-} from "./google-notify.js";
+} from "./whatsapp-number.js";
 
 /**
  * Every account, memory and delivery in Ada belongs to one WhatsApp number, written as its

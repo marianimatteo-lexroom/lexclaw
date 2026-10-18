@@ -1,11 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { whatsappWindowOpen } from "./collector.js";
 import { noteConnectOffer, type ConnectOfferKind } from "./connect-offers.js";
-import {
-  ADA_WHATSAPP_CHANNEL,
-  normalizeWhatsAppNumber,
-  sendAdaWhatsAppText,
-} from "./google-notify.js";
+import { ADA_WHATSAPP_CHANNEL, sendAdaWhatsAppText } from "./google-notify.js";
 import { logInboundSkip } from "./inbound-log.js";
 import { sendKapsoPdf } from "./kapso-document.js";
 import { formatSources } from "./lexroom-citations.js";
@@ -14,6 +10,7 @@ import { lexroomLogger, type LexroomLog } from "./lexroom-log.js";
 import { openAdaMemoryIfExistsFromApi } from "./memory.js";
 import { researchLinkLine, resolveLanguage, type Language } from "./research-link-outbound.js";
 import { buildResearchPdf, type ResearchPdf } from "./research-pdf.js";
+import { normalizeWhatsAppNumber } from "./whatsapp-number.js";
 import { readDigestReadyTemplate, sendDigestReadyNotice } from "./whatsapp-template.js";
 
 /**
