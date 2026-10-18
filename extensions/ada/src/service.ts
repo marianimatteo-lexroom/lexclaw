@@ -27,6 +27,7 @@ import {
   watchGmailInbox,
 } from "./google-api.js";
 import { googleConnectConfigFrom, readGoogleConnectConfig } from "./google-connect.js";
+import { saveRefreshedAccount } from "./google-tools.js";
 import { maskNumber, logInboundSkip } from "./inbound-log.js";
 import { abortResearchJobs } from "./lexroom-jobs.js";
 import { openAdaMemoryFromApi, openAdaMemoryIfExistsFromApi, type MemoryStore } from "./memory.js";
@@ -134,6 +135,7 @@ async function loadGoogleReads(api: OpenClawPluginApi, owner: string, now: Date)
     clientId: config.settings.clientId,
     clientSecret: config.settings.clientSecret,
     now,
+    log: (message) => api.logger.warn(`${message} owner=${maskNumber(owner)}`),
   });
   if (!token.ok) {
     if (token.reason === "reconnect") {
@@ -142,6 +144,11 @@ async function loadGoogleReads(api: OpenClawPluginApi, owner: string, now: Date)
     }
     return { ok: false as const, error: token.reason };
   }
+  await saveRefreshedAccount(store, account, token).catch((error: unknown) => {
+    api.logger.warn(
+      `ada google refreshed token not saved owner=${maskNumber(owner)}: ${error instanceof Error ? error.message : "unknown"}`,
+    );
+  });
   const inbox = await listInboxMessages({ accessToken: token.accessToken, max: 10 });
   if (!inbox.ok) {
     return { ok: false as const, error: `gmail_${inbox.status}` };

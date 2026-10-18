@@ -1,5 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import type { GoogleAccountStore } from "./google-account-contract.js";
+import type { GoogleAccountRecord, GoogleAccountStore } from "./google-account-contract.js";
 import { openAdaGoogleAccountFromApi } from "./google-account.js";
 import {
   listInboxMessages,
@@ -69,8 +69,11 @@ export async function executeAdaGoogleConnect(
         clientSecret: settings.settings.clientSecret,
         now,
         fetchImpl: options.fetchImpl,
+        log: (message) => api.logger.warn(message),
       });
-      if (!token.ok && token.reason === "reconnect") {
+      if (token.ok) {
+        await saveRefreshedAccount(store, account, token);
+      } else if (token.reason === "reconnect") {
         await store.clearAccount();
         account = null;
       }
@@ -90,11 +93,34 @@ export async function executeAdaGoogleConnect(
   }
 }
 
+/** Keeps a refreshed access token, and a refresh token Google rotated, so the next call need not refresh. */
+export async function saveRefreshedAccount(
+  store: GoogleAccountStore,
+  account: GoogleAccountRecord,
+  token: { accessToken: string; accessExpiresAtMs: number; refreshToken?: string },
+): Promise<void> {
+  const refreshToken = token.refreshToken ?? account.refreshToken;
+  if (
+    token.accessToken !== account.accessToken ||
+    token.accessExpiresAtMs !== account.accessExpiresAtMs ||
+    refreshToken !== account.refreshToken
+  ) {
+    await store.upsertAccount({
+      ...account,
+      refreshToken,
+      accessToken: token.accessToken,
+      accessExpiresAtMs: token.accessExpiresAtMs,
+    });
+  }
+}
+
 async function accessForRead(params: {
   config: GoogleConnectConfig;
   store: GoogleAccountStore;
   now: Date;
   signal?: AbortSignal;
+  fetchImpl?: typeof fetch;
+  log?: (message: string) => void;
 }): Promise<{ ok: true; accessToken: string; email: string } | ToolFailure> {
   const account = await params.store.readAccount();
   if (!account) {
@@ -115,6 +141,8 @@ async function accessForRead(params: {
     clientSecret: config.settings.clientSecret,
     now: params.now,
     signal: params.signal,
+    fetchImpl: params.fetchImpl,
+    log: params.log,
   });
   if (!token.ok) {
     if (token.reason === "reconnect") {
@@ -128,16 +156,7 @@ async function accessForRead(params: {
     }
     return { ok: false, error: "Ada could not reach Google. Try again shortly." };
   }
-  if (
-    token.accessToken !== account.accessToken ||
-    token.accessExpiresAtMs !== account.accessExpiresAtMs
-  ) {
-    await params.store.upsertAccount({
-      ...account,
-      accessToken: token.accessToken,
-      accessExpiresAtMs: token.accessExpiresAtMs,
-    });
-  }
+  await saveRefreshedAccount(params.store, account, token);
   return { ok: true, accessToken: token.accessToken, email: account.email };
 }
 
@@ -147,6 +166,7 @@ export async function readConnectedInbox(params: {
   max?: number;
   now?: Date;
   signal?: AbortSignal;
+  log?: (message: string) => void;
 }): Promise<{ ok: true; email: string; messages: InboxMessage[] } | ToolFailure> {
   const now = params.now ?? new Date();
   const access = await accessForRead({ ...params, now });
@@ -179,6 +199,7 @@ export async function readConnectedCalendar(params: {
   hours?: number;
   now?: Date;
   signal?: AbortSignal;
+  log?: (message: string) => void;
 }): Promise<{ ok: true; email: string; events: CalendarEvent[] } | ToolFailure> {
   const now = params.now ?? new Date();
   const access = await accessForRead({ ...params, now });
@@ -218,6 +239,7 @@ export async function sendConnectedEmail(params: {
   now?: Date;
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
+  log?: (message: string) => void;
 }): Promise<{ ok: true; email: string; id: string } | ToolFailure> {
   if (!params.confirmed) {
     return {
@@ -304,7 +326,13 @@ export async function executeAdaSendEmail(
   if (isStoreFailure(store)) {
     return store;
   }
-  return await sendConnectedEmail({ config, store, ...input, signal });
+  return await sendConnectedEmail({
+    config,
+    store,
+    ...input,
+    signal,
+    log: (message) => api.logger.warn(message),
+  });
 }
 
 export async function executeAdaReadInbox(
@@ -318,7 +346,13 @@ export async function executeAdaReadInbox(
   if (isStoreFailure(store)) {
     return store;
   }
-  return await readConnectedInbox({ config, store, max, signal });
+  return await readConnectedInbox({
+    config,
+    store,
+    max,
+    signal,
+    log: (message) => api.logger.warn(message),
+  });
 }
 
 export async function executeAdaReadCalendar(
@@ -332,5 +366,11 @@ export async function executeAdaReadCalendar(
   if (isStoreFailure(store)) {
     return store;
   }
-  return await readConnectedCalendar({ config, store, hours, signal });
+  return await readConnectedCalendar({
+    config,
+    store,
+    hours,
+    signal,
+    log: (message) => api.logger.warn(message),
+  });
 }

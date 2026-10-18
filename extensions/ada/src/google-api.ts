@@ -67,6 +67,9 @@ function withGoogleTimeout(signal: AbortSignal | undefined): AbortSignal {
 type TokenFailure = {
   ok: false;
   reason: "reconnect" | "no_refresh_token" | "denied_scopes" | "google_error";
+  /** Google's own error code and `error_description`, clipped. Neither carries a secret. */
+  googleError?: string;
+  description?: string;
 };
 
 function clip(value: string, max: number): string {
@@ -83,6 +86,18 @@ function googleErrorCode(value: unknown): string | null {
     return null;
   }
   return error;
+}
+
+function googleErrorDescription(value: unknown): string | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const description = (value as { error_description?: unknown }).error_description;
+  if (typeof description !== "string") {
+    return null;
+  }
+  const line = clip(description.replace(/[\u0000-\u001f\u007f]+/gu, " "), 200);
+  return line.length > 0 ? line : null;
 }
 
 async function readBody(response: Response): Promise<unknown> {
@@ -111,9 +126,13 @@ async function postToken(
   }
   const payload = await readBody(response);
   if (!response.ok) {
+    const googleError = googleErrorCode(payload);
+    const description = googleErrorDescription(payload);
     return {
       ok: false,
-      reason: googleErrorCode(payload) === "invalid_grant" ? "reconnect" : "google_error",
+      reason: googleError === "invalid_grant" ? "reconnect" : "google_error",
+      ...(googleError ? { googleError } : {}),
+      ...(description ? { description } : {}),
     };
   }
   if (!payload || typeof payload !== "object") {
@@ -396,7 +415,11 @@ export async function loadAccessToken(params: {
   now: Date;
   fetchImpl?: FetchLike;
   signal?: AbortSignal;
-}): Promise<{ ok: true; accessToken: string; accessExpiresAtMs: number } | TokenFailure> {
+  /** Told why a refresh failed, with Google's description when it gave one. */
+  log?: (message: string) => void;
+}): Promise<
+  { ok: true; accessToken: string; accessExpiresAtMs: number; refreshToken?: string } | TokenFailure
+> {
   if (
     params.account.accessToken &&
     params.account.accessExpiresAtMs !== null &&
@@ -417,6 +440,9 @@ export async function loadAccessToken(params: {
   });
   const token = await postToken(body, fetchImpl, params.signal);
   if (!token.ok) {
+    params.log?.(
+      `ada google token refresh failed reason=${token.reason}${token.googleError ? ` google_error=${token.googleError}` : ""}${token.description ? ` description="${token.description}"` : ""}`,
+    );
     return token;
   }
   const accessToken = token.value.access_token;
@@ -424,10 +450,14 @@ export async function loadAccessToken(params: {
     return { ok: false, reason: "google_error" };
   }
   const expiresIn = typeof token.value.expires_in === "number" ? token.value.expires_in : 0;
+  const rotated = token.value.refresh_token;
   return {
     ok: true,
     accessToken,
     accessExpiresAtMs: params.now.getTime() + expiresIn * 1000,
+    ...(typeof rotated === "string" && rotated.length >= 8 && rotated.length <= 4096
+      ? { refreshToken: rotated }
+      : {}),
   };
 }
 
