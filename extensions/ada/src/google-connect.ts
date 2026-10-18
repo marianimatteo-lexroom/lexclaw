@@ -1,5 +1,6 @@
 import { createConnectState } from "./connect-state.js";
 import { isAdaPath } from "./http-paths.js";
+import { mintShortLink, shortLinkUrl } from "./short-links.js";
 
 /**
  * Gmail and Calendar share one Google OAuth consent. Requester-scoped MCP is
@@ -183,11 +184,23 @@ export async function prepareGoogleConnect(params: {
   }
   const issued = createConnectState(config.settings.stateSecret, params.now, params.owner);
   await params.savePending(issued.nonce, issued.expiresAtMs);
-  const url = buildGoogleConnectUrl({
+  const target = buildGoogleConnectUrl({
     clientId: config.settings.clientId,
     redirectUri: config.settings.redirectUri,
     state: issued.state,
   });
+  const url = shortLinkUrl(
+    new URL(config.settings.redirectUri).origin,
+    "g",
+    mintShortLink({
+      kind: "g",
+      owner: params.owner,
+      nonce: issued.nonce,
+      target,
+      expiresAtMs: issued.expiresAtMs,
+      now: params.now,
+    }),
+  );
   return {
     ok: true,
     connected: false,

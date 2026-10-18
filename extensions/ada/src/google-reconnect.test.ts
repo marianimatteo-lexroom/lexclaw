@@ -38,6 +38,7 @@ vi.mock("./memory.js", async (importOriginal) => ({
 import { clearSentDigests } from "./dispatch-digest.js";
 import { clearHeldReconnectNotes } from "./held-reconnect.js";
 import { recordSenderInbound, runAdaCollectPass } from "./service.js";
+import { expandShortLink } from "./short-link-test-support.js";
 
 const OWNER = "393331111111";
 const NOW = new Date("2026-10-18T07:40:00.000Z");
@@ -98,7 +99,7 @@ describe("a Google sign-in Google no longer accepts is not a connection", () => 
     expect(replacePending).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ ok: true, connected: false });
     if (result.ok && !result.connected) {
-      const state = new URL(result.ask.url).searchParams.get("state") ?? "";
+      const state = expandShortLink(result.ask.url).searchParams.get("state") ?? "";
       const payload = JSON.parse(Buffer.from(state.split(".")[0] ?? "", "base64url").toString());
       expect(payload.owner).toBe(OWNER);
     }
@@ -266,7 +267,8 @@ describe("the background pass tells a number whose Google sign-in expired", () =
       const call = send.mock.calls[0]?.[0] as { to: string; text: string };
       expect(call.to).toBe(`+${OWNER}`);
       expect(call.text).toMatch(/^Il collegamento al tuo Gmail è scaduto/u);
-      expect(call.text).toContain("accounts.google.com");
+      expect(call.text).toMatch(/https:\/\/[^\s/]+\/g\/[\w-]{10}$/u);
+      expect(call.text).not.toContain("accounts.google.com");
       expect(replacePending).toHaveBeenCalledTimes(1);
 
       send.mockClear();

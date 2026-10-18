@@ -7,6 +7,7 @@ import {
   type GoogleConnectConfig,
 } from "./google-connect.js";
 import type { GoogleConnectedNotice } from "./google-notify.js";
+import { revokeShortLinksForNonce } from "./short-links.js";
 
 type CallbackDeps = {
   config: GoogleConnectConfig;
@@ -31,6 +32,7 @@ function escapeHtml(value: string): string {
 
 type ConnectPage = {
   kind: "ready" | "retry" | "blocked";
+  lang?: string;
   heading: string;
   message: string;
   email?: string;
@@ -238,7 +240,7 @@ function renderConnectPage(content: ConnectPage): string {
     content.kind === "ready"
       ? `<ul class="products"><li><span>Gmail</span><span>Read and send</span></li><li><span>Google Calendar</span><span>Read only</span></li></ul><p class="foot">You can close this page and return to WhatsApp.</p>`
       : "";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Ada</title><style>${PAGE_STYLE}</style></head><body><main class="card"><p class="brand"><i></i>Ada</p><div class="badge ${content.kind}">${mark(content.kind)}</div><h1>${escapeHtml(content.heading)}</h1><p class="lead">${escapeHtml(content.message)}</p>${account}${access}</main></body></html>`;
+  return `<!doctype html><html lang="${escapeHtml(content.lang ?? "en")}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Ada</title><style>${PAGE_STYLE}</style></head><body><main class="card"><p class="brand"><i></i>Ada</p><div class="badge ${content.kind}">${mark(content.kind)}</div><h1>${escapeHtml(content.heading)}</h1><p class="lead">${escapeHtml(content.message)}</p>${account}${access}</main></body></html>`;
 }
 
 export function writeAdaConnectPage(
@@ -310,6 +312,7 @@ export async function handleAdaGoogleCallback(
   }
   const store = await deps.openStore(parsed.owner);
   const pending = await store.consumePending(parsed.nonce, now.getTime());
+  revokeShortLinksForNonce(parsed.nonce);
   if (!pending) {
     writeAdaConnectPage(res, 400, {
       kind: "retry",

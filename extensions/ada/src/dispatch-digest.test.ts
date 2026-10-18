@@ -151,7 +151,7 @@ describe("dispatchDigest", () => {
     executeAdaGoogleConnect.mockResolvedValue({
       ok: true,
       connected: false,
-      ask: { url: "https://accounts.google.com/o/oauth2/v2/auth?state=anna", message: "x" },
+      ask: { url: "https://vera.example/g/AbCdEfGhIj", message: "x" },
     });
     expect(
       await dispatchDigest(api, {
@@ -164,7 +164,8 @@ describe("dispatchDigest", () => {
     expect(executeAdaGoogleConnect).toHaveBeenCalledExactlyOnceWith(ANNA, {}, api);
     expect(sent).toHaveLength(1);
     expect(sent[0]?.to).toBe(`+${ANNA}`);
-    expect(sent[0]?.text).toContain("https://accounts.google.com/o/oauth2/v2/auth?state=anna");
+    expect(sent[0]?.text).toContain("https://vera.example/g/AbCdEfGhIj");
+    expect(sent[0]?.text).not.toContain("accounts.google.com");
     expect(sent[0]?.text).toContain("Collega Gmail e Google Calendar");
   });
 
