@@ -725,6 +725,81 @@ describe("ada_send_email confirmation gate", () => {
   });
 });
 
+describe("calendar event tools", () => {
+  const create = {
+    title: "Udienza Rossi",
+    start: "2026-10-20T15:00:00",
+    end: "2026-10-20T16:00:00",
+  };
+  const writeScopes =
+    "openid email https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.events";
+
+  it.each(["ada_create_calendar_event", "ada_update_calendar_event"])(
+    "%s never reads the account or calls Google before the user confirms",
+    async (name) => {
+      const store = useGoogleAccount(googleAccount({ scopes: writeScopes }));
+      const { callTool } = registerAda();
+      expect(await callTool(name, { ...create, eventId: "evt-1", confirmed: false })).toMatchObject(
+        { ok: false, reason: "confirmation_required" },
+      );
+      expect(store.readAccount).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("creates the event once confirmed", async () => {
+    useGoogleAccount(googleAccount({ scopes: writeScopes }));
+    fetchMock.mockImplementation(async () =>
+      json({ id: "evt-1", summary: create.title, start: { dateTime: create.start }, end: {} }),
+    );
+    const { callTool } = registerAda();
+    expect(
+      await callTool("ada_create_calendar_event", { ...create, confirmed: true }),
+    ).toMatchObject({ ok: true, event: { id: "evt-1", summary: "Udienza Rossi" } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(urlOf(fetchMock.mock.calls[0]?.[0] as RequestInfo)).toBe(
+      "https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=none",
+    );
+  });
+
+  it("shows who is invited when reading the calendar", async () => {
+    useGoogleAccount(googleAccount({ scopes: writeScopes }));
+    fetchMock.mockImplementation(async () =>
+      json({
+        items: [
+          {
+            id: "evt-1",
+            summary: "Udienza",
+            start: { dateTime: create.start },
+            end: { dateTime: create.end },
+            attendees: [{ email: "anna@example.com", displayName: "Anna Bianchi" }],
+          },
+        ],
+      }),
+    );
+    const { callTool } = registerAda();
+    expect(await callTool("ada_read_calendar", {})).toMatchObject({
+      ok: true,
+      events: [{ id: "evt-1", attendees: [{ email: "anna@example.com", name: "Anna Bianchi" }] }],
+    });
+  });
+
+  it("asks for a fresh permission when the saved grant is the old read-only one", async () => {
+    useGoogleAccount(
+      googleAccount({ scopes: `${writeScopes.replace("calendar.events", "calendar.readonly")}` }),
+    );
+    const { callTool } = registerAda();
+    expect(
+      await callTool("ada_update_calendar_event", {
+        eventId: "evt-1",
+        title: "Nuovo",
+        confirmed: true,
+      }),
+    ).toMatchObject({ ok: false, reason: "needs_calendar_scope" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("message_received hook", () => {
   const inbound = { channelId: "kapso-whatsapp", messageId: MESSAGE_ID };
 

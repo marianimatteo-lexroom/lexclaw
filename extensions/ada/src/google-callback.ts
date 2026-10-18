@@ -238,7 +238,7 @@ function renderConnectPage(content: ConnectPage): string {
     : "";
   const access =
     content.kind === "ready"
-      ? `<ul class="products"><li><span>Gmail</span><span>Read and send</span></li><li><span>Google Calendar</span><span>Read only</span></li></ul><p class="foot">You can close this page and return to WhatsApp.</p>`
+      ? `<ul class="products"><li><span>Gmail</span><span>Read and send</span></li><li><span>Google Calendar</span><span>Read and edit</span></li></ul><p class="foot">You can close this page and return to WhatsApp.</p>`
       : "";
   return `<!doctype html><html lang="${escapeHtml(content.lang ?? "en")}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Ada</title><style>${PAGE_STYLE}</style></head><body><main class="card"><p class="brand"><i></i>Ada</p><div class="badge ${content.kind}">${mark(content.kind)}</div><h1>${escapeHtml(content.heading)}</h1><p class="lead">${escapeHtml(content.message)}</p>${account}${access}</main></body></html>`;
 }
@@ -293,7 +293,7 @@ export async function handleAdaGoogleCallback(
       kind: "retry",
       heading: "Not connected",
       message:
-        "Ada did not connect Gmail or Google Calendar. Return to WhatsApp and ask Ada for a new link.",
+        "Ada did not connect Gmail or Google Calendar. If Google showed a warning, or you went back, return to WhatsApp and ask Ada for a new link.",
     });
     return true;
   }
@@ -336,7 +336,7 @@ export async function handleAdaGoogleCallback(
       kind: denied ? "retry" : "blocked",
       heading: denied ? "Approval needed" : "Could not connect",
       message: denied
-        ? "Approve Gmail, sending mail, and Google Calendar, then ask Ada for a new link."
+        ? "Approve Gmail, sending mail, and reading and editing Google Calendar, then ask Ada for a new link."
         : "Ada could not finish connecting the Google account. Return to WhatsApp and ask for a new link.",
     });
     return true;

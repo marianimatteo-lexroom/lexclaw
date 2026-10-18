@@ -11,24 +11,34 @@ import {
   listUpcomingEvents,
   loadAccessToken,
   sendGmailMessage,
+  getCalendarEvent,
+  writeCalendarEvent,
   type CalendarEvent,
+  type CalendarEventInput,
   type InboxMessage,
 } from "./google-api.js";
 import {
   canSendMail,
+  canWriteCalendar,
   prepareGoogleConnect,
   readGoogleConnectConfig,
   type GoogleConnectConfig,
   type GoogleConnectResult,
 } from "./google-connect.js";
 import { maskNumber } from "./inbound-log.js";
+import { openAdaMemoryIfExistsFromApi } from "./memory.js";
 
 type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger" | "config">;
 
 type ToolFailure = {
   ok: false;
   error: string;
-  reason?: "not_connected" | "needs_send_scope" | "confirmation_required" | "private_chat_required";
+  reason?:
+    | "not_connected"
+    | "needs_send_scope"
+    | "needs_calendar_scope"
+    | "confirmation_required"
+    | "private_chat_required";
 };
 
 function clamp(value: number | undefined, fallback: number, min: number, max: number): number {
@@ -218,6 +228,7 @@ export async function readConnectedCalendar(params: {
   const listed = await listUpcomingEvents({
     accessToken: access.accessToken,
     now,
+    includeAttendees: true,
     hours: clamp(params.hours, 48, 1, 168),
     signal: params.signal,
   });
@@ -250,7 +261,7 @@ export async function sendConnectedEmail(params: {
   fetchImpl?: typeof fetch;
   log?: (message: string) => void;
 }): Promise<{ ok: true; email: string; id: string } | ToolFailure> {
-  if (!params.confirmed) {
+  if (params.confirmed !== true) {
     return {
       ok: false,
       reason: "confirmation_required",
@@ -322,6 +333,281 @@ export async function sendConnectedEmail(params: {
     return { ok: false, error: "Ada could not send the email. Try again shortly." };
   }
   return { ok: true, email: access.email, id: sent.id };
+}
+
+export type CalendarEventArgs = {
+  /** Only an update names the event it changes; it comes from `ada_read_calendar`. */
+  eventId?: string;
+  title?: string;
+  start?: string;
+  end?: string;
+  timeZone?: string;
+  description?: string;
+  location?: string;
+  /** Guests of a new event. */
+  attendees?: string[];
+  /** Guests to add to an existing event. An update has no way to remove one. */
+  addAttendees?: string[];
+  confirmed: boolean;
+};
+
+const FALLBACK_TIME_ZONE = "Europe/Rome";
+const DATE_TIME = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(:\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})?$/u;
+const MAX_GUESTS = 20;
+
+const oneLine = (value: string) => !/[\r\n]/u.test(value);
+
+function validTimeZone(zone: string): boolean {
+  try {
+    return new Intl.DateTimeFormat("en", { timeZone: zone }).resolvedOptions().timeZone !== "";
+  } catch {
+    return false;
+  }
+}
+
+type ReadEvent = {
+  event: CalendarEventInput;
+  /** The time zone the person named, if they did; none when it is left to the event or profile. */
+  namedTimeZone?: string;
+  /** Guests the call names: all of a new event's, the additions to an existing one's. */
+  guests: string[];
+};
+
+/** The event fields as Google takes them, or the reason the call cannot go ahead. */
+function readCalendarEventInput(
+  args: CalendarEventArgs,
+  update: boolean,
+): ({ ok: true } & ReadEvent) | ToolFailure {
+  const invalid = (error: string): ToolFailure => ({ ok: false, error });
+  const title = args.title?.trim();
+  const description = args.description?.replaceAll("\u0000", "").trim();
+  const location = args.location?.trim();
+  if (title !== undefined && (!title || title.length > 300 || !oneLine(title))) {
+    return invalid("The title must be one line of up to 300 characters.");
+  }
+  if (location !== undefined && (location.length > 300 || !oneLine(location))) {
+    return invalid("The location must be one line of up to 300 characters.");
+  }
+  if (description !== undefined && description.length > 8_000) {
+    return invalid("The description is too long.");
+  }
+  const guests = ((update ? args.addAttendees : args.attendees) ?? []).map((email) => email.trim());
+  if (
+    guests.length > MAX_GUESTS ||
+    guests.some((email) => !RECIPIENT.test(email) || email.length > 320 || !oneLine(email))
+  ) {
+    return invalid("Guests must be up to 20 valid email addresses.");
+  }
+  if ((args.start === undefined) !== (args.end === undefined)) {
+    return invalid("Give both the start and the end.");
+  }
+  const namedTimeZone = args.timeZone?.trim() || undefined;
+  if (namedTimeZone !== undefined && !validTimeZone(namedTimeZone)) {
+    return invalid("The time zone must be an IANA name such as Europe/Rome.");
+  }
+  let start: string | undefined;
+  let end: string | undefined;
+  if (args.start !== undefined && args.end !== undefined) {
+    const starts = DATE_TIME.exec(args.start);
+    const ends = DATE_TIME.exec(args.end);
+    if (!starts || !ends) {
+      return invalid("The start and end must be ISO 8601 date-times, such as 2026-10-20T15:00:00.");
+    }
+    start = `${starts[1]}${starts[2] ?? ":00"}${starts[3] ?? ""}`;
+    end = `${ends[1]}${ends[2] ?? ":00"}${ends[3] ?? ""}`;
+    if (Number.isNaN(Date.parse(start)) || Number.isNaN(Date.parse(end))) {
+      return invalid("The start and end must be real dates and times.");
+    }
+    if (Boolean(starts[3]) === Boolean(ends[3]) && Date.parse(end) <= Date.parse(start)) {
+      return invalid("The event must end after it starts.");
+    }
+  }
+  const event: CalendarEventInput = {
+    ...(title !== undefined ? { summary: title } : {}),
+    ...(start !== undefined && end !== undefined ? { start, end } : {}),
+    ...(description !== undefined ? { description } : {}),
+    ...(location !== undefined ? { location } : {}),
+  };
+  if (update ? Object.keys(event).length === 0 && guests.length === 0 : !title || !start || !end) {
+    return invalid(
+      update
+        ? "Say what to change: the title, the start and end, the description, the location or guests to add."
+        : "A new event needs a title, a start and an end.",
+    );
+  }
+  return { ok: true, event, namedTimeZone, guests };
+}
+
+const NEEDS_CALENDAR_SCOPE =
+  "Ada cannot change the calendar with the current Google connection. Tell the person naturally that you need a fresh Google permission to add and change events, and ask whether they want it; call ada_google_connect and send the new link only after they agree (or if they asked to connect).";
+const NO_WRITE_ACCESS =
+  "The person has no write access to that calendar, so nothing was changed. Tell them so; a new permission would not help.";
+
+type CalendarEventResult = {
+  ok: true;
+  email: string;
+  event: CalendarEvent;
+  /** An update that left existing guests uninformed: tell the person, who may want to tell them. */
+  guestsNotified?: boolean;
+  notice?: string;
+};
+
+export async function changeConnectedCalendarEvent(params: {
+  config: GoogleConnectConfig;
+  store: GoogleAccountStore;
+  args: CalendarEventArgs;
+  /** The person's saved profile time zone; Europe/Rome when they have none. */
+  profileTimeZone?: string;
+  now?: Date;
+  signal?: AbortSignal;
+  fetchImpl?: typeof fetch;
+  log?: (message: string) => void;
+}): Promise<CalendarEventResult | ToolFailure> {
+  const { args } = params;
+  const eventId = args.eventId?.trim();
+  const update = args.eventId !== undefined;
+  if (args.confirmed !== true) {
+    return {
+      ok: false,
+      reason: "confirmation_required",
+      error: update
+        ? "Ask the user to confirm which event changes and exactly what changes: the title, the date and time with its time zone, the location, the description and any guests to add. Call again with confirmed true only after they agree."
+        : "Ask the user to confirm the title, the date and time with its time zone, and the location, description and guests if any. Call again with confirmed true only after they agree.",
+    };
+  }
+  if (update && !eventId) {
+    return { ok: false, error: "Name the event to change; ada_read_calendar lists their ids." };
+  }
+  const input = readCalendarEventInput(args, update);
+  if (!input.ok) {
+    return input;
+  }
+  const account = await params.store.readAccount();
+  if (!account) {
+    return {
+      ok: false,
+      reason: "not_connected",
+      error:
+        "Google Calendar is not connected. Ask whether they want to connect; call ada_google_connect and send the link only after they agree (or if they asked to connect).",
+    };
+  }
+  if (!canWriteCalendar(account.scopes)) {
+    return { ok: false, reason: "needs_calendar_scope", error: NEEDS_CALENDAR_SCOPE };
+  }
+  const access = await accessForRead({ ...params, now: params.now ?? new Date() });
+  if (!access.ok) {
+    return access;
+  }
+  const rejected = async (status: number): Promise<ToolFailure> => {
+    if (status === 401) {
+      await params.store.clearAccountIfStill(access.stamp);
+      return {
+        ok: false,
+        reason: "not_connected",
+        error:
+          "Google rejected the saved connection. Ask whether they want to reconnect; call ada_google_connect and send the new link only after they agree (or if they asked to connect).",
+      };
+    }
+    return {
+      ok: false,
+      error:
+        status === 404 && update
+          ? "Ada could not find that event in the calendar."
+          : `Ada could not ${update ? "update" : "create"} the event. Try again shortly.`,
+    };
+  };
+
+  const current = update
+    ? await getCalendarEvent({
+        accessToken: access.accessToken,
+        eventId: eventId ?? "",
+        signal: params.signal,
+        fetchImpl: params.fetchImpl,
+      })
+    : undefined;
+  if (current && !current.ok) {
+    return await rejected(current.status);
+  }
+  const known = current?.ok ? current.guests : [];
+  const have = new Set(known.map((guest) => guest.email.toLowerCase()));
+  const added: string[] = [];
+  for (const email of input.guests) {
+    if (!have.has(email.toLowerCase())) {
+      have.add(email.toLowerCase());
+      added.push(email);
+    }
+  }
+  const event: CalendarEventInput = { ...input.event };
+  if (event.start) {
+    event.timeZone =
+      input.namedTimeZone ??
+      (current?.ok ? current.timeZone : undefined) ??
+      params.profileTimeZone ??
+      FALLBACK_TIME_ZONE;
+    if (current?.ok && current.wasAllDay) {
+      event.wasAllDay = true;
+    }
+  }
+  if (added.length > 0) {
+    event.guests = [...known, ...added.map((email) => ({ email }))];
+  }
+  if (update && Object.keys(event).length === 0) {
+    return { ok: false, error: "Those guests are already invited and nothing else changes." };
+  }
+  const saved = await writeCalendarEvent({
+    accessToken: access.accessToken,
+    eventId,
+    event,
+    sendUpdates: added.length > 0 ? "all" : "none",
+    signal: params.signal,
+    fetchImpl: params.fetchImpl,
+  });
+  if (!saved.ok) {
+    if (saved.denied === "scope") {
+      return { ok: false, reason: "needs_calendar_scope", error: NEEDS_CALENDAR_SCOPE };
+    }
+    if (saved.denied === "access") {
+      return { ok: false, error: NO_WRITE_ACCESS };
+    }
+    return await rejected(saved.status);
+  }
+  const result: CalendarEventResult = { ok: true, email: access.email, event: saved.event };
+  if (update && known.length > 0) {
+    result.guestsNotified = added.length > 0;
+    if (!result.guestsNotified) {
+      result.notice = `The ${known.length} guest${known.length === 1 ? "" : "s"} already on this event were not notified of the change. Tell the person, so they can let the guests know.`;
+    }
+  }
+  return result;
+}
+
+export async function executeAdaCalendarEvent(
+  owner: string,
+  config: GoogleConnectConfig,
+  api: StoreApi,
+  args: CalendarEventArgs,
+  signal?: AbortSignal,
+): Promise<CalendarEventResult | ToolFailure> {
+  const store = await openStore(api, owner);
+  if (isStoreFailure(store)) {
+    return store;
+  }
+  let profileTimeZone: string | undefined;
+  try {
+    const timezone = (await (await openAdaMemoryIfExistsFromApi(api, owner))?.readProfile())
+      ?.timezone;
+    profileTimeZone = timezone && validTimeZone(timezone) ? timezone : undefined;
+  } catch {
+    profileTimeZone = undefined;
+  }
+  return await changeConnectedCalendarEvent({
+    config,
+    store,
+    args,
+    profileTimeZone,
+    signal,
+    log: (message) => api.logger.warn(`${message} owner=${maskNumber(owner)}`),
+  });
 }
 
 export async function executeAdaSendEmail(

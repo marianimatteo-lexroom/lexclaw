@@ -9,6 +9,7 @@ import { mintShortLink, shortLinkUrl } from "./short-links.js";
  * reads both APIs directly.
  */
 export const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
+export const CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events";
 
 export const GOOGLE_CONNECT_SCOPES = [
   "openid",
@@ -16,6 +17,7 @@ export const GOOGLE_CONNECT_SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
   GMAIL_SEND_SCOPE,
   "https://www.googleapis.com/auth/calendar.readonly",
+  CALENDAR_EVENTS_SCOPE,
 ] as const;
 
 export const GOOGLE_CONNECT_SERVICES = ["gmail", "google_calendar", "gmail_send"] as const;
@@ -137,6 +139,10 @@ export function canSendMail(scopes: string | null | undefined): boolean {
   return typeof scopes === "string" && scopes.split(/\s+/u).includes(GMAIL_SEND_SCOPE);
 }
 
+export function canWriteCalendar(scopes: string | null | undefined): boolean {
+  return typeof scopes === "string" && scopes.split(/\s+/u).includes(CALENDAR_EVENTS_SCOPE);
+}
+
 export function coversConnectScopes(scope: unknown): boolean {
   if (typeof scope !== "string" || scope.trim() === "") {
     return true;
@@ -147,7 +153,17 @@ export function coversConnectScopes(scope: unknown): boolean {
   );
 }
 
-export function googleConnectMessage(url: string, purpose: "connect" | "send" = "connect"): string {
+export function googleConnectMessage(
+  url: string,
+  purpose: "connect" | "send" | "calendar" = "connect",
+): string {
+  if (purpose === "calendar") {
+    return [
+      "Ada can read Gmail and Google Calendar, but needs a fresh permission to add and change calendar events.",
+      "Open this link and approve it:",
+      url,
+    ].join("\n");
+  }
   if (purpose === "send") {
     return [
       "Ada can read Gmail and Google Calendar, but cannot send mail yet.",
@@ -156,7 +172,7 @@ export function googleConnectMessage(url: string, purpose: "connect" | "send" = 
     ].join("\n");
   }
   return [
-    "Connect Gmail and Google Calendar so Ada can prepare your morning digest and send mail you confirm.",
+    "Connect Gmail and Google Calendar so Ada can prepare your morning digest, send mail and add calendar events you confirm.",
     "Open this link to connect your Google account:",
     url,
   ].join("\n");
@@ -170,7 +186,11 @@ export async function prepareGoogleConnect(params: {
   account: { email: string; scopes: string | null } | null;
   savePending: (nonce: string, expiresAtMs: number) => Promise<void>;
 }): Promise<GoogleConnectResult> {
-  if (params.account && canSendMail(params.account.scopes)) {
+  if (
+    params.account &&
+    canSendMail(params.account.scopes) &&
+    canWriteCalendar(params.account.scopes)
+  ) {
     return {
       ok: true,
       connected: true,
@@ -207,7 +227,10 @@ export async function prepareGoogleConnect(params: {
     ask: {
       services: GOOGLE_CONNECT_SERVICES,
       url,
-      message: googleConnectMessage(url, params.account ? "send" : "connect"),
+      message: googleConnectMessage(
+        url,
+        !params.account ? "connect" : canSendMail(params.account.scopes) ? "calendar" : "send",
+      ),
     },
   };
 }

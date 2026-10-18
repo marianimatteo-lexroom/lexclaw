@@ -56,7 +56,8 @@ const savedAccount = (overrides: Partial<GoogleAccountRecord> = {}): GoogleAccou
   accessToken: "stale-access-token",
   accessExpiresAtMs: NOW.getTime() - HOUR_MS,
   connectedAtMs: 1,
-  scopes: "openid email https://www.googleapis.com/auth/gmail.send",
+  scopes:
+    "openid email https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.events",
   ...overrides,
 });
 
