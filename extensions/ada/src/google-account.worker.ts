@@ -18,6 +18,8 @@ import type {
 import {
   LEGACY_GOOGLE_ACCOUNT_ID,
   type GoogleAccountRecord,
+  type GoogleAccountStamp,
+  type GoogleRefreshedTokens,
   type AdaGoogleOperations,
 } from "./google-account-contract.js";
 import { resolveTokenCipher, type TokenCipher } from "./token-crypto.js";
@@ -426,6 +428,63 @@ class AdaGoogleDatabaseStore {
     return undefined;
   }
 
+  /** Runs `write` in one transaction, only while the row still holds `expected`. */
+  private ifStill(
+    owner: string,
+    expected: GoogleAccountStamp,
+    operationLabel: string,
+    write: () => void,
+  ): boolean {
+    assertOwner(owner);
+    return runSqliteImmediateTransactionSync(
+      this.db,
+      () => {
+        const current = this.readAccount(owner);
+        if (
+          !current ||
+          current.refreshToken !== expected.refreshToken ||
+          current.connectedAtMs !== expected.connectedAtMs
+        ) {
+          return false;
+        }
+        write();
+        return true;
+      },
+      { busyTimeoutMs: 5000, databaseLabel: "ada google account", operationLabel },
+    );
+  }
+
+  updateTokensIfStill(
+    owner: string,
+    expected: GoogleAccountStamp,
+    tokens: GoogleRefreshedTokens,
+  ): boolean {
+    return this.ifStill(owner, expected, "ada.google.account.refresh", () => {
+      executeSqliteQuerySync(
+        this.db,
+        this.query
+          .updateTable("vera_google_account")
+          .set({
+            ...(tokens.refreshToken
+              ? { refresh_token: this.cipher.seal(tokens.refreshToken, REFRESH_TOKEN_CONTEXT) }
+              : {}),
+            access_token: this.cipher.seal(tokens.accessToken, ACCESS_TOKEN_CONTEXT),
+            access_expires_at_ms: tokens.accessExpiresAtMs,
+          })
+          .where("id", "=", owner),
+      );
+    });
+  }
+
+  clearAccountIfStill(owner: string, expected: GoogleAccountStamp): boolean {
+    return this.ifStill(owner, expected, "ada.google.account.clear_if_still", () => {
+      executeSqliteQuerySync(
+        this.db,
+        this.query.deleteFrom("vera_google_account").where("id", "=", owner),
+      );
+    });
+  }
+
   close(): void {
     try {
       this.maintenance.close();
@@ -511,6 +570,14 @@ export function createSqliteWorkerBackend(
           return database.readAccount(command.input.owner);
         case "clearAccount":
           return database.clearAccount(command.input.owner);
+        case "updateTokensIfStill":
+          return database.updateTokensIfStill(
+            command.input.owner,
+            command.input.expected,
+            command.input.tokens,
+          );
+        case "clearAccountIfStill":
+          return database.clearAccountIfStill(command.input.owner, command.input.expected);
         case "listOwners":
           return database.listOwners();
         case "adoptLegacy":

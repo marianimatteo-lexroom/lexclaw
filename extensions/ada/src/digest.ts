@@ -74,8 +74,6 @@ export type DigestDeadlineInput = {
 export type DigestDeadlineLine = DigestDeadlineInput & {
   /** The number the lawyer replies with. */
   no: number;
-  replyHint: string;
-  skipHint: string;
 };
 
 export type DigestPlan =
@@ -227,8 +225,6 @@ export function numberDeadlineLines(
     return {
       ...deadline,
       no,
-      replyHint: `reply ${no} to run research`,
-      skipHint: `reply skip ${no} to dismiss`,
     };
   });
 }

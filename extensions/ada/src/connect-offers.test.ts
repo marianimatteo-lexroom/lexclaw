@@ -14,7 +14,9 @@ let counter = 0;
 /** Offers live for the whole process, so each test names numbers of its own. */
 const freshNumber = () => `39333${String(++counter).padStart(7, "0")}`;
 const kinds = (owner: string, options: Parameters<typeof takeConnectOffers>[1]) =>
-  takeConnectOffers(owner, options).map((offer) => offer.kind);
+  takeConnectOffers(owner, { inboundAtMs: Number.MAX_SAFE_INTEGER, ...options }).map(
+    (offer) => offer.kind,
+  );
 
 describe("pending connect questions", () => {
   it("are kept for the number that was asked, and the first run to read them owns them", () => {
@@ -44,6 +46,13 @@ describe("pending connect questions", () => {
     expect(kinds(anna, { runId: "run-yes", inboundAtMs: 7_000, nowMs: 8_000 })).toEqual([
       "lexroom",
     ]);
+  });
+
+  it("are left for a later run when the run's message has no known arrival time", () => {
+    const anna = freshNumber();
+    noteConnectOffer(anna, "lexroom", 1_000);
+    expect(takeConnectOffers(anna, { runId: "run-1", nowMs: 2_000 })).toEqual([]);
+    expect(kinds(anna, { runId: "run-2", nowMs: 2_000 })).toEqual(["lexroom"]);
   });
 
   it("expire, so an old question never reaches a later conversation", () => {
@@ -90,8 +99,6 @@ const PLAN: Extract<DigestPlan, { deliver: true }> = {
     source: "PEC",
     briefReady: no === 2,
     no,
-    replyHint: "",
-    skipHint: "",
   })),
 };
 
@@ -145,6 +152,8 @@ describe("the persona hook", () => {
     sessionKey: `agent:main:kapso-whatsapp:direct:${number}`,
   });
   const plain = { prependSystemContext: ADA_PERSONA };
+  /** The message the person's run answers has arrived, after any question already sent. */
+  const arrived = (number: string) => recordSenderInbound(number, Date.now() + 60_000);
   const noted = (text: string) => ({
     prependSystemContext: ADA_PERSONA,
     prependContext: expect.stringContaining(text),
@@ -154,6 +163,8 @@ describe("the persona hook", () => {
     const [anna, bruno] = [freshNumber(), freshNumber()];
     const hook = personaHook();
     noteConnectOffer(anna, "google");
+    arrived(anna);
+    arrived(bruno);
     expect(hook({}, { ...turn(bruno), runId: "r1", trigger: "user" })).toEqual(plain);
     expect(hook({}, { ...turn(anna), runId: "r1", trigger: "user" })).toEqual(
       noted("ada_google_connect"),
@@ -168,6 +179,7 @@ describe("the persona hook", () => {
     const anna = freshNumber();
     const hook = personaHook();
     noteConnectOffer(anna, "google");
+    arrived(anna);
     for (const trigger of ["cron", "heartbeat", "memory"]) {
       expect(hook({}, { ...turn(anna), runId: `r-${trigger}`, trigger })).toEqual(plain);
     }
@@ -199,6 +211,14 @@ describe("the persona hook", () => {
     expect(result.prependContext).toContain("item 1: Bianchi");
     expect(result.prependContext).toContain("item 2: Verdi");
     expect(result.prependContext).toContain("ada_deadline_reply");
+  });
+
+  it("leaves the question alone when this process never saw the message arrive", () => {
+    const anna = freshNumber();
+    noteConnectOffer(anna, "lexroom");
+    expect(personaHook()({}, { ...turn(anna), runId: "r1" })).toEqual(plain);
+    arrived(anna);
+    expect(personaHook()({}, { ...turn(anna), runId: "r2" })).toEqual(noted("ada_lexroom_connect"));
   });
 
   it("still returns the persona for a turn that names no sender", () => {

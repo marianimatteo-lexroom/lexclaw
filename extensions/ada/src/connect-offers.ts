@@ -40,7 +40,8 @@ export function noteConnectOffer(
 /**
  * What was asked of `owner` and not yet shown to the model. The first run to read an offer owns
  * it: only that run reads it again, and no later run does. `inboundAtMs` is when the message
- * that started the run arrived; a run for a message older than the offer leaves it for the next.
+ * that started the run arrived; a run for a message older than the offer, or with no known
+ * arrival, leaves it for the next.
  */
 export function takeConnectOffers(
   owner: string,
@@ -60,7 +61,8 @@ export function takeConnectOffers(
       taken.push({ kind, detail: offer.detail });
     } else if (
       offer.consumedByRunId === undefined &&
-      (options.inboundAtMs === undefined || options.inboundAtMs >= offer.at)
+      options.inboundAtMs !== undefined &&
+      options.inboundAtMs >= offer.at
     ) {
       offer.consumedByRunId = claim;
       taken.push({ kind, detail: offer.detail });

@@ -315,7 +315,6 @@ describe("prepareDeadlineIntake", () => {
             status: "candidate",
             type: "hearing",
             due: "2026-11-12 09:30",
-            replyHint: "reply 1 to run research",
             matterLabel: "Rossi c. Bianchi",
           }),
         ]);

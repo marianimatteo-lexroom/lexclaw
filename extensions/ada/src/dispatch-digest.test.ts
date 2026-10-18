@@ -121,7 +121,7 @@ describe("dispatchDigest", () => {
     expect(
       await dispatchDigest(api, { owner: DINO, plan: PLAN, idempotencyKey: "d1" }),
     ).toMatchObject({ ok: false });
-    expect(takeConnectOffers(DINO, { runId: "r0" })).toEqual([]);
+    expect(takeConnectOffers(DINO, { runId: "r0", inboundAtMs: Date.now() + 1_000 })).toEqual([]);
 
     await dispatchDigest(api, {
       owner: DINO,
@@ -129,10 +129,10 @@ describe("dispatchDigest", () => {
       idempotencyKey: "d1",
       afterLawyerReply: true,
     });
-    const [offer] = takeConnectOffers(DINO, { runId: "r1" });
+    const [offer] = takeConnectOffers(DINO, { runId: "r1", inboundAtMs: Date.now() + 1_000 });
     expect(offer?.kind).toBe("digest");
     expect(offer?.detail).toContain("a Lexroom research for Rossi SRL");
-    expect(takeConnectOffers(ELSA, { runId: "r1" })).toEqual([]);
+    expect(takeConnectOffers(ELSA, { runId: "r1", inboundAtMs: Date.now() + 1_000 })).toEqual([]);
   });
 
   it("sends nothing for a plan with nothing to say", async () => {

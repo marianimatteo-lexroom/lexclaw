@@ -142,7 +142,8 @@ async function loadGoogleReads(api: OpenClawPluginApi, owner: string, now: Date)
   if (!token.ok) {
     if (token.reason === "reconnect") {
       // Google no longer accepts this sign-in: it is not a connection, so every path sees none.
-      await store.clearAccount();
+      // Only the row that failed: a reconnect during the refresh is a new sign-in.
+      await store.clearAccountIfStill(account);
     }
     return { ok: false as const, error: token.reason };
   }
@@ -326,9 +327,15 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
   const google = await loadGoogleReads(params.api, params.owner, params.now);
   if (!google.ok) {
     if (google.error === "reconnect") {
-      const dispatch = await dispatchSafely(dispatchDigestTurn, reconnectNoteRequest(params));
+      // The dead row is gone, so nothing would retry: a note that cannot go out is held for the
+      // number's next message. Free text outside the 24-hour window can be accepted by WhatsApp
+      // and fail later, so a closed window holds it without trying.
+      const windowOpen = whatsappWindowOpen(earlyWake.lastLawyerInboundAtMs, nowMs);
+      const dispatch = windowOpen
+        ? await dispatchSafely(dispatchDigestTurn, reconnectNoteRequest(params))
+        : { ok: false };
       if (!dispatch.ok) {
-        holdReconnectNote(params.owner, params.now.getTime());
+        holdReconnectNote(params.owner, nowMs);
       }
       return {
         collected: false,

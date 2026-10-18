@@ -206,6 +206,8 @@ function useGoogleAccount(account: ReturnType<typeof googleAccount> | null) {
     readAccount: vi.fn(async () => account),
     clearAccount: vi.fn(async () => {}),
     upsertAccount: vi.fn(async () => {}),
+    updateTokensIfStill: vi.fn(async () => true),
+    clearAccountIfStill: vi.fn(async () => true),
   };
   openAdaGoogleAccountFromApi.mockResolvedValue(store);
   return store;
@@ -709,7 +711,7 @@ describe("ada_send_email confirmation gate", () => {
     const { callTool } = registerAda();
     const result = await callTool("ada_send_email", { ...email, confirmed: true });
     expect(result).toMatchObject({ ok: false, ...expected });
-    expect(store.clearAccount).toHaveBeenCalledTimes(clears ? 1 : 0);
+    expect(store.clearAccountIfStill).toHaveBeenCalledTimes(clears ? 1 : 0);
   });
 
   it("reports a Gmail network failure without claiming success", async () => {

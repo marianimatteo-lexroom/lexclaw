@@ -16,6 +16,8 @@ function storeWith(account: GoogleAccountRecord | null): GoogleAccountStore {
     upsertAccount: async () => {},
     readAccount: async () => account,
     clearAccount: async () => {},
+    updateTokensIfStill: async () => true,
+    clearAccountIfStill: async () => true,
   };
 }
 

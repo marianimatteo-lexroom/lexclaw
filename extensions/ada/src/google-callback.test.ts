@@ -37,6 +37,8 @@ function memoryStore(): GoogleAccountStore & { account: GoogleAccountRecord | nu
     clearAccount: async () => {
       account = null;
     },
+    updateTokensIfStill: async () => true,
+    clearAccountIfStill: async () => true,
   };
 }
 

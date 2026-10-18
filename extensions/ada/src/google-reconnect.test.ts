@@ -13,15 +13,17 @@ vi.mock("./google-api.js", async (importOriginal) => ({
 }));
 
 const stores = vi.hoisted(() => ({ account: null as null | Record<string, unknown> }));
-const clearAccount = vi.hoisted(() => vi.fn(async () => {}));
-const upsertAccount = vi.hoisted(() => vi.fn(async (_account: unknown) => {}));
+const clearAccount = vi.hoisted(() => vi.fn(async (_expected: unknown) => true));
+const updateTokens = vi.hoisted(() => vi.fn(async (_expected: unknown, _tokens: unknown) => true));
 const replacePending = vi.hoisted(() => vi.fn(async (_nonce: string, _expiresAtMs: number) => {}));
 vi.mock("./google-account.js", () => ({
   openAdaGoogleAccountFromApi: async () => ({
     readAccount: async () => stores.account,
-    clearAccount,
+    clearAccount: async () => {},
+    clearAccountIfStill: clearAccount,
     replacePending,
-    upsertAccount,
+    upsertAccount: vi.fn(async () => {}),
+    updateTokensIfStill: updateTokens,
     consumePending: vi.fn(async () => false),
   }),
   openAdaGoogleAccountDbFromApi: async () => ({ listOwners: async () => [] }),
@@ -142,7 +144,8 @@ describe("a Google sign-in Google no longer accepts is not a connection", () => 
       ok: true,
       connected: true,
     });
-    expect(upsertAccount).toHaveBeenCalledExactlyOnceWith(
+    expect(updateTokens).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ refreshToken: "saved-refresh-token", connectedAtMs: 1 }),
       expect.objectContaining({
         accessToken: "new",
         refreshToken: "rotated-refresh",
@@ -161,9 +164,10 @@ describe("a Google sign-in Google no longer accepts is not a connection", () => 
   });
 });
 
-function memory(): MemoryStore {
+/** The number last wrote an hour before NOW, so its 24-hour window is open unless said otherwise. */
+function memory(lastLawyerInboundAtMs: number | null = NOW.getTime() - HOUR_MS): MemoryStore {
   const wake: WakeState = {
-    lastLawyerInboundAtMs: null,
+    lastLawyerInboundAtMs,
     lastReconcileAtMs: null,
     lastCollectAtMs: null,
     lastDigestAtMs: null,
@@ -179,11 +183,16 @@ function memory(): MemoryStore {
 }
 
 describe("the background pass tells a number whose Google sign-in expired", () => {
-  const pass = (now: Date, dispatch: ReturnType<typeof vi.fn>, owner = OWNER) =>
+  const pass = (
+    now: Date,
+    dispatch: ReturnType<typeof vi.fn>,
+    owner = OWNER,
+    lastInboundAtMs: number | null = now.getTime() - HOUR_MS,
+  ) =>
     runAdaCollectPass({
       api,
       owner,
-      memory: memory(),
+      memory: memory(lastInboundAtMs),
       now,
       forceMorning: false,
       trigger: "poll",
@@ -199,7 +208,7 @@ describe("the background pass tells a number whose Google sign-in expired", () =
     const dispatch = vi.fn(async () => ({ ok: true }));
     const outcome = await pass(NOW, dispatch);
 
-    expect(clearAccount).toHaveBeenCalledTimes(1);
+    expect(clearAccount).toHaveBeenCalledExactlyOnceWith(savedAccount());
     expect(dispatch).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ owner: OWNER, connectOnly: true, reconnect: true }),
     );
@@ -238,13 +247,18 @@ describe("the background pass tells a number whose Google sign-in expired", () =
       stores.account = null;
     });
 
-    it("holds it, and sends it with a link made then when that number next writes", async () => {
+    it("holds it without sending when the 24-hour window is closed, and sends it with a link made then when that number next writes", async () => {
       stores.account = savedAccount();
-      const closed = vi.fn(async () => ({ ok: false, reason: "window closed" }));
-      expect(await pass(NOW, closed)).toMatchObject({
-        delivered: false,
-        reason: "reconnect_held",
-      });
+      const dispatch = vi.fn(async () => ({ ok: true }));
+      for (const lastInbound of [null, NOW.getTime() - 25 * HOUR_MS]) {
+        clearHeldReconnectNotes();
+        expect(await pass(NOW, dispatch, OWNER, lastInbound)).toMatchObject({
+          delivered: false,
+          reason: "reconnect_held",
+        });
+      }
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(clearAccount).toHaveBeenCalledTimes(2);
 
       stores.account = null;
       await inbound(NOW.getTime() + 5 * HOUR_MS);
@@ -258,6 +272,16 @@ describe("the background pass tells a number whose Google sign-in expired", () =
       send.mockClear();
       await inbound(NOW.getTime() + 6 * HOUR_MS);
       expect(send).not.toHaveBeenCalled();
+    });
+
+    it("holds it too when the window is open but the send fails", async () => {
+      stores.account = savedAccount();
+      const down = vi.fn(async () => ({ ok: false, reason: "down" }));
+      expect(await pass(NOW, down)).toMatchObject({ reason: "reconnect_held" });
+      expect(down).toHaveBeenCalledTimes(1);
+      stores.account = null;
+      await inbound(NOW.getTime() + HOUR_MS);
+      expect(send).toHaveBeenCalledTimes(1);
     });
 
     it("keeps holding while the send keeps failing, and drops it once the person reconnected", async () => {
@@ -321,26 +345,27 @@ describe("a refreshed Google token is kept", () => {
     stores.account = savedAccount();
     google.loadAccessToken.mockResolvedValue(refreshed);
     await collect();
-    expect(upsertAccount).toHaveBeenCalledExactlyOnceWith({
-      ...savedAccount(),
-      accessToken: "fresh-access",
-      accessExpiresAtMs: NOW.getTime() + HOUR_MS,
-    });
+    expect(updateTokens).toHaveBeenCalledExactlyOnceWith(
+      savedAccount(),
+      expect.objectContaining({
+        accessToken: "fresh-access",
+        accessExpiresAtMs: NOW.getTime() + HOUR_MS,
+      }),
+    );
   });
 
   it("saves a refresh token Google rotated, and keeps the old one when it did not", async () => {
     stores.account = savedAccount();
     google.loadAccessToken.mockResolvedValue({ ...refreshed, refreshToken: "rotated-refresh" });
     await collect();
-    expect(upsertAccount).toHaveBeenCalledWith(
+    expect(updateTokens).toHaveBeenCalledWith(
+      savedAccount(),
       expect.objectContaining({ refreshToken: "rotated-refresh", accessToken: "fresh-access" }),
     );
-    upsertAccount.mockClear();
+    updateTokens.mockClear();
     google.loadAccessToken.mockResolvedValue(refreshed);
     await collect();
-    expect(upsertAccount).toHaveBeenCalledWith(
-      expect.objectContaining({ refreshToken: "saved-refresh-token" }),
-    );
+    expect(updateTokens.mock.calls[0]?.[1]).not.toHaveProperty("refreshToken");
   });
 
   it("writes nothing when the stored access token was still live", async () => {
@@ -352,13 +377,13 @@ describe("a refreshed Google token is kept", () => {
       accessExpiresAtMs: NOW.getTime() + HOUR_MS,
     });
     await collect();
-    expect(upsertAccount).not.toHaveBeenCalled();
+    expect(updateTokens).not.toHaveBeenCalled();
   });
 
   it("still collects when saving fails, and says so", async () => {
     stores.account = savedAccount();
     google.loadAccessToken.mockResolvedValue(refreshed);
-    upsertAccount.mockRejectedValueOnce(new Error("disk full"));
+    updateTokens.mockRejectedValueOnce(new Error("disk full"));
     await expect(collect()).resolves.toMatchObject({ reason: "gmail_500" });
   });
 });

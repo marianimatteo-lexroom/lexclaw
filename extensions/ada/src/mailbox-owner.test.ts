@@ -67,8 +67,10 @@ describe("a mailbox has exactly one owner", () => {
     expect(sent[0]?.text).toContain("collegata da un altro numero");
     expect(sent[0]?.text).toContain("Vuoi che ti mandi il link per ricollegarla?");
     expect(sent[0]?.text).not.toMatch(/«|scrivimi/u);
-    expect(takeConnectOffers(ANNA, { runId: "r1" })).toEqual([{ kind: "google" }]);
-    expect(takeConnectOffers(BRUNO, { runId: "r1" })).toEqual([]);
+    expect(takeConnectOffers(ANNA, { runId: "r1", inboundAtMs: Date.now() + 1_000 })).toEqual([
+      { kind: "google" },
+    ]);
+    expect(takeConnectOffers(BRUNO, { runId: "r1", inboundAtMs: Date.now() + 1_000 })).toEqual([]);
     expect(logger.info).toHaveBeenCalledWith("ada google mailbox moved from=+39…1111 to=+39…2222");
   });
 

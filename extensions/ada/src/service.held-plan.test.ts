@@ -37,6 +37,8 @@ vi.mock("./google-account.js", () => ({
   openAdaGoogleAccountFromApi: async () => ({
     readAccount: async () => ({ email: "lawyer@example.com" }),
     upsertAccount: async () => {},
+    updateTokensIfStill: async () => true,
+    clearAccountIfStill: async () => true,
   }),
   openAdaGoogleAccountDbFromApi: async () => ({ listOwners: async () => [] }),
 }));

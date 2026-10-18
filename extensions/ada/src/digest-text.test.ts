@@ -46,8 +46,6 @@ const PLAN: Extract<DigestPlan, { deliver: true }> = {
       source: "PEC",
       moved: true,
       briefReady: false,
-      replyHint: "reply 1 to run research",
-      skipHint: "reply skip 1 to dismiss",
     },
   ],
 };

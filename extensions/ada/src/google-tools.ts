@@ -1,5 +1,10 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import type { GoogleAccountRecord, GoogleAccountStore } from "./google-account-contract.js";
+import type {
+  GoogleAccountRecord,
+  GoogleAccountStamp,
+  GoogleAccountStore,
+  GoogleRefreshedTokens,
+} from "./google-account-contract.js";
 import { openAdaGoogleAccountFromApi } from "./google-account.js";
 import {
   listInboxMessages,
@@ -16,6 +21,7 @@ import {
   type GoogleConnectConfig,
   type GoogleConnectResult,
 } from "./google-connect.js";
+import { maskNumber } from "./inbound-log.js";
 
 type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger" | "config">;
 
@@ -69,13 +75,12 @@ export async function executeAdaGoogleConnect(
         clientSecret: settings.settings.clientSecret,
         now,
         fetchImpl: options.fetchImpl,
-        log: (message) => api.logger.warn(message),
+        log: (message) => api.logger.warn(`${message} owner=${maskNumber(owner)}`),
       });
       if (token.ok) {
         await saveRefreshedAccount(store, account, token);
       } else if (token.reason === "reconnect") {
-        await store.clearAccount();
-        account = null;
+        account = (await store.clearAccountIfStill(account)) ? null : await store.readAccount();
       }
     }
     return await prepareGoogleConnect({
@@ -93,25 +98,27 @@ export async function executeAdaGoogleConnect(
   }
 }
 
-/** Keeps a refreshed access token, and a refresh token Google rotated, so the next call need not refresh. */
+/**
+ * Keeps a refreshed access token, and a refresh token Google rotated, so the next call need not
+ * refresh. Written only while the saved row is still the one that was refreshed: a reconnect or a
+ * move to another number during the refresh is never overwritten. Returns the stamp the row has
+ * now (the rotated refresh token, when one was saved).
+ */
 export async function saveRefreshedAccount(
   store: GoogleAccountStore,
   account: GoogleAccountRecord,
-  token: { accessToken: string; accessExpiresAtMs: number; refreshToken?: string },
-): Promise<void> {
+  token: GoogleRefreshedTokens,
+): Promise<GoogleAccountStamp> {
   const refreshToken = token.refreshToken ?? account.refreshToken;
   if (
-    token.accessToken !== account.accessToken ||
-    token.accessExpiresAtMs !== account.accessExpiresAtMs ||
-    refreshToken !== account.refreshToken
+    token.accessToken === account.accessToken &&
+    token.accessExpiresAtMs === account.accessExpiresAtMs &&
+    refreshToken === account.refreshToken
   ) {
-    await store.upsertAccount({
-      ...account,
-      refreshToken,
-      accessToken: token.accessToken,
-      accessExpiresAtMs: token.accessExpiresAtMs,
-    });
+    return account;
   }
+  const saved = await store.updateTokensIfStill(account, token);
+  return saved ? { refreshToken, connectedAtMs: account.connectedAtMs } : account;
 }
 
 async function accessForRead(params: {
@@ -121,7 +128,9 @@ async function accessForRead(params: {
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
   log?: (message: string) => void;
-}): Promise<{ ok: true; accessToken: string; email: string } | ToolFailure> {
+}): Promise<
+  { ok: true; accessToken: string; email: string; stamp: GoogleAccountStamp } | ToolFailure
+> {
   const account = await params.store.readAccount();
   if (!account) {
     return {
@@ -146,7 +155,7 @@ async function accessForRead(params: {
   });
   if (!token.ok) {
     if (token.reason === "reconnect") {
-      await params.store.clearAccount();
+      await params.store.clearAccountIfStill(account);
       return {
         ok: false,
         reason: "not_connected",
@@ -156,8 +165,8 @@ async function accessForRead(params: {
     }
     return { ok: false, error: "Ada could not reach Google. Try again shortly." };
   }
-  await saveRefreshedAccount(params.store, account, token);
-  return { ok: true, accessToken: token.accessToken, email: account.email };
+  const stamp = await saveRefreshedAccount(params.store, account, token);
+  return { ok: true, accessToken: token.accessToken, email: account.email, stamp };
 }
 
 export async function readConnectedInbox(params: {
@@ -180,7 +189,7 @@ export async function readConnectedInbox(params: {
   });
   if (!listed.ok) {
     if (listed.status === 401) {
-      await params.store.clearAccount();
+      await params.store.clearAccountIfStill(access.stamp);
       return {
         ok: false,
         reason: "not_connected",
@@ -214,7 +223,7 @@ export async function readConnectedCalendar(params: {
   });
   if (!listed.ok) {
     if (listed.status === 401) {
-      await params.store.clearAccount();
+      await params.store.clearAccountIfStill(access.stamp);
       return {
         ok: false,
         reason: "not_connected",
@@ -294,7 +303,7 @@ export async function sendConnectedEmail(params: {
   });
   if (!sent.ok) {
     if (sent.status === 401) {
-      await params.store.clearAccount();
+      await params.store.clearAccountIfStill(access.stamp);
       return {
         ok: false,
         reason: "not_connected",
@@ -331,7 +340,7 @@ export async function executeAdaSendEmail(
     store,
     ...input,
     signal,
-    log: (message) => api.logger.warn(message),
+    log: (message) => api.logger.warn(`${message} owner=${maskNumber(owner)}`),
   });
 }
 
@@ -351,7 +360,7 @@ export async function executeAdaReadInbox(
     store,
     max,
     signal,
-    log: (message) => api.logger.warn(message),
+    log: (message) => api.logger.warn(`${message} owner=${maskNumber(owner)}`),
   });
 }
 
@@ -371,6 +380,6 @@ export async function executeAdaReadCalendar(
     store,
     hours,
     signal,
-    log: (message) => api.logger.warn(message),
+    log: (message) => api.logger.warn(`${message} owner=${maskNumber(owner)}`),
   });
 }

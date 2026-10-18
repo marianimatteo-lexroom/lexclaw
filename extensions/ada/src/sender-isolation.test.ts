@@ -86,6 +86,8 @@ function useAccounts() {
       store = {
         readAccount: vi.fn(async () => (owner === ANNA ? GOOGLE_ACCOUNT : null)),
         clearAccount: vi.fn(async () => {}),
+        updateTokensIfStill: vi.fn(async () => true),
+        clearAccountIfStill: vi.fn(async () => true),
         upsertAccount: vi.fn(async () => {}),
         replacePending: vi.fn(async () => {}),
         consumePending: vi.fn(async () => false),
