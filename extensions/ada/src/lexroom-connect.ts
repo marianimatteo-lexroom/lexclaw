@@ -1,5 +1,6 @@
 import { createConnectState } from "./connect-state.js";
 import { isAdaPath } from "./http-paths.js";
+import { mintShortLink, shortLinkUrl } from "./short-links.js";
 
 /**
  * Lexroom has no public OAuth for research. The lawyer opens an Ada-hosted
@@ -203,10 +204,22 @@ export async function prepareLexroomConnect(params: {
   }
   const issued = createConnectState(config.settings.stateSecret, params.now, params.owner);
   await params.savePending(issued.nonce, issued.expiresAtMs);
-  const url = buildLexroomConnectUrl({
+  const target = buildLexroomConnectUrl({
     connectUri: config.settings.connectUri,
     state: issued.state,
   });
+  const url = shortLinkUrl(
+    new URL(config.settings.connectUri).origin,
+    "l",
+    mintShortLink({
+      kind: "l",
+      owner: params.owner,
+      nonce: issued.nonce,
+      target,
+      expiresAtMs: issued.expiresAtMs,
+      now: params.now,
+    }),
+  );
   return {
     ok: true,
     connected: false,

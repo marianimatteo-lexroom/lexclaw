@@ -9,6 +9,7 @@ import {
   readConnectState,
   readLexroomConnectConfig,
 } from "./lexroom-connect.js";
+import { expandShortLink } from "./short-link-test-support.js";
 
 const SECRET = "0123456789abcdef";
 const CONNECT_URI = "https://gateway.example/ada/lexroom/connect";
@@ -84,9 +85,7 @@ describe("lexroom connect state", () => {
       owner: OWNER,
     });
     expect(readConnectState(SECRET, `${issued.state}x`, now)).toBeNull();
-    expect(
-      readConnectState(SECRET, issued.state, new Date(issued.expiresAtMs + 1)),
-    ).toBeNull();
+    expect(readConnectState(SECRET, issued.state, new Date(issued.expiresAtMs + 1))).toBeNull();
   });
 });
 
@@ -143,9 +142,11 @@ describe("prepareLexroomConnect", () => {
       throw new Error("expected an ask");
     }
     expect(saved?.nonce).toBeTruthy();
-    expect(result.ask.url.startsWith(`${CONNECT_URI}?state=`)).toBe(true);
+    expect(result.ask.url).toMatch(/^https:\/\/gateway\.example\/l\/[\w-]{10}$/u);
     expect(result.ask.message).toContain(result.ask.url);
-    const state = new URL(result.ask.url).searchParams.get("state") ?? "";
+    const full = expandShortLink(result.ask.url);
+    expect(full.toString().startsWith(`${CONNECT_URI}?state=`)).toBe(true);
+    const state = full.searchParams.get("state") ?? "";
     expect(readConnectState(SECRET, state, now)).toMatchObject({
       nonce: saved?.nonce,
       owner: OWNER,

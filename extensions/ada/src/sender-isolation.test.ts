@@ -19,6 +19,7 @@ vi.mock("./memory.js", () => ({
 
 import plugin from "../index.js";
 import { markResearchLinkReady, takeResearchLinks } from "./research-link-outbound.js";
+import { expandShortLink } from "./short-link-test-support.js";
 
 /** Anna is the configured lawyer and has connected everything; Bruno has connected nothing. */
 const ANNA = "393331111111";
@@ -236,7 +237,7 @@ describe("sender B cannot reach sender A's Gmail and Calendar", () => {
     useAccounts();
     const stateOf = (result: unknown) => {
       const ask = (result as { ask: { url: string } }).ask;
-      const state = new URL(ask.url).searchParams.get("state") ?? "";
+      const state = expandShortLink(ask.url).searchParams.get("state") ?? "";
       return JSON.parse(Buffer.from(state.split(".")[0] ?? "", "base64url").toString());
     };
     const bruno = registerAda(asPrivateChat(BRUNO));
@@ -244,7 +245,7 @@ describe("sender B cannot reach sender A's Gmail and Calendar", () => {
     const carla = registerAda(asPrivateChat(CARLA));
     expect(stateOf(await carla.call("ada_google_connect"))).toMatchObject({ owner: CARLA });
     const lexroomState = (await bruno.call("ada_lexroom_connect")) as { ask: { url: string } };
-    const state = new URL(lexroomState.ask.url).searchParams.get("state") ?? "";
+    const state = expandShortLink(lexroomState.ask.url).searchParams.get("state") ?? "";
     expect(
       JSON.parse(Buffer.from(state.split(".")[0] ?? "", "base64url").toString()),
     ).toMatchObject({ owner: BRUNO });

@@ -1,3 +1,4 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import {
   defineToolPlugin,
@@ -76,6 +77,7 @@ import {
   researchToolDefinition,
 } from "./src/research-tool.js";
 import { openWakeWindow, recordSenderInbound, registerAdaService } from "./src/service.js";
+import { handleAdaShortLink } from "./src/short-links-http.js";
 import { registerStatusReactionHooks } from "./src/status-reactions.js";
 import { handleAdaStatus } from "./src/status.js";
 import { handleAdaGoogleNotify } from "./src/watch.js";
@@ -572,6 +574,18 @@ const entry = definePluginEntry({
         }
       },
     });
+
+    for (const kind of ["g", "l"] as const) {
+      const route = {
+        path: `/${kind}`,
+        auth: "plugin",
+        match: "prefix",
+        handler: (req: IncomingMessage, res: ServerResponse) =>
+          handleAdaShortLink(req, res, kind, new Date()),
+      } as const;
+      api.registerHttpRoute(route);
+      registerAdaHttpRoute(api, route);
+    }
 
     registerAdaHttpRoute(api, {
       path: "/google/notify",

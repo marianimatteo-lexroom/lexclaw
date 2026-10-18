@@ -15,6 +15,7 @@ import {
   sendLexroomConnectedNotice,
   startAdaResearch,
 } from "./lexroom-tools.js";
+import { expandShortLink } from "./short-link-test-support.js";
 
 const NOW = new Date("2026-10-10T12:00:00.000Z");
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
@@ -328,7 +329,10 @@ describe("executeAdaLexroomConnect", () => {
     const result = await executeAdaLexroomConnect(OWNER, CONNECT_CONFIG, api, NOW);
     expect(result).toMatchObject({ ok: true, connected: false });
     const ask = (result as { ask: { url: string; message: string } }).ask;
-    expect(ask.url.startsWith("https://gateway.example/ada/lexroom/connect?state=")).toBe(true);
+    expect(ask.url).toMatch(/^https:\/\/gateway\.example\/l\/[\w-]{10}$/u);
+    expect(expandShortLink(ask.url).origin + expandShortLink(ask.url).pathname).toBe(
+      "https://gateway.example/ada/lexroom/connect",
+    );
     expect(ask.message).toContain(ask.url);
     expect(store.replacePending).toHaveBeenCalledTimes(1);
     expect(store.replacePending).toHaveBeenCalledWith(
@@ -436,7 +440,7 @@ describe("Lexroom accounts belong to one number each", () => {
     expect(stores.get(OTHER)?.replacePending).toHaveBeenCalledTimes(1);
     expect(stores.has(OWNER)).toBe(false);
     if (result.ok && !result.connected) {
-      const state = new URL(result.ask.url).searchParams.get("state") ?? "";
+      const state = expandShortLink(result.ask.url).searchParams.get("state") ?? "";
       const payload = JSON.parse(Buffer.from(state.split(".")[0] ?? "", "base64url").toString());
       expect(payload.owner).toBe(OTHER);
     }

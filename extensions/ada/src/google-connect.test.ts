@@ -10,6 +10,7 @@ import {
   readGoogleConnectConfig,
   GOOGLE_CONNECT_SCOPES,
 } from "./google-connect.js";
+import { expandShortLink } from "./short-link-test-support.js";
 
 const NOW = new Date("2026-10-09T07:40:00.000Z");
 const CONFIG = {
@@ -110,7 +111,9 @@ describe("prepareGoogleConnect", () => {
     if (!result.ok || result.connected) {
       return;
     }
-    const url = new URL(result.ask.url);
+    expect(result.ask.url).toMatch(/^https:\/\/gateway\.example\/g\/[\w-]{10}$/u);
+    expect(result.ask.message).not.toContain("accounts.google.com");
+    const url = expandShortLink(result.ask.url);
     expect(url.origin).toBe("https://accounts.google.com");
     expect(url.searchParams.get("access_type")).toBe("offline");
     expect(url.searchParams.get("prompt")).toBe("consent");
@@ -127,7 +130,7 @@ describe("prepareGoogleConnect", () => {
         redirectUri: CONFIG.googleRedirectUri,
         state: url.searchParams.get("state") ?? "",
       }),
-    ).toBe(result.ask.url);
+    ).toBe(url.toString());
   });
 
   it("does not mint a link when the account can already send mail", async () => {

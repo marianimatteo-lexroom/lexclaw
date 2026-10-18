@@ -10,6 +10,7 @@ import {
 import { lexroomLogger } from "./lexroom-log.js";
 import { loginLexroomAccount } from "./lexroom-login.js";
 import { lexroomTimeoutMs } from "./lexroom-timeout.js";
+import { revokeShortLinksForNonce } from "./short-links.js";
 
 type ConnectHttpDeps = {
   config: LexroomConnectConfig;
@@ -430,6 +431,7 @@ export async function handleAdaLexroomConnect(
   }
 
   const pending = await store.consumePending(parsed.nonce, now.getTime());
+  revokeShortLinksForNonce(parsed.nonce);
   if (!pending) {
     writeHtml(
       res,
