@@ -186,7 +186,8 @@ migrate_legacy_plugin
 # A volume from before the rename can still name the assistant Vera in the workspace files the
 # model reads and in the agent's configured name, and describe her as working for one lawyer
 # only or answering in Italian; a deploy never rewrites any of it. In IDENTITY.md and SOUL.md:
-# rename the standalone word Vera, turn the known "one lawyer / one person only" phrases into
+# rename the standalone word Vera or VERA (case-sensitive, so the Italian adjective vera stays),
+# turn the known "one lawyer / one person only" phrases into
 # "everyone who writes to her", and append one marked section that says she serves every sender.
 # SOUL.md also gets a marked section that says she answers in the language of the latest message.
 # Each section is appended once; its marker makes a second run a no-op. In AGENTS.md, TOOLS.md,
@@ -198,9 +199,8 @@ migrate_identity_name() {
   node -e '
     const fs = require("node:fs");
     const path = require("node:path");
-    const word = /(?<![\w./@:-])vera(?![\w@/-]|\.\w)/giu;
-    const ada = (found) =>
-      found === found.toUpperCase() ? "ADA" : found === found.toLowerCase() ? "ada" : "Ada";
+    const word = /(?<![\w./@:-])(?:Vera|VERA)(?![\w@/-]|\.\w)/gu;
+    const ada = (found) => (found === "VERA" ? "ADA" : "Ada");
     const onePerson = [
       [/\b(for|to|with) (?:one|a single|just one) (?:lawyer|person|user|client)(?: only)?\b/giu, "$1 everyone who writes to her"],
       [/\bper (?:una|un) (?:sola persona|solo avvocato|persona sola|avvocato solo)\b/giu, "per chiunque le scriva"],
@@ -248,7 +248,7 @@ migrate_identity_name() {
   ' "${WORKSPACE_DIR}" || log "WARNING: could not update the workspace identity files; the plugin still tells the model its name is Ada, that she serves everyone and that she answers in the language of the latest message"
   local current
   current="$(oc config get agents.entries.main.identity.name --json 2>/dev/null || true)"
-  if printf '%s' "${current}" | grep -qiE '(^|[^[:alnum:]])vera([^[:alnum:]]|$)'; then
+  if printf '%s' "${current}" | grep -qE '(^|[^[:alnum:]])(Vera|VERA)([^[:alnum:]]|$)'; then
     config_set agents.entries.main.identity.name '"Ada"'
   fi
 }

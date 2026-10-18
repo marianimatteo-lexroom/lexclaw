@@ -293,6 +293,18 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
       );
     });
 
+    it("renames only the whole words Vera and VERA, never the Italian adjective vera", () => {
+      const deploy = boot(ENV);
+      mkdirSync(deploy.workspace, { recursive: true });
+      const text =
+        "Sono Vera. VERA risponde. Una vera urgenza: la vera questione, vera o falsa? Vera: ok. /vera/status VERA_TOKEN_KEY vera.verus.legal\n";
+      writeFileSync(join(deploy.workspace, "AGENTS.md"), text);
+      expect(deploy.run().status).toBe(0);
+      expect(read(deploy, "AGENTS.md")).toBe(
+        "Sono Ada. ADA risponde. Una vera urgenza: la vera questione, vera o falsa? Ada: ok. /vera/status VERA_TOKEN_KEY vera.verus.legal\n",
+      );
+    });
+
     it("adds the language section to a SOUL.md that already has the serves-everyone section", () => {
       const deploy = boot(ENV);
       mkdirSync(deploy.workspace, { recursive: true });
