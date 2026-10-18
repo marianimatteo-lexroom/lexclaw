@@ -24,6 +24,7 @@ import {
   executeAdaSendEmail,
 } from "./src/google-tools.js";
 import { registerAdaHttpRoute } from "./src/http-paths.js";
+import { logInboundSkip, maskNumber } from "./src/inbound-log.js";
 import { openAdaLexroomAccountFromApi } from "./src/lexroom-account.js";
 import type { LexroomConfig } from "./src/lexroom-client.js";
 import { lexroomConfigProperties } from "./src/lexroom-config-schema.js";
@@ -517,6 +518,9 @@ const entry = definePluginEntry({
       const channelId = readInboundChannelId(event, ctx);
       const messageId = readInboundMessageId(event, ctx);
       const accountId = typeof ctx.accountId === "string" ? ctx.accountId : undefined;
+      api.logger.info(
+        `ada inbound received channel=${channelId ?? "unknown"} sender=${maskNumber(ctx.senderId, event.from)}`,
+      );
       statusReactions.received({
         sessionKey: ctx.sessionKey ?? event.sessionKey,
         channelId,
@@ -532,6 +536,13 @@ const entry = definePluginEntry({
       }).then((result) => {
         if (!result.ok) {
           api.logger.warn(`ada whatsapp read receipt failed: ${result.error}`);
+        } else if ("skipped" in result) {
+          logInboundSkip(api.logger, {
+            stage: "read_receipt",
+            reason: result.skipped.replaceAll("-", "_"),
+            sender: [ctx.senderId, event.from],
+            messageId,
+          });
         }
       });
       try {

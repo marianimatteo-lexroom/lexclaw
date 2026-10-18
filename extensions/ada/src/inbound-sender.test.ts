@@ -89,7 +89,12 @@ describe("recordLawyerInbound", () => {
     });
     await recordLawyerInbound({ api: other, atMs: 3, senders: [] });
     expect(writeWake).not.toHaveBeenCalled();
-    expect(logger.debug).toHaveBeenCalledTimes(2);
+    const lines = logger.info.mock.calls.map(([line]) => String(line));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain(
+      "stage=wake_window reason=not_the_configured_lawyer sender=+39…0002",
+    );
+    expect(lines[1]).toContain("reason=not_the_configured_lawyer sender=unknown");
     expect(logger.warn).not.toHaveBeenCalled();
   });
 });

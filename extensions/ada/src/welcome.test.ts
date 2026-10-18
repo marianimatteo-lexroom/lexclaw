@@ -58,11 +58,12 @@ function setup(options: { databasePath?: string } = {}) {
   });
   const sessions = new Map<string, Entry>();
   const warn = vi.fn();
+  const info = vi.fn();
   const answered = vi.fn();
   let handler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
   const api = createTestPluginApi({
     id: "ada",
-    logger: { info: vi.fn(), warn, error: vi.fn(), debug: vi.fn() },
+    logger: { info, warn, error: vi.fn(), debug: vi.fn() },
     config: {
       channels: { "kapso-whatsapp": { defaultTo: DEFAULT_TO } },
     } as OpenClawPluginApi["config"],
@@ -90,6 +91,7 @@ function setup(options: { databasePath?: string } = {}) {
     sendText,
     sessions,
     warn,
+    info,
     answered,
     textsTo: (number: string) => sent.filter((entry) => entry.to === `+${number}`),
     async inbound({ text, from = ANNA, sessionKey, channel = "kapso-whatsapp", group }: Inbound) {
@@ -229,6 +231,33 @@ describe("first-message welcome", () => {
     expect(await ada.inbound({ text: "Ciao" })).toEqual({ handled: true });
 
     expect(ada.textsTo(ANNA)).toHaveLength(1);
+    void ada.backend.close();
+  });
+
+  it("logs every skip with the reason and a masked sender, never the full number", async () => {
+    const ada = setup();
+    await ada.inbound({ text: "Ciao", from: DEFAULT_TO });
+    await ada.inbound({ text: "Ciao", group: true });
+    await ada.inbound({ text: "Ciao", channel: "telegram" });
+    await ada.inbound({ text: "Ciao", from: "not-a-number" });
+    await ada.inbound({ text: "Ciao" });
+    await ada.inbound({ text: "Ciao" });
+    vi.stubEnv("ADA_WELCOME_ENABLED", "false");
+    await ada.inbound({ text: "Ciao", from: BRUNO });
+
+    const lines = ada.info.mock.calls.map(([line]) => String(line));
+    const reasons = lines.flatMap((line) => /stage=welcome reason=(\w+)/u.exec(line)?.[1] ?? []);
+    expect(reasons).toEqual([
+      "configured_lawyer",
+      "group_chat",
+      "not_whatsapp_channel",
+      "sender_not_a_phone_number",
+      "already_welcomed",
+      "welcome_disabled",
+    ]);
+    expect(lines.join("\n")).toContain("sender=+39…1111");
+    expect(lines.join("\n")).not.toContain(ANNA);
+    expect(lines.join("\n")).not.toContain(LAWYER);
     void ada.backend.close();
   });
 

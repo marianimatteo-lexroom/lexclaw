@@ -951,7 +951,7 @@ describe("before_prompt_build hook", () => {
 });
 
 describe("status reaction hooks", () => {
-  it("reacts on the inbound message through message_received, llm_input and agent_end", async () => {
+  it("reacts 👀 on the inbound message and removes it at agent_end, with no ⏳ or ✅", async () => {
     vi.useFakeTimers();
     vi.stubEnv("ADA_STATUS_REACTIONS", "true");
     fetchMock.mockImplementation(async () => json({ success: true }));
@@ -973,8 +973,7 @@ describe("status reaction hooks", () => {
     const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
     expect(bodies.filter((body) => body.type === "reaction").map((body) => body.reaction)).toEqual([
       { message_id: MESSAGE_ID, emoji: "👀" },
-      { message_id: MESSAGE_ID, emoji: "⏳" },
-      { message_id: MESSAGE_ID, emoji: "✅" },
+      { message_id: MESSAGE_ID, emoji: "" },
     ]);
   });
 });

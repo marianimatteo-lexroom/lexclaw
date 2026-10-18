@@ -1,4 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { logInboundSkip } from "./inbound-log.js";
 import { lexroomLogger } from "./lexroom-log.js";
 
 /**
@@ -158,9 +159,16 @@ export function registerResearchLinkHooks(
     return next;
   };
 
-  api.on("reply_payload_sending", async (event) => {
+  api.on("reply_payload_sending", async (event, ctx) => {
     payloadHookRuns = true;
     const text = event.payload.text;
+    if (event.kind === "final" && typeof text === "string" && text.trim() === "NO_REPLY") {
+      logInboundSkip(api.logger, {
+        stage: "reply",
+        reason: "model_answered_no_reply",
+        sender: ctx?.sessionKey ? ctx.sessionKey.split(":") : undefined,
+      });
+    }
     if (
       event.kind !== "final" ||
       typeof text !== "string" ||

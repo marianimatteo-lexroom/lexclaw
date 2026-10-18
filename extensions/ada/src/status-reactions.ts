@@ -1,6 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { readAdaEnv } from "./ada-env.js";
 import { normalizeWhatsAppNumber, ADA_WHATSAPP_CHANNEL } from "./google-notify.js";
+import { logInboundSkip } from "./inbound-log.js";
 import {
   firstString,
   kapsoMessagesEndpoint,
@@ -15,21 +16,28 @@ const THINKING_DELAY_MS = 1_000;
 
 export type StatusReactionSettings = {
   ack: string;
-  thinking: string;
+  /** Null: no emoji while the model works, so the ack stays the only one shown. */
+  thinking: string | null;
+  /** Empty: the ack is removed when the run ends, which WhatsApp does with an empty emoji. */
   done: string;
+  /** Empty: removed like `done`; a failed or declined run never shows a success mark. */
   error: string;
 };
 
-/** Null when `ADA_STATUS_REACTIONS=false`; the default is on. */
+/**
+ * Null when `ADA_STATUS_REACTIONS=false`; the default is on. By default the inbound message shows
+ * 👀 while Ada works and nothing afterwards: no ⏳, no ✅ and no ❌. Setting `ADA_REACTION_THINKING`,
+ * `ADA_REACTION_DONE` or `ADA_REACTION_ERROR` to an emoji turns that one back on.
+ */
 export function readStatusReactionSettings(env: NodeJS.ProcessEnv): StatusReactionSettings | null {
   if (readAdaEnv(env, "STATUS_REACTIONS")?.trim().toLowerCase() === "false") {
     return null;
   }
   return {
     ack: firstString(readAdaEnv(env, "REACTION_ACK")) ?? "👀",
-    thinking: firstString(readAdaEnv(env, "REACTION_THINKING")) ?? "⏳",
-    done: firstString(readAdaEnv(env, "REACTION_DONE")) ?? "✅",
-    error: firstString(readAdaEnv(env, "REACTION_ERROR")) ?? "❌",
+    thinking: firstString(readAdaEnv(env, "REACTION_THINKING")) ?? null,
+    done: firstString(readAdaEnv(env, "REACTION_DONE")) ?? "",
+    error: firstString(readAdaEnv(env, "REACTION_ERROR")) ?? "",
   };
 }
 
@@ -54,7 +62,7 @@ type Run = {
  */
 export function createStatusReactions(deps: {
   config: () => unknown;
-  logger: { warn(message: string): void };
+  logger: { warn(message: string): void; info?(message: string): void };
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   thinkingDelayMs?: number;
@@ -130,14 +138,27 @@ export function createStatusReactions(deps: {
       const settings = readStatusReactionSettings(env());
       const messageId = params.messageId?.trim() ?? "";
       const to = params.senders.map(normalizeWhatsAppNumber).find((value) => value !== null);
-      if (
-        !settings ||
-        !params.sessionKey ||
-        params.channelId !== ADA_WHATSAPP_CHANNEL ||
-        !isWhatsAppMessageId(messageId) ||
-        !to
-      ) {
-        return;
+      const skip = (reason: string) =>
+        logInboundSkip(deps.logger, {
+          stage: "reaction",
+          reason,
+          sender: to ?? params.senders,
+          messageId,
+        });
+      if (!settings) {
+        return skip("reactions_disabled");
+      }
+      if (params.channelId !== ADA_WHATSAPP_CHANNEL) {
+        return skip("not_whatsapp_channel");
+      }
+      if (!params.sessionKey) {
+        return skip("no_session_key");
+      }
+      if (!isWhatsAppMessageId(messageId)) {
+        return skip("not_a_whatsapp_message_id");
+      }
+      if (!to) {
+        return skip("sender_not_a_phone_number");
       }
       const previous = runs.get(params.sessionKey);
       if (previous) {
@@ -170,14 +191,15 @@ export function createStatusReactions(deps: {
       if (params.bind && params.runId && !run.runId) {
         run.runId = params.runId;
       }
-      if (run.thinkingScheduled || !run.runId) {
+      if (settings.thinking === null || run.thinkingScheduled || !run.runId) {
         return;
       }
       run.thinkingScheduled = true;
+      const { thinking } = settings;
       run.timer = setTimeout(() => {
         run.timer = undefined;
         if (!run.finished) {
-          void enqueue(run, settings.thinking);
+          void enqueue(run, thinking);
         }
       }, deps.thinkingDelayMs ?? THINKING_DELAY_MS);
       run.timer.unref?.();
@@ -219,6 +241,13 @@ export function registerStatusReactionHooks(api: OpenClawPluginApi) {
     reactions.thinking({ sessionKey: ctx.sessionKey, runId: event.runId ?? ctx.runId });
   });
   api.on("agent_end", (event, ctx) => {
+    if (!event.success && (!ctx.trigger || ctx.trigger === "user")) {
+      logInboundSkip(api.logger, {
+        stage: "agent_run",
+        reason: "run_failed_without_reply",
+        sender: ctx.senderId ?? (ctx.sessionKey ? ctx.sessionKey.split(":") : undefined),
+      });
+    }
     void reactions.finished({
       sessionKey: ctx.sessionKey,
       runId: event.runId ?? ctx.runId,

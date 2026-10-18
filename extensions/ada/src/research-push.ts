@@ -6,6 +6,7 @@ import {
   normalizeWhatsAppNumber,
   sendAdaWhatsAppText,
 } from "./google-notify.js";
+import { logInboundSkip } from "./inbound-log.js";
 import { sendKapsoPdf } from "./kapso-document.js";
 import { formatSources } from "./lexroom-citations.js";
 import type { LexroomFailure, ResearchOutcome } from "./lexroom-client.js";
@@ -515,7 +516,20 @@ export function onSenderInbound(params: {
 }): void {
   const { api } = params;
   const recipient = senderNumber(...params.senders);
-  if ((params.channelId !== undefined && params.channelId !== ADA_WHATSAPP_CHANNEL) || !recipient) {
+  if (params.channelId !== undefined && params.channelId !== ADA_WHATSAPP_CHANNEL) {
+    logInboundSkip(api.logger, {
+      stage: "held_research",
+      reason: "not_whatsapp_channel",
+      sender: params.senders,
+    });
+    return;
+  }
+  if (!recipient) {
+    logInboundSkip(api.logger, {
+      stage: "held_research",
+      reason: "sender_not_a_phone_number",
+      sender: params.senders,
+    });
     return;
   }
   recordSenderInbound(recipient, params.atMs);

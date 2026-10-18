@@ -190,6 +190,25 @@ describe("the outbound hooks", () => {
     expect((await reply("final", ITALIAN))?.payload?.text).toContain(URL_A);
   });
 
+  it("logs a model NO_REPLY with a masked sender, so a silent turn is never silent in the log", async () => {
+    const handlers = new Map<string, Handler>();
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    registerResearchLinkHooks({
+      on: ((name: string, handler: Handler) => {
+        handlers.set(name, handler);
+      }) as never,
+      logger,
+    });
+    await handlers.get("reply_payload_sending")?.(
+      { kind: "final", payload: { text: "NO_REPLY" } },
+      { sessionKey: "agent:main:kapso-whatsapp:direct:393331234567" },
+    );
+    const lines = logger.info.mock.calls.map(([line]) => String(line));
+    expect(lines).toEqual([
+      "ada inbound skipped stage=reply reason=model_answered_no_reply sender=+39…4567",
+    ]);
+  });
+
   it("falls back to message_sending only while the host has never run reply_payload_sending", async () => {
     const fallback = register();
     markResearchLinkReady(URL_A);

@@ -28,6 +28,7 @@ import {
 } from "./google-api.js";
 import { googleConnectConfigFrom, readGoogleConnectConfig } from "./google-connect.js";
 import { isConfiguredLawyerSender } from "./google-notify.js";
+import { logInboundSkip } from "./inbound-log.js";
 import { abortResearchJobs } from "./lexroom-jobs.js";
 import { openAdaMemoryFromApi, type MemoryStore } from "./memory.js";
 import { buildDailyTimelineRecord, buildOnePagerRecord } from "./reconcile.js";
@@ -818,14 +819,21 @@ export async function recordLawyerInbound(params: {
   senders: unknown[];
 }): Promise<void> {
   if (params.channelId && params.channelId !== "kapso-whatsapp") {
+    logInboundSkip(params.api.logger, {
+      stage: "wake_window",
+      reason: "not_whatsapp_channel",
+      sender: params.senders,
+    });
     return;
   }
   // Anyone may chat with the bot, but only the configured lawyer's message opens the paid
   // WhatsApp window and releases a held digest. Other senders are normal traffic, not a warning.
   if (!isConfiguredLawyerSender(params.api.config, ...params.senders)) {
-    params.api.logger.debug?.(
-      "ada did not record an inbound message: not from the configured lawyer",
-    );
+    logInboundSkip(params.api.logger, {
+      stage: "wake_window",
+      reason: "not_the_configured_lawyer",
+      sender: params.senders,
+    });
     return;
   }
   const memory = await openAdaMemoryFromApi(params.api);

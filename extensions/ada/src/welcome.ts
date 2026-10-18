@@ -6,6 +6,7 @@ import {
   normalizeWhatsAppNumber,
   sendAdaWhatsAppText,
 } from "./google-notify.js";
+import { logInboundSkip, maskNumber } from "./inbound-log.js";
 import { openAdaMemoryFromApi } from "./memory.js";
 import { detectLanguage, type Language } from "./research-link-outbound.js";
 import { senderNumber } from "./research-push.js";
@@ -160,22 +161,40 @@ export function registerWelcomeHook(
 ): void {
   api.on("before_dispatch", async (event, ctx) => {
     const channelId = ctx.channelId ?? event.channel;
-    if (channelId !== ADA_WHATSAPP_CHANNEL || event.isGroup || !welcomeEnabled(process.env)) {
+    const skip = (reason: string) => {
+      logInboundSkip(api.logger, {
+        stage: "welcome",
+        reason,
+        sender: [ctx.senderId, event.senderId],
+        messageId: event.messageId ?? ctx.messageId,
+      });
       return undefined;
+    };
+    if (channelId !== ADA_WHATSAPP_CHANNEL) {
+      return skip("not_whatsapp_channel");
+    }
+    if (event.isGroup) {
+      return skip("group_chat");
+    }
+    if (!welcomeEnabled(process.env)) {
+      return skip("welcome_disabled");
     }
     const number = senderNumber(ctx.senderId, event.senderId);
-    if (!number || isConfiguredLawyerSender(api.config, number)) {
-      return undefined;
+    if (!number) {
+      return skip("sender_not_a_phone_number");
+    }
+    if (isConfiguredLawyerSender(api.config, number)) {
+      return skip("configured_lawyer");
     }
     const nowMs = Date.now();
     try {
       const memory = await openAdaMemoryFromApi(api);
       if (await hasEarlierConversation(api, number, ctx.sessionKey ?? event.sessionKey, nowMs)) {
         await memory.claimWelcome(number, nowMs);
-        return undefined;
+        return skip("earlier_conversation");
       }
       if (!(await memory.claimWelcome(number, nowMs))) {
-        return undefined;
+        return skip("already_welcomed");
       }
       const text = event.content ?? event.body ?? "";
       const greeting = greetingLanguage(text);
@@ -187,17 +206,21 @@ export function registerWelcomeHook(
       });
       if (!sent.ok) {
         await memory.releaseWelcome(number);
-        api.logger.warn(`ada welcome not sent: ${sent.error}`);
+        api.logger.warn(`ada welcome not sent sender=${maskNumber(number)}: ${sent.error}`);
         return undefined;
       }
-      api.logger.info(`ada welcome sent language=${language} greeting=${greeting !== undefined}`);
+      api.logger.info(
+        `ada welcome sent sender=${maskNumber(number)} language=${language} greeting=${greeting !== undefined}`,
+      );
       if (greeting === undefined) {
         return undefined;
       }
       options.onGreetingAnswered?.(ctx.sessionKey ?? event.sessionKey);
       return { handled: true };
     } catch (error) {
-      api.logger.error(`ada welcome failed: ${error instanceof Error ? error.message : "unknown"}`);
+      api.logger.error(
+        `ada welcome failed sender=${maskNumber(number)}: ${error instanceof Error ? error.message : "unknown"}`,
+      );
       return undefined;
     }
   });
