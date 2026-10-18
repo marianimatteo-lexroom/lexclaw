@@ -52,13 +52,29 @@ export async function executeAdaGoogleConnect(
   config: GoogleConnectConfig,
   api: StoreApi,
   now = new Date(),
+  options: { fetchImpl?: typeof fetch } = {},
 ): Promise<GoogleConnectResult | ToolFailure> {
   const store = await openStore(api, owner);
   if (isStoreFailure(store)) {
     return store;
   }
   try {
-    const account = await store.readAccount();
+    let account = await store.readAccount();
+    const settings = readGoogleConnectConfig(config);
+    if (account && settings.ok) {
+      // A saved account Google no longer accepts is not a connection: drop it and issue a link.
+      const token = await loadAccessToken({
+        account,
+        clientId: settings.settings.clientId,
+        clientSecret: settings.settings.clientSecret,
+        now,
+        fetchImpl: options.fetchImpl,
+      });
+      if (!token.ok && token.reason === "reconnect") {
+        await store.clearAccount();
+        account = null;
+      }
+    }
     return await prepareGoogleConnect({
       owner,
       config,

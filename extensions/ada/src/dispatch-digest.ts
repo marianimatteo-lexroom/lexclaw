@@ -14,6 +14,8 @@ export type DigestDispatchRequest = {
   idempotencyKey: string;
   /** Ask the owner to connect Google instead of sending a digest. */
   connectOnly?: boolean;
+  /** With `connectOnly`: the saved Google sign-in expired, so the ask says so. */
+  reconnect?: boolean;
   /** The owner just texted, so the WhatsApp window is open for this send. */
   afterLawyerReply?: boolean;
 };
@@ -67,7 +69,11 @@ export async function dispatchDigest(
     if (!connect.ok || connect.connected) {
       return { ok: false, reason: connect.ok ? "already_connected" : "connect_unavailable" };
     }
-    text = renderGoogleConnectText(language, connect.ask.url);
+    text = renderGoogleConnectText(
+      language,
+      connect.ask.url,
+      request.reconnect ? "expired" : "connect",
+    );
   } else if (request.plan.deliver) {
     text = renderDigestText(request.plan, language, profile?.timezone ?? DEFAULT_TIME_ZONE);
   } else {

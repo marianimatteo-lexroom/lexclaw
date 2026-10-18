@@ -145,6 +145,29 @@ describe("dispatchDigest", () => {
     expect(sent[0]?.text).toContain("Collega Gmail e Google Calendar");
   });
 
+  it("tells an owner whose Google sign-in expired, in plain words, with a fresh link and no command", async () => {
+    const { api, sent } = setup();
+    executeAdaGoogleConnect.mockResolvedValue({
+      ok: true,
+      connected: false,
+      ask: { url: "https://accounts.google.com/o/oauth2/v2/auth?state=anna", message: "x" },
+    });
+    expect(
+      await dispatchDigest(api, {
+        owner: ANNA,
+        plan: NO_PLAN,
+        idempotencyKey: "r1",
+        connectOnly: true,
+        reconnect: true,
+      }),
+    ).toEqual({ ok: true });
+    expect(sent[0]?.to).toBe(`+${ANNA}`);
+    expect(sent[0]?.text).toBe(
+      "Il collegamento al tuo Gmail è scaduto: ecco il link per ricollegarlo (vale 30 minuti)\nhttps://accounts.google.com/o/oauth2/v2/auth?state=anna",
+    );
+    expect(sent[0]?.text).not.toMatch(/«|scrivimi/u);
+  });
+
   it("does not ask an already connected owner again", async () => {
     const { api, sent } = setup();
     executeAdaGoogleConnect.mockResolvedValue({ ok: true, connected: true, email: "a@b.c" });

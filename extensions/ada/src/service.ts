@@ -48,6 +48,15 @@ function readPubSubTopic(config: unknown): string | null {
   return typeof topic === "string" && topic.trim().startsWith("projects/") ? topic.trim() : null;
 }
 
+/** At most one "your Google sign-in expired" note per number per day; this process only. */
+const RECONNECT_NOTE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const reconnectNoteAtMs = new Map<string, number>();
+
+/** Forgets which numbers were told their Google sign-in expired. For tests: the state is process-wide. */
+export function clearReconnectNotes(): void {
+  reconnectNoteAtMs.clear();
+}
+
 const POLL_MS = 15 * 60 * 1000;
 const CATCH_UP_DELAY_MS = 30 * 1000;
 const DEFAULT_TZ = "Europe/Rome";
@@ -127,6 +136,10 @@ async function loadGoogleReads(api: OpenClawPluginApi, owner: string, now: Date)
     now,
   });
   if (!token.ok) {
+    if (token.reason === "reconnect") {
+      // Google no longer accepts this sign-in: it is not a connection, so every path sees none.
+      await store.clearAccount();
+    }
     return { ok: false as const, error: token.reason };
   }
   const inbox = await listInboxMessages({ accessToken: token.accessToken, max: 10 });
@@ -303,6 +316,35 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
 
   const google = await loadGoogleReads(params.api, params.owner, params.now);
   if (!google.ok) {
+    if (google.error === "reconnect") {
+      const sinceMs = params.now.getTime() - (reconnectNoteAtMs.get(params.owner) ?? -Infinity);
+      if (sinceMs < RECONNECT_NOTE_INTERVAL_MS) {
+        return {
+          collected: false,
+          delivered: false,
+          held: false,
+          reason: "reconnect_note_recent",
+          decision: "none",
+        };
+      }
+      const dispatch = await dispatchSafely(dispatchDigestTurn, {
+        owner: params.owner,
+        plan: { deliver: false, reason: "nothing_cleared_the_bar" },
+        idempotencyKey: `reconnect:${params.owner}:${dayKey(params.now, DEFAULT_TZ)}`,
+        connectOnly: true,
+        reconnect: true,
+      });
+      if (dispatch.ok) {
+        reconnectNoteAtMs.set(params.owner, params.now.getTime());
+      }
+      return {
+        collected: false,
+        delivered: dispatch.ok,
+        held: false,
+        reason: dispatch.ok ? "reconnect_dispatched" : (dispatch.reason ?? "reconnect_rejected"),
+        decision: "connect",
+      };
+    }
     if (params.forceMorning && !params.catchUp && google.error === "not_connected") {
       const day = dayKey(params.now, DEFAULT_TZ);
       const dispatch = await dispatchSafely(dispatchDigestTurn, {

@@ -99,7 +99,7 @@ describe("renderDigestText", () => {
 describe("renderGoogleConnectText", () => {
   it.each(LANGUAGES)("carries the link on its own line in %s", (language) => {
     const url = "https://accounts.google.com/o/oauth2/v2/auth?state=abc";
-    for (const purpose of ["connect", "send"] as const) {
+    for (const purpose of ["connect", "send", "expired"] as const) {
       const text = renderGoogleConnectText(language, url, purpose);
       expect(text.split("\n")).toContain(url);
       expect(text).not.toMatch(/vera/iu);

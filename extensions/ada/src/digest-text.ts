@@ -29,6 +29,7 @@ type Words = {
   draft: (label: string) => string;
   connect: (url: string) => string;
   connectSend: (url: string) => string;
+  connectExpired: (url: string) => string;
 };
 
 const WORDS: Record<Language, Words> = {
@@ -56,6 +57,8 @@ const WORDS: Record<Language, Words> = {
       `Collega Gmail e Google Calendar così posso prepararti il riepilogo del mattino e inviare le email che mi confermi.\nApri questo link per collegare il tuo account Google:\n${url}`,
     connectSend: (url) =>
       `Posso leggere Gmail e Google Calendar, ma non ancora inviare email.\nApri questo link e consenti l'invio:\n${url}`,
+    connectExpired: (url) =>
+      `Il collegamento al tuo Gmail è scaduto: ecco il link per ricollegarlo (vale 30 minuti)\n${url}`,
   },
   en: {
     intro: "Good morning. This one should not wait:",
@@ -80,6 +83,8 @@ const WORDS: Record<Language, Words> = {
       `Connect Gmail and Google Calendar so I can prepare your morning digest and send the emails you confirm.\nOpen this link to connect your Google account:\n${url}`,
     connectSend: (url) =>
       `I can read Gmail and Google Calendar, but I cannot send email yet.\nOpen this link and approve sending:\n${url}`,
+    connectExpired: (url) =>
+      `The connection to your Gmail has expired: here is the link to connect it again (it is valid for 30 minutes)\n${url}`,
   },
   es: {
     intro: "Buenos días. Esto no puede esperar:",
@@ -106,6 +111,8 @@ const WORDS: Record<Language, Words> = {
       `Conecta Gmail y Google Calendar para que pueda preparar tu resumen de la mañana y enviar los correos que me confirmes.\nAbre este enlace para conectar tu cuenta de Google:\n${url}`,
     connectSend: (url) =>
       `Puedo leer Gmail y Google Calendar, pero todavía no puedo enviar correos.\nAbre este enlace y autoriza el envío:\n${url}`,
+    connectExpired: (url) =>
+      `La conexión con tu Gmail ha caducado: aquí tienes el enlace para volver a conectarlo (vale 30 minutos)\n${url}`,
   },
   fr: {
     intro: "Bonjour. Ceci ne peut pas attendre :",
@@ -132,6 +139,8 @@ const WORDS: Record<Language, Words> = {
       `Connectez Gmail et Google Agenda pour que je puisse préparer votre résumé du matin et envoyer les e-mails que vous confirmez.\nOuvrez ce lien pour connecter votre compte Google :\n${url}`,
     connectSend: (url) =>
       `Je peux lire Gmail et Google Agenda, mais pas encore envoyer d'e-mails.\nOuvrez ce lien et autorisez l'envoi :\n${url}`,
+    connectExpired: (url) =>
+      `La connexion à votre Gmail a expiré : voici le lien pour la reconnecter (valable 30 minutes)\n${url}`,
   },
   de: {
     intro: "Guten Morgen. Das kann nicht warten:",
@@ -158,6 +167,8 @@ const WORDS: Record<Language, Words> = {
       `Verbinden Sie Gmail und Google Kalender, damit ich Ihre Morgenübersicht vorbereiten und E-Mails senden kann, die Sie bestätigen.\nÖffnen Sie diesen Link, um Ihr Google-Konto zu verbinden:\n${url}`,
     connectSend: (url) =>
       `Ich kann Gmail und Google Kalender lesen, aber noch keine E-Mails senden.\nÖffnen Sie diesen Link und erlauben Sie das Senden:\n${url}`,
+    connectExpired: (url) =>
+      `Die Verbindung zu Ihrem Gmail ist abgelaufen: Hier ist der Link zum erneuten Verbinden (30 Minuten gültig)\n${url}`,
   },
 };
 
@@ -249,8 +260,12 @@ export function renderDigestText(
 export function renderGoogleConnectText(
   language: Language,
   url: string,
-  purpose: "connect" | "send" = "connect",
+  purpose: "connect" | "send" | "expired" = "connect",
 ): string {
   const words = WORDS[language];
-  return purpose === "send" ? words.connectSend(url) : words.connect(url);
+  return purpose === "send"
+    ? words.connectSend(url)
+    : purpose === "expired"
+      ? words.connectExpired(url)
+      : words.connect(url);
 }
