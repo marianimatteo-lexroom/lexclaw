@@ -58,7 +58,7 @@ export const adaReadCalendarDefinition = {
   name: "ada_read_calendar",
   label: "Read connected Google Calendar",
   description:
-    "Read upcoming events from the Google Calendar the person asking connected. Read-only. Never creates or moves events.",
+    "Read upcoming events, with their ids and who is invited (email and name), from the Google Calendar the person asking connected. Does not change anything; use ada_create_calendar_event and ada_update_calendar_event for that.",
   parameters: Type.Object(
     { hours: Type.Optional(Type.Integer({ minimum: 1, maximum: 168 })) },
     { additionalProperties: false },
@@ -69,12 +69,75 @@ export const adaSendEmailDefinition = {
   name: "ada_send_email",
   label: "Send email from connected Gmail",
   description:
-    "Send one plain-text email from the Gmail account the person asking connected. Set confirmed true only after they agree in the chat to that exact message. Any other value returns confirmation_required and does not send. Calendar stays read-only.",
+    "Send one plain-text email from the Gmail account the person asking connected. Set confirmed true only after they agree in the chat to that exact message. Any other value returns confirmation_required and does not send.",
   parameters: Type.Object(
     {
       to: Type.String({ minLength: 3, description: "One recipient email address." }),
       subject: Type.String({ minLength: 1, description: "One-line subject." }),
       text: Type.String({ minLength: 1, description: "Plain-text body." }),
+      confirmed: Type.Boolean(),
+    },
+    { additionalProperties: false },
+  ),
+};
+
+const calendarEventFields = {
+  timeZone: Type.Optional(
+    Type.String({
+      description:
+        "IANA time zone of start and end. Left out, a new event uses the person's own time zone (Europe/Rome when unknown) and a moved event keeps its own.",
+    }),
+  ),
+  description: Type.Optional(Type.String()),
+  location: Type.Optional(Type.String()),
+};
+
+const START_END = {
+  start: "Start as an ISO 8601 date-time without offset, such as 2026-10-20T15:00:00.",
+  end: "End, in the same form.",
+};
+
+export const adaCreateCalendarEventDefinition = {
+  name: "ada_create_calendar_event",
+  label: "Create event in connected Google Calendar",
+  description:
+    "Create one event on the primary Google Calendar the person asking connected. First tell them in plain words what you will create (title, day, time, time zone, location, guests) and ask if it is right. Set confirmed true only after they agree in the chat to that exact event, and only with the confirmed value true; anything else returns confirmation_required and creates nothing. Guests receive a Google invitation. Never deletes.",
+  parameters: Type.Object(
+    {
+      title: Type.String({ minLength: 1 }),
+      start: Type.String({ description: START_END.start }),
+      end: Type.String({ description: START_END.end }),
+      attendees: Type.Optional(
+        Type.Array(Type.String(), {
+          maxItems: 20,
+          description: "Email addresses of the guests. Add only people the user named.",
+        }),
+      ),
+      ...calendarEventFields,
+      confirmed: Type.Boolean(),
+    },
+    { additionalProperties: false },
+  ),
+};
+
+export const adaUpdateCalendarEventDefinition = {
+  name: "ada_update_calendar_event",
+  label: "Update event in connected Google Calendar",
+  description:
+    "Change one existing event on the primary Google Calendar the person asking connected. Get eventId, and the guests already invited, from ada_read_calendar. Send only the fields that change; start and end go together. Guests can only be added, never removed: addAttendees adds to the current list and keeps everyone already on it. First tell them in plain words what changes and who is already invited, and ask if it is right. Set confirmed true only after they agree in the chat to that exact change, and only with the confirmed value true; anything else returns confirmation_required and changes nothing. Newly added guests get a Google invitation; when only the title, time or place changes, nobody is emailed, and the result says so for you to tell the person. Never deletes.",
+  parameters: Type.Object(
+    {
+      eventId: Type.String({ minLength: 1 }),
+      title: Type.Optional(Type.String({ minLength: 1 })),
+      start: Type.Optional(Type.String({ description: START_END.start })),
+      end: Type.Optional(Type.String({ description: START_END.end })),
+      addAttendees: Type.Optional(
+        Type.Array(Type.String(), {
+          maxItems: 20,
+          description: "Email addresses to invite in addition to the current guests.",
+        }),
+      ),
+      ...calendarEventFields,
       confirmed: Type.Boolean(),
     },
     { additionalProperties: false },

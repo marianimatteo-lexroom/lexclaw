@@ -121,6 +121,8 @@
       "ada_read_inbox",
       "ada_read_calendar",
       "ada_send_email",
+      "ada_create_calendar_event",
+      "ada_update_calendar_event",
       "ada_deadline_list",
       "ada_deadline_reply",
       "ada_memory_search",
@@ -157,6 +159,12 @@
       "optional": true
     },
     "ada_send_email": {
+      "optional": true
+    },
+    "ada_create_calendar_event": {
+      "optional": true
+    },
+    "ada_update_calendar_event": {
       "optional": true
     },
     "ada_deadline_list": {

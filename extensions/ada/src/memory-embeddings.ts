@@ -5,8 +5,12 @@ import { matchesMemoryQuery } from "./memory-render.js";
 export const EMBEDDING_DIMS = 1024;
 
 const MAX_EMBEDDING_CHARS = 8000;
-/** Below this cosine a note that matches no keyword is not related enough to be returned. */
-export const MIN_SEMANTIC_SIMILARITY = 0.4;
+/**
+ * Below this cosine a note that matches no keyword is not related enough to be returned.
+ * Measured with voyage-law-2: the right note always ranked first but usually scored 0.28-0.41,
+ * unrelated notes scored 0.02-0.25, and Italian queries reached about 0.35 on unrelated ones.
+ */
+export const MIN_SEMANTIC_SIMILARITY = 0.28;
 const KEYWORD_WEIGHT = 0.3;
 const EXACT_ALIAS_WEIGHT = 0.2;
 

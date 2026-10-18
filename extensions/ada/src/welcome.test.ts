@@ -334,6 +334,8 @@ describe("greetingLanguage", () => {
 
 describe("welcome text", () => {
   const LANGUAGES = ["it", "en", "es", "fr", "de"] as const;
+  /** The template's own English sentence describes what Ada can do; it is not an instruction. */
+  const DESCRIPTIVE_OPENING = "connect Gmail and Calendar so she can manage";
 
   it("is signed Ada in every language and never says Vera", () => {
     for (const language of LANGUAGES) {
@@ -346,7 +348,7 @@ describe("welcome text", () => {
 
   it("never teaches a command: no quoted phrase, no keyword, in any language", () => {
     for (const language of LANGUAGES) {
-      const text = welcomeText(language);
+      const text = welcomeText(language).replace(DESCRIPTIVE_OPENING, "");
       expect(text, language).not.toMatch(/«|»/u);
       expect(text, language).not.toMatch(
         /collega Lexroom|collega Gmail|connect Lexroom|connect Gmail|conecta Lexroom|conecta Gmail|connecte Lexroom|connecte Gmail|Lexroom verbinden|Gmail verbinden/iu,
@@ -357,21 +359,34 @@ describe("welcome text", () => {
     }
   });
 
-  it("lists legal questions, then Lexroom research, then Gmail and calendar", () => {
+  it("opens with the ada_welcome template text, without its reply-to-start line", () => {
+    expect(welcomeText("it")).toMatch(
+      /^Ti diamo il benvenuto su Ada, l'assistente legale di Lexroom su WhatsApp\. Puoi farle domande giuridiche, chiederle una ricerca su Lexroom e collegare Gmail e Calendar per gestire posta, appuntamenti e scadenze\.\n\n/u,
+    );
+    expect(welcomeText("en")).toMatch(
+      /^Welcome to Ada, Lexroom's legal assistant on WhatsApp\. You can ask her legal questions, have her run research on Lexroom, and connect Gmail and Calendar so she can manage your email, meetings and deadlines\.\n\n/u,
+    );
     for (const language of LANGUAGES) {
-      const text = welcomeText(language);
-      const bullets = text.split("\n").filter((line) => line.startsWith("•"));
-      expect(bullets.slice(0, 3).map((line) => /Lexroom|Gmail/u.exec(line)?.[0])).toEqual([
-        undefined,
-        "Lexroom",
-        "Gmail",
-      ]);
+      expect(welcomeText(language), language).not.toMatch(
+        /Rispondi a questo messaggio|Reply to this message|Cosa posso fare|What I can do/iu,
+      );
+    }
+  });
+
+  it("keeps the example questions and the lawyer and privacy disclaimer after the opening", () => {
+    for (const language of LANGUAGES) {
+      const [, examples, , disclaimer] = welcomeText(language).split("\n\n");
+      expect(
+        examples?.split("\n").filter((line) => line.startsWith("•")),
+        language,
+      ).toHaveLength(3);
+      expect(disclaimer, language).toMatch(/avvocato|lawyer|abogado|avocat|Anwalt/u);
     }
   });
 
   it("says Ada will ask whether to connect their own account when she needs it, and send the link", () => {
     expect(welcomeText("it")).toContain(
-      "serve il tuo account: quando mi servirà ti chiederò se vuoi collegarlo e ti manderò il link.",
+      "serve il tuo account Lexroom: quando mi servirà ti chiederò se vuoi collegarlo e ti manderò il link.",
     );
     expect(welcomeText("en")).toContain(
       "I'll ask whether you want to connect it and send you the link",

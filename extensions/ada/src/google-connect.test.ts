@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import { adaGoogleWorkerUrl } from "./google-account.js";
 import {
   buildGoogleConnectUrl,
+  CALENDAR_EVENTS_SCOPE,
+  canWriteCalendar,
+  coversConnectScopes,
   createConnectState,
   googleConnectMessage,
   prepareGoogleConnect,
@@ -119,8 +122,16 @@ describe("prepareGoogleConnect", () => {
     expect(url.searchParams.get("prompt")).toBe("consent");
     expect(url.searchParams.get("redirect_uri")).toBe(CONFIG.googleRedirectUri);
     expect(url.searchParams.get("scope")?.split(" ")).toEqual([...GOOGLE_CONNECT_SCOPES]);
+    expect([...GOOGLE_CONNECT_SCOPES]).toEqual([
+      "openid",
+      "email",
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/gmail.send",
+      "https://www.googleapis.com/auth/calendar.readonly",
+      "https://www.googleapis.com/auth/calendar.events",
+    ]);
     expect(result.ask.services).toEqual(["gmail", "google_calendar", "gmail_send"]);
-    expect(result.ask.message).toContain("send mail you confirm");
+    expect(result.ask.message).toContain("add calendar events you confirm");
     expect(result.ask.message).toBe(googleConnectMessage(result.ask.url));
     expect(result.ask.message).toContain("Gmail and Google Calendar");
     expect(result.ask.message).toContain(result.ask.url);
@@ -133,7 +144,7 @@ describe("prepareGoogleConnect", () => {
     ).toBe(url.toString());
   });
 
-  it("does not mint a link when the account can already send mail", async () => {
+  it("does not mint a link when the account can already send mail and edit events", async () => {
     let saved = false;
     const result = await prepareGoogleConnect({
       owner: OWNER,
@@ -141,7 +152,8 @@ describe("prepareGoogleConnect", () => {
       now: NOW,
       account: {
         email: "lawyer@example.com",
-        scopes: "https://www.googleapis.com/auth/gmail.send",
+        scopes:
+          "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.events",
       },
       savePending: async () => {
         saved = true;
@@ -165,6 +177,32 @@ describe("prepareGoogleConnect", () => {
       savePending: async () => {},
     });
     expect(result.ok && !result.connected && result.ask.message).toContain("cannot send mail yet");
+  });
+});
+
+describe("a connection that only holds the old read-only calendar scope", () => {
+  const oldScopes =
+    "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.readonly";
+
+  it("is offered a fresh link that asks for the calendar permission", async () => {
+    const result = await prepareGoogleConnect({
+      owner: OWNER,
+      config: CONFIG,
+      now: NOW,
+      account: { email: "lawyer@example.com", scopes: oldScopes },
+      savePending: async () => {},
+    });
+    expect(result.ok && !result.connected && result.ask.message).toContain(
+      "fresh permission to add and change calendar events",
+    );
+    expect(canWriteCalendar(oldScopes)).toBe(false);
+    expect(canWriteCalendar(null)).toBe(false);
+    expect(canWriteCalendar(`${oldScopes} ${CALENDAR_EVENTS_SCOPE}`)).toBe(true);
+  });
+
+  it("is not accepted as a new grant when Google omits the events scope", () => {
+    expect(coversConnectScopes(oldScopes)).toBe(false);
+    expect(coversConnectScopes(`${oldScopes} ${CALENDAR_EVENTS_SCOPE}`)).toBe(true);
   });
 });
 

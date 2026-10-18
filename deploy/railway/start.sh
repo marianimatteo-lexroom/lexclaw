@@ -387,6 +387,9 @@ fi
 # block may fail the boot: every step is bounded by a timeout and any problem leaves memory
 # search on its keyword-only default.
 VOYAGE_PLUGIN_SPEC="npm:@openclaw/voyage-provider@${VOYAGE_PLUGIN_VERSION:-2026.9.9}"
+voyage_oc() {
+  timeout 60 node "${APP_DIR}/openclaw.mjs" "$@"
+}
 voyage_memory_index() {
   timeout 60 node "${APP_DIR}/openclaw.mjs" memory index --agent main \
     || log "WARNING: memory index rebuild failed; run: openclaw memory index --agent main"
@@ -401,8 +404,9 @@ if [ -n "${VOYAGE_API_KEY:-}" ]; then
   export ADA_MEMORY_EMBEDDING_MODEL="${ADA_MEMORY_EMBEDDING_MODEL:-voyage-law-2}"
   log "install voyage embeddings plugin ${VOYAGE_PLUGIN_SPEC}"
   if timeout 60 node "${APP_DIR}/openclaw.mjs" plugins install "${VOYAGE_PLUGIN_SPEC}" --accept-capabilities --force \
-    && oc config set memory.search.provider '"voyage"' --strict-json \
-    && oc config set memory.search.model "$(json_of_env ADA_MEMORY_EMBEDDING_MODEL)" --strict-json; then
+    && voyage_oc config set memory.search.provider '"voyage"' --strict-json \
+    && { voyage_oc config set memory.search.model "$(json_of_env ADA_MEMORY_EMBEDDING_MODEL)" --strict-json \
+      || { voyage_oc config unset memory.search.provider >/dev/null; false; }; }; then
     log "rebuild memory index with voyage/${ADA_MEMORY_EMBEDDING_MODEL}"
     voyage_memory_index
   else

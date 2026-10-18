@@ -14,6 +14,8 @@ const TOOL_NAMES = [
   "ada_read_inbox",
   "ada_read_calendar",
   "ada_send_email",
+  "ada_create_calendar_event",
+  "ada_update_calendar_event",
   "ada_deadline_list",
   "ada_deadline_reply",
   "ada_memory_search",

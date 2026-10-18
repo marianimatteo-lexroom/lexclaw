@@ -389,6 +389,17 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
       expect(deploy.calls()).toContain("memory index main");
     });
 
+    it("does not leave the config on voyage when the model cannot be set", () => {
+      const deploy = boot({
+        ...ENV,
+        VOYAGE_API_KEY: KEY,
+        STUB_FAIL: "config set memory.search.model",
+      });
+      expect(deploy.run().status).toBe(0);
+      expect(deploy.store()).not.toHaveProperty("memory.search.provider");
+      expect(memoryCalls(deploy)).not.toContain("memory index main");
+    });
+
     it("keeps booting when the index rebuild fails", () => {
       const deploy = boot({ ...ENV, VOYAGE_API_KEY: KEY, STUB_FAIL: "memory index" });
       const result = deploy.run();

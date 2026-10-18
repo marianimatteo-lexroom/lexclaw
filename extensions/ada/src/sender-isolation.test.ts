@@ -316,6 +316,11 @@ describe("a tool call that is not a private chat with a known sender is refused"
     ["ada_read_inbox", {}],
     ["ada_read_calendar", {}],
     ["ada_send_email", { to: "a@b.co", subject: "s", text: "t", confirmed: true }],
+    [
+      "ada_create_calendar_event",
+      { title: "t", start: "2026-10-20T15:00:00", end: "2026-10-20T16:00:00", confirmed: true },
+    ],
+    ["ada_update_calendar_event", { eventId: "e", title: "t", confirmed: true }],
     ["ada_draft", { matterId: "m", prompt: "p", confirmed: true }],
     ["ada_deadline_list", {}],
     ["ada_deadline_reply", { ref: "1", action: "track" }],
