@@ -15,6 +15,8 @@ type CallbackDeps = {
   openStore: (owner: string) => Promise<GoogleAccountStore>;
   exchange: typeof exchangeAuthorizationCode;
   log: { error: (message: string) => void };
+  /** Gives the mailbox to this number alone: any other number that had it connected loses it. */
+  releaseMailbox?: (owner: string, email: string) => Promise<void>;
   /** Confirms to the number that asked for the link, and to no one else. */
   notifyConnected?: (owner: string, email: string) => Promise<GoogleConnectedNotice>;
 };
@@ -344,6 +346,15 @@ export async function handleAdaGoogleCallback(
     connectedAtMs: now.getTime(),
     scopes: exchanged.token.scopes,
   });
+  if (deps.releaseMailbox) {
+    try {
+      await deps.releaseMailbox(parsed.owner, exchanged.token.email);
+    } catch (error) {
+      deps.log.error(
+        `ada google mailbox release failed: ${error instanceof Error ? error.message : "unknown"}`,
+      );
+    }
+  }
   if (deps.notifyConnected) {
     const notice = await deps.notifyConnected(parsed.owner, exchanged.token.email);
     if (!notice.ok) {

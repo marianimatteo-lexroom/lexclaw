@@ -109,6 +109,31 @@ describe("handleAdaGoogleNotify", () => {
     expect(runCollect).toHaveBeenCalledWith(expect.objectContaining({ owner: "393331111111" }));
   });
 
+  it("rate-limits each mailbox on its own, so one mailbox's push never delays another's", async () => {
+    const forMailbox = (mailbox: string, historyId: number) =>
+      JSON.stringify({
+        message: {
+          data: Buffer.from(JSON.stringify({ emailAddress: mailbox, historyId })).toString(
+            "base64",
+          ),
+        },
+      });
+    expect(
+      await call(JWT_CONFIG, { bearer: jwt(), body: forMailbox("lawyer@example.com", 10) }),
+    ).toBe(204);
+    expect(
+      await call(JWT_CONFIG, { bearer: jwt(), body: forMailbox("lawyer@example.com", 11) }),
+    ).toBe(429);
+    expect(
+      await call(JWT_CONFIG, { bearer: jwt(), body: forMailbox("bruno@example.com", 10) }),
+    ).toBe(204);
+    expect(runCollect).toHaveBeenCalledTimes(2);
+    expect(runCollect.mock.calls.map(([params]) => (params as { owner: string }).owner)).toEqual([
+      "393331111111",
+      "393332222222",
+    ]);
+  });
+
   it("acknowledges a push for a mailbox no number connected without collecting for anyone", async () => {
     const stranger = JSON.stringify({
       message: {

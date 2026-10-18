@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   adaMemoryExists,
   openAdaMemory,
@@ -85,8 +85,15 @@ async function legacyVolume() {
 describe("memory belongs to one number each", () => {
   it("moves the existing memory to the lawyer's number, once, and leaves a backup", async () => {
     const { stateDir } = await legacyVolume();
-    const lawyer = await openAdaMemory({ ...location(stateDir), owner: LAWYER, lawyer: LAWYER });
+    const log = vi.fn();
+    const lawyer = await openAdaMemory({
+      ...location(stateDir),
+      log,
+      owner: LAWYER,
+      lawyer: LAWYER,
+    });
 
+    expect(log.mock.calls).toEqual([["ada legacy memory adopted owner=+39…0000"]]);
     expect(await lawyer.readProfile()).toMatchObject({ name: "Avv. Test" });
     expect(await lawyer.listTodos()).toMatchObject([{ id: "todo-rossi" }]);
     expect(await lawyer.getRecord("rossi-one-pager", "rossi")).toMatchObject({ title: "Rossi" });
@@ -144,11 +151,14 @@ describe("memory belongs to one number each", () => {
     const { stateDir } = await legacyVolume();
     await openAdaMemory({ ...location(stateDir), owner: LAWYER, lawyer: LAWYER });
     const newLawyer = "390000000099";
+    const log = vi.fn();
     const store = await openAdaMemory({
       ...location(stateDir),
+      log,
       owner: newLawyer,
       lawyer: newLawyer,
     });
+    expect(log).not.toHaveBeenCalled();
     expect(await store.readProfile()).toBeNull();
     expect(await store.listTodos()).toEqual([]);
   });

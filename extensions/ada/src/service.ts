@@ -913,21 +913,24 @@ export async function recordSenderInbound(params: {
   await memory.writeWake({ lastLawyerInboundAtMs: params.atMs });
   // Read the held plan under the collect lock: a pass that is mid-hold has either written
   // its plan before this read or is not holding one, so the release is never stranded.
-  await runCollectExclusive(async () => {
-    const wake = await memory.readWake();
-    if (!wake.heldPlanJson) {
-      return;
-    }
-    // Re-collect so a stale held plan cannot fire after the calendar moved on.
-    await runLoggedCollectPass({
-      api: params.api,
-      owner,
-      memory,
-      now: new Date(params.atMs),
-      forceMorning: true,
-      trigger: "inbound",
-      dispatchDigestTurn: (request) =>
-        dispatchDigest(params.api, { ...request, afterLawyerReply: true }),
-    });
-  });
+  await runCollectExclusive(
+    async () => {
+      const wake = await memory.readWake();
+      if (!wake.heldPlanJson) {
+        return;
+      }
+      // Re-collect so a stale held plan cannot fire after the calendar moved on.
+      await runLoggedCollectPass({
+        api: params.api,
+        owner,
+        memory,
+        now: new Date(params.atMs),
+        forceMorning: true,
+        trigger: "inbound",
+        dispatchDigestTurn: (request) =>
+          dispatchDigest(params.api, { ...request, afterLawyerReply: true }),
+      });
+    },
+    { key: owner },
+  );
 }

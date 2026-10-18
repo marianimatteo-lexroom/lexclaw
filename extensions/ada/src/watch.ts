@@ -17,6 +17,7 @@ import { runAdaCollectPass } from "./service.js";
 export const NOTIFY_MIN_INTERVAL_MS = 15_000;
 const MAX_BODY_BYTES = 65_536;
 const MAX_TRACKED_MAILBOXES = 16;
+const MAX_RATE_TRACKED_MAILBOXES = 1000;
 
 type NotifyConfig = {
   staticToken: string | null;
@@ -24,7 +25,8 @@ type NotifyConfig = {
 };
 
 export type NotifyState = {
-  lastRunAtMs: number;
+  /** When each mailbox last triggered a pass, so one mailbox's push never rate-limits another's. */
+  lastRunAtMs: Map<string, number>;
   /** Highest Gmail historyId already collected, per mailbox. */
   historyIds: Map<string, bigint>;
 };
@@ -36,7 +38,7 @@ export type NotifyDeps = {
 };
 
 export function createNotifyState(): NotifyState {
-  return { lastRunAtMs: Number.NEGATIVE_INFINITY, historyIds: new Map() };
+  return { lastRunAtMs: new Map(), historyIds: new Map() };
 }
 
 const defaultDeps: NotifyDeps = {
@@ -210,12 +212,19 @@ export async function handleAdaGoogleNotify(
   }
 
   const nowMs = deps.now();
-  const waitMs = deps.state.lastRunAtMs + NOTIFY_MIN_INTERVAL_MS - nowMs;
+  const waitMs =
+    (deps.state.lastRunAtMs.get(history.mailbox) ?? Number.NEGATIVE_INFINITY) +
+    NOTIFY_MIN_INTERVAL_MS -
+    nowMs;
   if (waitMs > 0) {
     res.setHeader("retry-after", String(Math.ceil(waitMs / 1000)));
     return reply(res, 429, "rate limited");
   }
-  deps.state.lastRunAtMs = nowMs;
+  deps.state.lastRunAtMs.delete(history.mailbox);
+  deps.state.lastRunAtMs.set(history.mailbox, nowMs);
+  if (deps.state.lastRunAtMs.size > MAX_RATE_TRACKED_MAILBOXES) {
+    deps.state.lastRunAtMs.delete(deps.state.lastRunAtMs.keys().next().value ?? history.mailbox);
+  }
 
   try {
     const owner = await ownerOfMailbox(api, history.mailbox);

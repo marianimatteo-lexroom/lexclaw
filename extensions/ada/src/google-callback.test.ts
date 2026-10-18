@@ -311,4 +311,50 @@ describe("handleAdaGoogleCallback", () => {
     expect(owner.account).toBeNull();
     expect(other.account).toBeNull();
   });
+
+  it("gives the mailbox to the connecting number after saving, and a failure there never fails the connect", async () => {
+    const store = memoryStore();
+    const issued = createConnectState(CONFIG.googleStateSecret ?? "", NOW, OWNER);
+    await store.replacePending(issued.nonce, issued.expiresAtMs);
+    const order: string[] = [];
+    const errors: string[] = [];
+    const res = response();
+    await handleAdaGoogleCallback(
+      {
+        method: "GET",
+        url: `/ada/google/callback?code=test-auth-code&state=${issued.state}`,
+      } as IncomingMessage,
+      res as unknown as ServerResponse,
+      {
+        config: CONFIG,
+        now: () => NOW,
+        openStore: async () => store,
+        exchange: async () => ({
+          ok: true as const,
+          token: {
+            email: "shared@example.com",
+            refreshToken: "test-refresh-token",
+            accessToken: "test-access-token",
+            accessExpiresAtMs: NOW.getTime() + 3_600_000,
+          },
+        }),
+        log: {
+          error(message: string) {
+            errors.push(message);
+          },
+        },
+        releaseMailbox: async (owner, email) => {
+          order.push(`release:${owner}:${email}:saved=${store.account !== null}`);
+          throw new Error("db busy");
+        },
+        notifyConnected: async () => {
+          order.push("notify");
+          return { ok: true as const };
+        },
+      },
+    );
+    expect(res.statusCode).toBe(200);
+    expect(order).toEqual([`release:${OWNER}:shared@example.com:saved=true`, "notify"]);
+    expect(errors).toEqual(["ada google mailbox release failed: db busy"]);
+  });
 });

@@ -102,3 +102,27 @@ describe("runCollectExclusive keys", () => {
     expect(ran).toEqual(["anna", "bruno"]);
   });
 });
+
+describe("runCollectExclusive per key", () => {
+  it("does not hold one number's pass behind another number's slow one, but still serializes each number", async () => {
+    const slow = gate();
+    const events: string[] = [];
+    const annaSlow = runCollectExclusive(
+      async () => {
+        events.push("anna-slow:start");
+        await slow.opened;
+        events.push("anna-slow:end");
+      },
+      { key: "anna" },
+    );
+    const annaNext = runCollectExclusive(async () => void events.push("anna-next"), {
+      key: "anna",
+    });
+    const bruno = runCollectExclusive(async () => void events.push("bruno"), { key: "bruno" });
+    await bruno;
+    expect(events).toEqual(["anna-slow:start", "bruno"]);
+    slow.open();
+    await Promise.all([annaSlow, annaNext]);
+    expect(events).toEqual(["anna-slow:start", "bruno", "anna-slow:end", "anna-next"]);
+  });
+});

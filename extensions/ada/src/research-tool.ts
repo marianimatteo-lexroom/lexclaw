@@ -1,15 +1,14 @@
-import { jsonResult } from "openclaw/plugin-sdk/agent-runtime";
 import type {
   AnyAgentTool,
   OpenClawPluginApi,
   OpenClawPluginToolContext,
 } from "openclaw/plugin-sdk/plugin-entry";
-import { Type, type Static } from "typebox";
+import { Type } from "typebox";
 import type { LexroomConfig } from "./lexroom-client.js";
 import { readResearchJob } from "./lexroom-jobs.js";
 import { lexroomLogger } from "./lexroom-log.js";
 import { startAdaResearch } from "./lexroom-tools.js";
-import { ownerRefusalMessage, resolveTurnOwner } from "./owner.js";
+import { ownerToolFactory } from "./owner-tool.js";
 
 /** The model-facing definition of `ada_research`, shared by its static metadata and its factory. */
 export const researchToolDefinition = {
@@ -38,22 +37,10 @@ export function createResearchTool(params: {
   config: LexroomConfig;
   toolContext: OpenClawPluginToolContext;
 }): AnyAgentTool {
-  const { api, config, toolContext } = params;
-  return {
-    ...researchToolDefinition,
-    execute: async (_toolCallId, args: Static<typeof researchToolDefinition.parameters>) => {
-      const turn = resolveTurnOwner({
-        requesterSenderId: toolContext.requesterSenderId,
-        messageChannel: toolContext.messageChannel,
-        nativeChannelId: toolContext.nativeChannelId,
-        sessionKey: toolContext.sessionKey,
-      });
-      if (!turn.ok) {
-        return jsonResult({ ok: false, error: ownerRefusalMessage(turn.reason) });
-      }
-      return jsonResult(await startAdaResearch({ owner: turn.owner, args, config, api }));
-    },
-  };
+  return ownerToolFactory<typeof researchToolDefinition.parameters, LexroomConfig>(
+    researchToolDefinition,
+    (args, { owner, api, config }) => startAdaResearch({ owner, args, config, api }),
+  )(params);
 }
 
 /** The model-facing definition of `ada_research_status`. */
@@ -76,27 +63,14 @@ export function createResearchStatusTool(params: {
   api: OpenClawPluginApi;
   toolContext: OpenClawPluginToolContext;
 }): AnyAgentTool {
-  const { api, toolContext } = params;
-  return {
-    ...researchStatusToolDefinition,
-    execute: async (_toolCallId, args: Static<typeof researchStatusToolDefinition.parameters>) => {
-      const turn = resolveTurnOwner({
-        requesterSenderId: toolContext.requesterSenderId,
-        messageChannel: toolContext.messageChannel,
-        nativeChannelId: toolContext.nativeChannelId,
-        sessionKey: toolContext.sessionKey,
-      });
-      if (!turn.ok) {
-        return jsonResult({ ok: false, error: ownerRefusalMessage(turn.reason) });
-      }
-      return jsonResult(
-        await readResearchJob({
-          jobId: args.jobId,
-          waitSeconds: args.waitSeconds,
-          requester: turn.owner,
-          log: lexroomLogger(api.logger),
-        }),
-      );
-    },
-  };
+  return ownerToolFactory<typeof researchStatusToolDefinition.parameters, undefined>(
+    researchStatusToolDefinition,
+    (args, { owner, api }) =>
+      readResearchJob({
+        jobId: args.jobId,
+        waitSeconds: args.waitSeconds,
+        requester: owner,
+        log: lexroomLogger(api.logger),
+      }),
+  )({ ...params, config: undefined });
 }

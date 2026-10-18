@@ -3,6 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { openSqliteWorkerStore, type SqliteWorkerStore } from "openclaw/plugin-sdk/sqlite-runtime";
+import { maskNumber } from "./inbound-log.js";
 import type {
   CalendarSnapshotRow,
   DeadlineCandidate,
@@ -162,6 +163,8 @@ const memoryFile = (owner: string) => `memory/${owner}.sqlite`;
 type MemoryLocation = {
   runtimeSource: string;
   stateDir: string;
+  /** Where the one-time adoption of the old memory is announced. */
+  log?: (message: string) => void;
   /** How a database file becomes a store; the SQLite worker unless a test supplies one. */
   open?: (databasePath: string) => Promise<MemoryStore>;
 };
@@ -217,6 +220,7 @@ async function adoptLegacyMemory(location: MemoryLocation, owner: string): Promi
   fs.chmodSync(temporary, 0o600);
   fs.renameSync(temporary, destination);
   fs.writeFileSync(marker, owner, { mode: 0o600 });
+  location.log?.(`ada legacy memory adopted owner=${maskNumber(owner)}`);
 }
 
 /** Whether `owner` has working memory yet, so a read never creates a database for a stranger. */
@@ -259,7 +263,9 @@ export function openAdaMemory(
   return opening;
 }
 
-type MemoryApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "config">;
+type MemoryApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "config"> & {
+  logger?: OpenClawPluginApi["logger"];
+};
 
 function locationOf(api: MemoryApi): MemoryLocation {
   if (!api.runtimeSource) {
@@ -268,6 +274,7 @@ function locationOf(api: MemoryApi): MemoryLocation {
   return {
     runtimeSource: api.runtimeSource,
     stateDir: api.runtime.state.resolveStateDir(process.env),
+    log: (message) => api.logger?.info(message),
   };
 }
 

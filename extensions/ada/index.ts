@@ -47,6 +47,7 @@ import {
   executeAdaDraft,
   sendLexroomConnectedNotice,
 } from "./src/lexroom-tools.js";
+import { releaseMailboxFromOtherOwners } from "./src/mailbox-owner.js";
 import { EMPTY_WAKE_STATE } from "./src/memory-contract.js";
 import {
   executeAdaMemoryGet,
@@ -513,6 +514,7 @@ const entry = definePluginEntry({
             openStore: (owner) => openAdaGoogleAccountFromApi(api, owner),
             exchange: exchangeAuthorizationCode,
             log: api.logger,
+            releaseMailbox: (owner, email) => releaseMailboxFromOtherOwners(api, owner, email),
             notifyConnected: async (owner, email) => {
               await openWakeWindow(api, owner);
               return await sendGoogleConnectedNotice({
