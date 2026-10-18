@@ -281,9 +281,9 @@ On each collect pass Ada scans new Gmail and the next `horizonDays` of Calendar 
 
 Each item is stored in `memory.sqlite` with the matter, type (`deadline` or `hearing`), due date and time in Europe/Rome (all-day deadlines count until 23:59, hearings without a time default to 09:00), sources, and a confidence score. The same obligation from an email, a PDF, and a calendar event is one item, and a dismissed item is not revived by a later copy. A postponement notice or a moved calendar event moves the item and carries over the lawyer's choice. An item the lawyer never answers is offered in at most three digests (always while it is due within 48 hours) and stays visible through `ada_deadline_list`. Items below `minConfidence` (default 0.6) and dates in the past are dropped. Mail about matters without an alias is ignored.
 
-The morning digest lists upcoming items with a number: "reply 1 to run research". A reply calls `ada_deadline_reply`:
+The morning digest lists upcoming items with a number and invites a reply in plain words (for example "Rispondimi con 1 se vuoi che avvii la ricerca su Lexroom, o dimmi se preferisci saltare la 1"); it teaches no command or keyword. The model reads any natural reply, looks up the current numbers with `ada_deadline_list`, and calls `ada_deadline_reply`:
 
-- a number runs Lexroom research for that matter, confirms tracking, and the brief is texted back in the same turn;
+- a yes or the number runs Lexroom research for that matter, confirms tracking, and the brief is texted back in the same turn;
 - `track` confirms tracking without research; `brief` resends the stored brief without calling Lexroom; `dismiss` and `done` close the item.
 
 Reminders come only after the lawyer confirms an item. They ride in the morning digest at 07:40 Europe/Rome on the day of each step in `deadlineIntake.reminders` (default `7d`, `2d`, `morning-of`; `Nd` counts calendar days before the due date). Steps whose time had already passed when the lawyer confirmed are skipped. If the WhatsApp window is closed, the reminder waits with the held digest, and when several steps pile up only the latest is sent. Deadline lines and their reply numbers are rebuilt from matter memory on every pass, including when a held or retried digest is finally sent, and the numbers are recorded only once that digest is delivered.

@@ -19,14 +19,17 @@ Ada's service writes the deadline lines into the digest itself and sends it to t
 
 ## When the person replies
 
-Match a bare number, "reply 1", "1", or "yes to 1" to the line with that `no` from the most recent digest: you do not have the digest text, so call `ada_deadline_list` to read the current numbers. Numbers belong to the most recent delivered digest. When the reply is ambiguous, or another digest went out since the one the person is answering, call `ada_deadline_list`, name the matter and date back to the person, and ask before acting.
+Match a bare number, "the first one", "yes to 1" or similar to the line with that `no` from the most recent digest: you do not have the digest text, so call `ada_deadline_list` to read the current numbers. Numbers belong to the most recent delivered digest. When the reply is ambiguous, or another digest went out since the one the person is answering, call `ada_deadline_list`, name the matter and date back to the person, and ask before acting.
 
-| Reply                             | Call                                           |
-| --------------------------------- | ---------------------------------------------- |
-| a number, or "research 1"         | `ada_deadline_reply` with `action: "research"` |
-| "track 1", "watch 1"              | `ada_deadline_reply` with `action: "track"`    |
-| "skip 1", "dismiss 1", "ignore 1" | `ada_deadline_reply` with `action: "dismiss"`  |
-| "done 1"                          | `ada_deadline_reply` with `action: "done"`     |
+The digest invites replies in plain words and teaches no command, so read the meaning of whatever they write, in any language; there is no keyword list. Examples of meaning:
+
+| They mean                                                | Call                                           |
+| -------------------------------------------------------- | ---------------------------------------------- |
+| yes, run it, just the number                             | `ada_deadline_reply` with `action: "research"` |
+| keep an eye on it without running research               | `ada_deadline_reply` with `action: "track"`    |
+| skip it, not interested, ignore it                       | `ada_deadline_reply` with `action: "dismiss"`  |
+| it is handled                                            | `ada_deadline_reply` with `action: "done"`     |
+| send the stored brief again (when the digest said ready) | `ada_deadline_reply` with `action: "brief"`    |
 
 `research` is the person's confirmation to track the item: reminders start from that moment on the schedule in the result (default 7 days before, 2 days before, and the morning of, in the 07:40 digest slot), and steps whose time already passed are skipped, not sent late. Lexroom research runs for that matter only and does not search the private library.
 

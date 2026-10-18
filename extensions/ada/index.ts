@@ -466,7 +466,10 @@ const entry = definePluginEntry({
         messageChannel: ctx?.channelId,
         sessionKey: ctx?.sessionKey,
       });
-      const note = connectOfferNote(turn.ok ? takeConnectOffers(turn.owner) : []);
+      const personTurn = ctx?.trigger === undefined || ctx.trigger === "user";
+      const note = connectOfferNote(
+        turn.ok && personTurn ? takeConnectOffers(turn.owner, ctx?.runId) : [],
+      );
       return note
         ? { prependSystemContext: ADA_PERSONA, prependContext: note }
         : { prependSystemContext: ADA_PERSONA };

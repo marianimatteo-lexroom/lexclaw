@@ -173,7 +173,8 @@ describe("resolveLexroomConfig", () => {
     expect(resolved).toEqual({
       ok: false,
       reason: "not_connected",
-      error: "The Lexroom connection expired. Call ada_lexroom_connect and send that link.",
+      error:
+        "The Lexroom connection expired. Ask whether they want to reconnect; call ada_lexroom_connect and send the link only after they agree (or if they asked to connect).",
     });
   });
 
@@ -201,7 +202,8 @@ describe("resolveLexroomConfig", () => {
     const expected = {
       ok: false,
       reason: "not_connected",
-      error: "Lexroom is not connected. Call ada_lexroom_connect and send that link.",
+      error:
+        "Lexroom is not connected. Ask whether they want to connect; call ada_lexroom_connect and send the link only after they agree (or if they asked to connect).",
     };
     expect(await resolveLexroomConfig({ owner: OWNER, config: {}, api, now: NOW })).toEqual(
       expected,
@@ -422,7 +424,8 @@ describe("Lexroom accounts belong to one number each", () => {
     expect(await resolveLexroomConfig({ owner: OTHER, config, api, now: NOW })).toEqual({
       ok: false,
       reason: "not_connected",
-      error: "Lexroom is not connected. Call ada_lexroom_connect and send that link.",
+      error:
+        "Lexroom is not connected. Ask whether they want to connect; call ada_lexroom_connect and send the link only after they agree (or if they asked to connect).",
     });
   });
 
@@ -889,7 +892,8 @@ describe("silent sign-in with the saved email and password", () => {
     expect(outcome).toMatchObject({
       ok: false,
       reason: "not_connected",
-      error: "The Lexroom connection expired. Call ada_lexroom_connect and send that link.",
+      error:
+        "The Lexroom connection expired. Ask whether they want to reconnect; call ada_lexroom_connect and send the link only after they agree (or if they asked to connect).",
     });
     expect(server.fetchImpl).not.toHaveBeenCalled();
   });

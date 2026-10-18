@@ -102,7 +102,7 @@ async function accessForRead(params: {
       ok: false,
       reason: "not_connected",
       error:
-        "Gmail and Google Calendar are not connected. Call ada_google_connect and send that link.",
+        "Gmail and Google Calendar are not connected. Ask whether they want to connect; call ada_google_connect and send the link only after they agree (or if they asked to connect).",
     };
   }
   const config = readGoogleConnectConfig(params.config);
@@ -122,7 +122,8 @@ async function accessForRead(params: {
       return {
         ok: false,
         reason: "not_connected",
-        error: "The Google connection expired. Call ada_google_connect and send the new link.",
+        error:
+          "The Google connection expired. Ask whether they want to reconnect; call ada_google_connect and send the new link only after they agree (or if they asked to connect).",
       };
     }
     return { ok: false, error: "Ada could not reach Google. Try again shortly." };
@@ -164,7 +165,7 @@ export async function readConnectedInbox(params: {
         ok: false,
         reason: "not_connected",
         error:
-          "Google rejected the saved connection. Call ada_google_connect and send the new link.",
+          "Google rejected the saved connection. Ask whether they want to reconnect; call ada_google_connect and send the new link only after they agree (or if they asked to connect).",
       };
     }
     return { ok: false, error: "Ada could not read Gmail. Try again shortly." };
@@ -197,7 +198,7 @@ export async function readConnectedCalendar(params: {
         ok: false,
         reason: "not_connected",
         error:
-          "Google rejected the saved connection. Call ada_google_connect and send the new link.",
+          "Google rejected the saved connection. Ask whether they want to reconnect; call ada_google_connect and send the new link only after they agree (or if they asked to connect).",
       };
     }
     return { ok: false, error: "Ada could not read Google Calendar. Try again shortly." };
@@ -243,7 +244,8 @@ export async function sendConnectedEmail(params: {
     return {
       ok: false,
       reason: "not_connected",
-      error: "Gmail is not connected. Call ada_google_connect and send that link.",
+      error:
+        "Gmail is not connected. Ask whether they want to connect; call ada_google_connect and send the link only after they agree (or if they asked to connect).",
     };
   }
   if (!canSendMail(account.scopes)) {
@@ -251,7 +253,7 @@ export async function sendConnectedEmail(params: {
       ok: false,
       reason: "needs_send_scope",
       error:
-        "Ada cannot send mail with the current Google connection. Call ada_google_connect and send the new link.",
+        "Ada cannot send mail with the current Google connection. Ask whether they want to allow sending; call ada_google_connect and send the new link only after they agree (or if they asked to connect).",
     };
   }
   const now = params.now ?? new Date();
@@ -275,14 +277,15 @@ export async function sendConnectedEmail(params: {
         ok: false,
         reason: "not_connected",
         error:
-          "Google rejected the saved connection. Call ada_google_connect and send the new link.",
+          "Google rejected the saved connection. Ask whether they want to reconnect; call ada_google_connect and send the new link only after they agree (or if they asked to connect).",
       };
     }
     if (sent.status === 403) {
       return {
         ok: false,
         reason: "needs_send_scope",
-        error: "Google did not allow sending. Call ada_google_connect and send the new link.",
+        error:
+          "Google did not allow sending. Ask whether they want to allow it; call ada_google_connect and send the new link only after they agree (or if they asked to connect).",
       };
     }
     return { ok: false, error: "Ada could not send the email. Try again shortly." };

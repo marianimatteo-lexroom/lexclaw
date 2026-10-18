@@ -372,7 +372,8 @@ export async function resolveLexroomConfig(params: {
   return {
     ok: false,
     reason: "not_connected",
-    error: "Lexroom is not connected. Call ada_lexroom_connect and send that link.",
+    error:
+      "Lexroom is not connected. Ask whether they want to connect; call ada_lexroom_connect and send the link only after they agree (or if they asked to connect).",
   };
 }
 

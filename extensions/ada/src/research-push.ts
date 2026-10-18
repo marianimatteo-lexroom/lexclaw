@@ -1,6 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { whatsappWindowOpen } from "./collector.js";
-import { noteConnectOffer } from "./connect-offers.js";
+import { noteConnectOffer, type ConnectOfferKind } from "./connect-offers.js";
 import {
   ADA_WHATSAPP_CHANNEL,
   normalizeWhatsAppNumber,
@@ -56,8 +56,8 @@ export type PushDeps = {
   /** The ready-template nudge that asks the recipient to write, or why it was not sent. */
   nudge: () => Promise<"sent" | "unset" | "failed">;
   readProfileLanguage?: () => Promise<string | undefined>;
-  /** The message asks the person whether to connect Lexroom; remember it for their next turn. */
-  offerConnect?: () => void;
+  /** The delivered message asked the person whether to (re)connect Lexroom; remember it for their next turn. */
+  offerConnect?: (kind: ConnectOfferKind) => void;
   log: LexroomLog;
   now?: () => number;
   retryDelayMs?: number;
@@ -208,8 +208,16 @@ export function fitResearchText(
  * failed research becomes one short message in the lawyer's language.
  */
 /** A failure whose message asks the person whether to connect or reconnect Lexroom. */
-function offersConnect(result: ResearchOutcome | LexroomFailure): boolean {
-  return !result.ok && (result.reason === "not_connected" || result.reason === "forbidden");
+function connectOffer(result: ResearchOutcome | LexroomFailure): ConnectOfferKind | undefined {
+  if (result.ok) {
+    return undefined;
+  }
+  // "forbidden" keeps the saved sign-in, so only a forced link actually reconnects.
+  return result.reason === "not_connected"
+    ? "lexroom"
+    : result.reason === "forbidden"
+      ? "lexroom_reconnect"
+      : undefined;
 }
 
 export async function researchMessage(
@@ -239,12 +247,18 @@ export async function researchMessage(
             ? strings.captcha
             : result.error.slice(0, MAX_FAILURE_CHARS);
   // A connection to offer is a question of its own; "try again" would not answer it.
-  return offersConnect(result)
+  return connectOffer(result)
     ? `${strings.failed}\n${reason}`
     : `${strings.failed}\n${reason}\n${strings.retry}`;
 }
 
-type Held = { jobId: string; text: string; document?: ResearchPdf; heldAtMs: number };
+type Held = {
+  jobId: string;
+  text: string;
+  document?: ResearchPdf;
+  heldAtMs: number;
+  offer?: ConnectOfferKind;
+};
 
 /** Held results by recipient number, oldest first. */
 const held = new Map<string, Held[]>();
@@ -385,9 +399,7 @@ export async function pushResearchResult(
 ): Promise<"sent" | "held"> {
   const now = deps.now ?? Date.now;
   const text = await researchMessage(params.result, deps);
-  if (offersConnect(params.result)) {
-    deps.offerConnect?.();
-  }
+  const offer = connectOffer(params.result);
   const document = await prepareResearchPdf(params, deps);
   const open = await deps.windowOpen().catch(() => null);
   const outcome = params.result.ok ? "done" : (params.result.reason ?? "failed");
@@ -395,6 +407,9 @@ export async function pushResearchResult(
   if (open !== false) {
     const sent = await sendText(text, deps);
     if (sent.ok) {
+      if (offer) {
+        deps.offerConnect?.(offer);
+      }
       deps.log("result.pushed", {
         job: params.jobId,
         outcome,
@@ -413,7 +428,13 @@ export async function pushResearchResult(
   }
   pruneHeld(now());
   const queue = held.get(deps.recipient) ?? [];
-  queue.push({ jobId: params.jobId, text, ...(document ? { document } : {}), heldAtMs: now() });
+  queue.push({
+    jobId: params.jobId,
+    text,
+    ...(document ? { document } : {}),
+    ...(offer ? { offer } : {}),
+    heldAtMs: now(),
+  });
   while (queue.length > MAX_HELD) {
     queue.shift();
   }
@@ -452,6 +473,9 @@ export async function releaseHeldResearch(deps: PushDeps): Promise<number> {
     }
     queue.shift();
     released += 1;
+    if (next.offer) {
+      deps.offerConnect?.(next.offer);
+    }
     deps.log("result.pushed", {
       job: next.jobId,
       chars: next.text.length,
@@ -507,7 +531,7 @@ export function livePushDeps(
       return result.ok ? "sent" : "failed";
     },
     readProfileLanguage: async () => (await (await memory())?.readProfile())?.language,
-    offerConnect: () => noteConnectOffer(recipient, "lexroom"),
+    offerConnect: (kind) => noteConnectOffer(recipient, kind),
     log,
   };
 }

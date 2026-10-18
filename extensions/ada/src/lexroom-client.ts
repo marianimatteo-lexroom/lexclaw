@@ -244,7 +244,7 @@ async function errorMessage(
   }
   if (status === 401) {
     return new LexroomError(
-      "Lexroom rejected the saved sign-in. Call ada_lexroom_connect and send that link.",
+      "Lexroom rejected the saved sign-in. Ask whether they want to reconnect; call ada_lexroom_connect and send the link only after they agree (or if they asked to connect).",
       "not_connected",
       http,
     );

@@ -181,7 +181,8 @@ describe("researchMessage", () => {
       {
         ok: false,
         reason: "not_connected",
-        error: "Lexroom is not connected. Call ada_lexroom_connect and send that link.",
+        error:
+          "Lexroom is not connected. Ask whether they want to connect; call ada_lexroom_connect and send the link only after they agree (or if they asked to connect).",
       },
       {},
     );
@@ -218,6 +219,30 @@ describe("researchMessage", () => {
     );
     await pushResearchResult({ ...base, result: outcome() }, deps);
     expect(deps.offerConnect).toHaveBeenCalledTimes(2);
+    expect(deps.offerConnect).toHaveBeenNthCalledWith(1, "lexroom");
+    expect(deps.offerConnect).toHaveBeenNthCalledWith(2, "lexroom_reconnect");
+  });
+
+  it("remembers the question only once it is delivered: not when held, not when both sends fail", async () => {
+    const notConnected = { ok: false as const, reason: "not_connected" as const, error: "x" };
+    const base = { jobId: "rj_1", startedAtMs: 0, query: "q", result: notConnected };
+
+    const closed = makeDeps({ windowOpen: async () => false, offerConnect: vi.fn() });
+    await pushResearchResult(base, closed.deps);
+    const failing = makeDeps({
+      send: async () => ({ ok: false, error: "down" }),
+      offerConnect: vi.fn(),
+    });
+    await pushResearchResult(base, failing.deps);
+    expect(closed.deps.offerConnect).not.toHaveBeenCalled();
+    expect(failing.deps.offerConnect).not.toHaveBeenCalled();
+
+    const released = makeDeps({ offerConnect: vi.fn() });
+    expect(await releaseHeldResearch({ ...released.deps, recipient: closed.deps.recipient })).toBe(
+      2,
+    );
+    expect(released.deps.offerConnect).toHaveBeenCalledTimes(2);
+    expect(released.deps.offerConnect).toHaveBeenCalledWith("lexroom");
   });
 
   it("uses the profile language when there is no text to tell it from", async () => {

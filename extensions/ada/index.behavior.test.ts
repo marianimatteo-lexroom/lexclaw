@@ -308,7 +308,8 @@ describe("ada_draft confirmation gate", () => {
     expect(await callTool("ada_draft", { ...draft, confirmed: true })).toEqual({
       ok: false,
       reason: "not_connected",
-      error: "Lexroom is not connected. Call ada_lexroom_connect and send that link.",
+      error:
+        "Lexroom is not connected. Ask whether they want to connect; call ada_lexroom_connect and send the link only after they agree (or if they asked to connect).",
     });
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -327,7 +328,7 @@ describe("ada_draft confirmation gate", () => {
     [
       "401",
       () => json({ detail: "expired" }, 401),
-      "Lexroom rejected the saved sign-in. Call ada_lexroom_connect and send that link.",
+      "Lexroom rejected the saved sign-in. Ask whether they want to reconnect; call ada_lexroom_connect and send the link only after they agree (or if they asked to connect).",
     ],
     [
       "MFA step-up",
@@ -568,7 +569,9 @@ describe("ada_research", () => {
       ok: true,
       state: "delivered",
     });
-    expect(await researchResult()).toContain("Lexroom non è ancora collegato al tuo numero: vuoi che ti mandi il link");
+    expect(await researchResult()).toContain(
+      "Lexroom non è ancora collegato al tuo numero: vuoi che ti mandi il link",
+    );
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
