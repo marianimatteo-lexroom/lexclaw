@@ -173,6 +173,24 @@ describe("hybrid recall", () => {
     expect(hits.map((hit) => hit.id)).toEqual(["b-meaning", "a-keyword"]);
   });
 
+  it("returns a note scoring 0.3 but not one scoring 0.2 when no keyword matches", async () => {
+    const { store } = seeded();
+    const tilted = (cos: number) => axis(0, Math.sqrt(1 / (cos * cos) - 1));
+    const vectors: Array<[string, number[]]> = [
+      ["near", tilted(0.3)],
+      ["far", tilted(0.2)],
+    ];
+    const embed = vi.fn(async (texts: string[]) =>
+      texts.map((text) => vectors.find(([word]) => text.includes(word))?.[1] ?? axis(0)),
+    );
+    const memory = withEmbeddings(store, { owner: ANNA, embedder: { model: () => MODEL, embed } });
+    await memory.upsertRecord(note("a-near", "Alpha", "near"), "create", 1);
+    await memory.upsertRecord(note("b-far", "Beta", "far"), "create", 1);
+    await memory.settled();
+
+    expect((await memory.searchRecords("query", "rossi")).map((hit) => hit.id)).toEqual(["a-near"]);
+  });
+
   it("keeps notes without a vector findable by keyword", async () => {
     const { store } = seeded();
     await store.upsertRecord(note("plain", "Rossi", "No vector yet"), "create", 1);
