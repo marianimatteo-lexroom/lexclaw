@@ -359,6 +359,45 @@ if [ -z "${ADA_STATUS_TOKEN:-}" ]; then
   log "WARNING: ADA_STATUS_TOKEN is unset, so GET /ada/status returns 401"
 fi
 
+# Meaning-based memory search through Voyage AI embeddings, on only while VOYAGE_API_KEY is
+# set. The Voyage provider is not bundled in the OpenClaw image, so it is installed here.
+# OpenClaw reads VOYAGE_API_KEY from the environment itself, so the key is never written to the
+# config. A provider or model change pauses memory search until the index is rebuilt, so the
+# index is refreshed before the gateway starts (incremental once it matches). Nothing in this
+# block may fail the boot: every step is bounded by a timeout and any problem leaves memory
+# search on its keyword-only default.
+VOYAGE_PLUGIN_SPEC="npm:@openclaw/voyage-provider@${VOYAGE_PLUGIN_VERSION:-2026.9.9}"
+voyage_memory_index() {
+  timeout 60 node "${APP_DIR}/openclaw.mjs" memory index --agent main \
+    || log "WARNING: memory index rebuild failed; run: openclaw memory index --agent main"
+}
+voyage_memory_off() {
+  oc config unset memory.search.provider >/dev/null || log "WARNING: could not unset memory.search.provider"
+  oc config unset memory.search.model >/dev/null || log "WARNING: could not unset memory.search.model"
+  voyage_memory_index
+}
+current_memory_provider="$(oc config get memory.search.provider 2>/dev/null || true)"
+if [ -n "${VOYAGE_API_KEY:-}" ]; then
+  export ADA_MEMORY_EMBEDDING_MODEL="${ADA_MEMORY_EMBEDDING_MODEL:-voyage-law-2}"
+  log "install voyage embeddings plugin ${VOYAGE_PLUGIN_SPEC}"
+  if timeout 60 node "${APP_DIR}/openclaw.mjs" plugins install "${VOYAGE_PLUGIN_SPEC}" --accept-capabilities --force \
+    && oc config set memory.search.provider '"voyage"' --strict-json \
+    && oc config set memory.search.model "$(json_of_env ADA_MEMORY_EMBEDDING_MODEL)" --strict-json; then
+    log "rebuild memory index with voyage/${ADA_MEMORY_EMBEDDING_MODEL}"
+    voyage_memory_index
+  else
+    log "WARNING: could not set up voyage memory search (${VOYAGE_PLUGIN_SPEC}); using keyword-only search"
+    if printf '%s' "${current_memory_provider}" | grep -q voyage; then
+      voyage_memory_off
+    fi
+  fi
+elif printf '%s' "${current_memory_provider}" | grep -q voyage; then
+  log "VOYAGE_API_KEY is unset; turning voyage memory search off"
+  voyage_memory_off
+else
+  log "skip voyage memory search: VOYAGE_API_KEY is unset"
+fi
+
 if [ -n "${ANTHROPIC_SETUP_TOKEN:-}" ]; then
   log "import anthropic setup token (value hidden)"
   token_file="$(mktemp)"
