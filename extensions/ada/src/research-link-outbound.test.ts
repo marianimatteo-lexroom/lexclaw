@@ -108,6 +108,24 @@ describe("detectLanguage", () => {
     expect(detectLanguage(text)).toBe(language);
   });
 
+  it.each([
+    ["File a lien", undefined],
+    ["Lien release deadline?", undefined],
+    ["Do me a favor", undefined],
+    ["Any hearings Mon?", undefined],
+    ["E-mail him", undefined],
+    ["Dove Ltd contract", undefined],
+    ["Was will er?", undefined],
+    ["Manda una e-mail al cliente", undefined],
+  ])("never takes the wrong language from the single word in %j", (text, language) => {
+    expect(detectLanguage(text)).toBe(language);
+  });
+
+  it("still tells a short message that carries real evidence next to those words", () => {
+    expect(detectLanguage("E-mail him the new link please")).toBe("en");
+    expect(detectLanguage("Mandami una e-mail con il nuovo link")).toBe("it");
+  });
+
   it.each(["in", "In", "do", "ok in", "on", "am", "has", "me", "a", "la", "il", "una", "corte"])(
     "does not take the word %j that other languages use for evidence of any language",
     (text) => {

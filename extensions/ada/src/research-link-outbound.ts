@@ -77,22 +77,22 @@ const STOPWORDS: Record<Language, ReadonlySet<string>> = {
  */
 const SHORT_HINTS: Record<Language, ReadonlySet<string>> = {
   it: new Set(
-    "e ciao buongiorno buonasera grazie sì voglio vorrei mandami dammi fammi dimmi nuovo nuova nuovi quando domani oggi vai certo perfetto ricerca puoi ti chi ecco avvocato fai controlla prepara scrivi inviami aggiorna ricordami leggi riassumi traduci dove perché tribunale udienza ufficio arrivo ritardo bocca lupo atto appello prima contratto sentenza giudice fascicolo scadenza ricorso".split(
+    "e ciao buongiorno buonasera grazie sì voglio vorrei mandami dammi fammi dimmi nuovo nuova nuovi quando domani oggi vai certo perfetto ricerca puoi ti chi ecco avvocato fai controlla prepara scrivi inviami aggiorna ricordami leggi riassumi traduci perché tribunale udienza ufficio arrivo ritardo bocca lupo atto appello prima contratto sentenza giudice fascicolo scadenza ricorso".split(
       " ",
     ),
   ),
   en: new Set(
-    "give new run now please thanks thank yes my what how can could would send show want need hello hi again today tomorrow morning your do does when who why where am there have has will some about from just get let tell".split(
+    "give new run now please thanks thank yes my what how can could would send show want need hello hi again today tomorrow morning your do does when who why where am there have has some about from just get let tell".split(
       " ",
     ),
   ),
   es: new Set(
-    "hola gracias favor quiero dame envía envia enviar nuevo enlace ahora puedes qué cómo mañana hoy sí necesito dime buscar correo usted tengo está estoy".split(
+    "hola gracias quiero dame envía envia enviar nuevo enlace ahora puedes qué cómo mañana hoy sí necesito dime buscar correo usted tengo está estoy".split(
       " ",
     ),
   ),
   fr: new Set(
-    "bonjour merci voudrais veux nouveau lien maintenant peux pouvez demain oui je moi donne envoie plaît vous mon aujourd hui très être était".split(
+    "bonjour merci voudrais veux nouveau maintenant peux pouvez demain oui je moi donne envoie plaît vous aujourd hui très être était".split(
       " ",
     ),
   ),
@@ -157,6 +157,7 @@ export function detectLanguage(text: string): Language | undefined {
     text
       .slice(0, 3000)
       .toLowerCase()
+      .replace(/\be-?mail/gu, "email")
       .match(/[\p{L}]+/gu) ?? [];
   const short = words.length <= SHORT_MESSAGE_WORDS;
   const scores = LANGUAGES.map((language) => ({
