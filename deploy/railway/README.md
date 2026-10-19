@@ -86,6 +86,7 @@ Meaning-based recall, on only while `VOYAGE_API_KEY` is set. Without it nothing 
 | `ADA_GOOGLE_NOTIFY_SERVICE_ACCOUNT` | `googleNotifyServiceAccount`   | Also require this push service account email.                                                                                                                                                                                                                                              |
 | `ADA_GOOGLE_NOTIFY_TOKEN`           | `googleNotifyToken`            | Static Bearer fallback, 16+ characters (secret).                                                                                                                                                                                                                                           |
 | `ADA_STATUS_TOKEN`                  | `statusToken`                  | 16+ characters. Enables `GET /ada/status`; without it the route returns 401. `start.sh` logs a warning when unset.                                                                                                                                                                        |
+| `ADA_ADMIN_TOKEN`                   | (none, read at runtime)        | 16+ characters (secret). Enables the feedback log: `GET /admin/feedback` and `POST /admin/feedback/<id>`. Unset, they return 404.                                                                                                                                                         |
 | `ADA_DIGEST_TEMPLATE_NAME`          | `digestReadyTemplate.name`     | Approved WhatsApp utility template sent once when a digest is held because the 24-hour window is closed. Unset: not configured, no nudge.                                                                                                                                                  |
 | `ADA_DIGEST_TEMPLATE_LANG`          | `digestReadyTemplate.language` | Language code the template was approved in. Default `it`. Ignored (with a warning) when the name is unset.                                                                                                                                                                                 |
 | `ADA_DEADLINE_INTAKE_ENABLED`       | `deadlineIntake.enabled`       | `true` or `false` (case-insensitive), default `false`. Written on every boot, so removing the variable turns intake off. Any other value fails the boot.                                                                                                                                   |
@@ -116,6 +117,7 @@ The Ada plugin sends these reactions directly through the Kapso API on the inbou
 ```bash
 curl -sS https://ada.example.com/healthz
 curl -sS -H "Authorization: Bearer $ADA_STATUS_TOKEN" https://ada.example.com/ada/status
+curl -sS -H "Authorization: Bearer $ADA_ADMIN_TOKEN" https://ada.example.com/admin/feedback
 ```
 
 `/ada/status` and the `ada.collect` log events, plus a suggested "no collect in 45 minutes" alert, are documented in `extensions/ada/README.md#monitoring`.

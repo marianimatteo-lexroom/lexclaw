@@ -977,6 +977,7 @@ describe("before_prompt_build hook", () => {
     const memory = {
       readProfile: vi.fn(async () => PROFILE),
       listTodos: vi.fn(async () => [TODO]),
+      listPreferences: vi.fn(async () => []),
       ...overrides,
     };
     openAdaMemoryIfExistsFromApi.mockResolvedValue(memory);
@@ -1015,6 +1016,46 @@ describe("before_prompt_build hook", () => {
     );
     expect(blocks[2]).toBe(`# Session\n- id: ${SESSION}`);
     expect(prependContext).not.toContain("# Matter ");
+  });
+
+  it("puts the standing preferences of the turn's own number first, on every turn", async () => {
+    const PAOLO = "393331111111";
+    const ANNA = "393332222222";
+    const byOwner = new Map([
+      [
+        PAOLO,
+        useMemory({
+          listPreferences: async () => [
+            { key: "signature", text: "Never sign messages.", updatedAtMs: 1 },
+          ],
+        }),
+      ],
+      [ANNA, useMemory({ listPreferences: async () => [] })],
+    ]);
+    openAdaMemoryIfExistsFromApi.mockImplementation(
+      async (_api: unknown, owner: string) => byOwner.get(owner) ?? null,
+    );
+    const { hook } = registerAda();
+    const run = async (senderId: string) =>
+      (
+        (await hook("before_prompt_build")(
+          {},
+          { ...TURN, senderId, sessionKey: undefined, toolAuthority: authority(true) },
+        )) as { prependContext: string }
+      ).prependContext;
+    for (let turn = 0; turn < 2; turn += 1) {
+      const paolo = await run(PAOLO);
+      expect(paolo.split("\n\n")[0]).toMatch(/^# Standing preferences of this person/u);
+      expect(paolo).toContain("- [signature] Never sign messages.");
+    }
+    const anna = await run(ANNA);
+    expect(anna).not.toContain("Standing preferences");
+    expect(anna).not.toContain("Never sign");
+    expect(openAdaMemoryIfExistsFromApi.mock.calls.map(([, owner]) => owner)).toEqual([
+      PAOLO,
+      PAOLO,
+      ANNA,
+    ]);
   });
 
   it("still injects an empty open-loop index when there is no profile or todo", async () => {

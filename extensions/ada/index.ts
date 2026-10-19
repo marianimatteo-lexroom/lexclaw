@@ -29,6 +29,7 @@ import { buildInjectedBrief } from "./src/brief.js";
 import { connectOfferNote, takeConnectOffers } from "./src/connect-offers.js";
 import { executeAdaDeadlineList, executeAdaDeadlineReply } from "./src/deadline-tools.js";
 import { planDigest, type DigestSignal } from "./src/digest.js";
+import { registerAdaFeedbackAdmin } from "./src/feedback-http.js";
 import { openAdaGoogleAccountFromApi } from "./src/google-account.js";
 import { exchangeAuthorizationCode } from "./src/google-api.js";
 import { handleAdaGoogleCallback, writeAdaConnectPage } from "./src/google-callback.js";
@@ -67,6 +68,7 @@ import { openAdaMemoryIfExistsFromApi } from "./src/memory.js";
 import { ownerToolFactory } from "./src/owner-tool.js";
 import { lawyerOwner, resolveTurnOwner } from "./src/owner.js";
 import { ADA_PERSONA } from "./src/persona.js";
+import { adaPreferenceTools } from "./src/preference-tools.js";
 import { recordInboundLanguage, registerResearchLinkHooks } from "./src/research-link-outbound.js";
 import {
   lastSenderInboundAt,
@@ -372,6 +374,9 @@ const tools = defineToolPlugin({
         executeAdaSetTimezone(api, owner, args),
       ),
     }),
+    tool(adaPreferenceTools.set),
+    tool(adaPreferenceTools.forget),
+    tool(adaPreferenceTools.reportFeedback),
     tool({
       ...adaMemorySearchDefinition,
       optional: true,
@@ -549,11 +554,16 @@ const entry = definePluginEntry({
           if (!memory) {
             return;
           }
-          const [profile, todos] = await Promise.all([memory.readProfile(), memory.listTodos()]);
+          const [profile, todos, preferences] = await Promise.all([
+            memory.readProfile(),
+            memory.listTodos(),
+            memory.listPreferences(),
+          ]);
           authority.assertActive();
           const brief = buildInjectedBrief({
             profile,
             todos,
+            preferences,
             sessionKey: ctx.sessionKey,
           });
           if (!brief.trim()) {
@@ -618,6 +628,8 @@ const entry = definePluginEntry({
       api.registerHttpRoute(route);
       registerAdaHttpRoute(api, route);
     }
+
+    registerAdaFeedbackAdmin(api);
 
     registerAdaHttpRoute(api, {
       path: "/google/notify",

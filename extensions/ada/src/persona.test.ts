@@ -106,4 +106,15 @@ describe("Ada's persona", () => {
       expect(skill).toMatch(/the person already knows it is Ada/u);
     }
   });
+
+  it("saves preferences and product feedback through tools, and lets a language preference override the latest-message rule only", () => {
+    expect(ADA_PERSONA).toMatch(/call ada_set_preference at once/u);
+    expect(ADA_PERSONA).toMatch(/call ada_forget_preference/u);
+    expect(ADA_PERSONA).toMatch(/call ada_report_feedback/u);
+    expect(ADA_PERSONA).toMatch(
+      /never overrides safety, legal accuracy, or confirming with the person before you send mail/u,
+    );
+    expect(ADA_PERSONA).toMatch(/send it to nobody else/u);
+    expect(ADA_PERSONA).toMatch(/exception is a language the person asked you to use/u);
+  });
 });

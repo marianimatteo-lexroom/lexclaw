@@ -228,6 +228,47 @@ export type DeadlineUpsertResult = {
   updated: DeadlineItem[];
 };
 
+/** What one person told Ada about how to work with them; the key names the topic, so a new text replaces the old. */
+export type Preference = { key: string; text: string; updatedAtMs: number };
+
+export const PREFERENCE_LIMITS = { maxCount: 30, maxKeyChars: 40, maxTextChars: 300 } as const;
+
+/**
+ * The one preference code reads as a setting: while it is saved, the morning pass skips the short
+ * brief on quiet days. Urgent digests and the person's time zone are not affected.
+ */
+export const QUIET_BRIEF_OFF_KEY = "quiet_brief_off";
+
+export const FEEDBACK_CATEGORIES = [
+  "bug",
+  "missing_feature",
+  "wrong_answer",
+  "complaint",
+  "other",
+] as const;
+export type FeedbackCategory = (typeof FEEDBACK_CATEGORIES)[number];
+
+export const FEEDBACK_STATUSES = ["new", "triaged"] as const;
+export type FeedbackStatus = (typeof FEEDBACK_STATUSES)[number];
+
+export const FEEDBACK_MAX_TEXT_CHARS = 1000;
+
+/** A product problem a person reported, kept for the team in the registry file only. */
+export type FeedbackEntry = {
+  id: number;
+  /** The reporting WhatsApp number's digits. Never leaves the volume unmasked. */
+  number: string;
+  atMs: number;
+  category: FeedbackCategory;
+  text: string;
+  language: string;
+  status: FeedbackStatus;
+};
+
+export type NewFeedback = Omit<FeedbackEntry, "id" | "status">;
+
+export type SetPreferenceResult = { ok: true; replaced: boolean } | { ok: false; reason: "limit" };
+
 export type EmbeddingCandidate = { id: string; text: string };
 export type EmbeddingItem = EmbeddingCandidate & { vector: number[] };
 
@@ -241,6 +282,15 @@ export type AdaMemoryOperations = {
    * except the language when one is known.
    */
   setProfileTimezone: Operation<{ timezone: string; atMs: number; language?: string }, undefined>;
+  listPreferences: Operation<undefined, Preference[]>;
+  /** Saves or replaces the preference under `key`; a new key past the cap is refused. */
+  setPreference: Operation<{ key: string; text: string; atMs: number }, SetPreferenceResult>;
+  /** True when the key existed. */
+  removePreference: Operation<{ key: string }, boolean>;
+  addFeedback: Operation<NewFeedback, number>;
+  /** Entries at or after `sinceMs`, oldest first. */
+  listFeedback: Operation<{ sinceMs: number }, FeedbackEntry[]>;
+  setFeedbackStatus: Operation<{ id: number; status: FeedbackStatus }, FeedbackEntry | null>;
   upsertRecord: Operation<
     { record: MemoryRecord; reason: RevisionReason; atMs: number },
     undefined

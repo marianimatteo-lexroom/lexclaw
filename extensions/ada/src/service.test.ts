@@ -193,7 +193,12 @@ describe("runAdaCollectPass", () => {
     googleStateSecret: "0123456789abcdef",
   };
 
-  function setup(params: { wake?: Partial<WakeState>; config?: unknown; timezone?: string }) {
+  function setup(params: {
+    wake?: Partial<WakeState>;
+    config?: unknown;
+    timezone?: string;
+    preferences?: string[];
+  }) {
     const info = vi.fn();
     const error = vi.fn();
     const api = {
@@ -220,6 +225,8 @@ describe("runAdaCollectPass", () => {
       listMatterAliases: async () => [{ matterId: "verdi", alias: "Verdi", title: "Verdi" }],
       listTodos: async () => [],
       readProfile: async () => (params.timezone ? { timezone: params.timezone } : null),
+      listPreferences: async () =>
+        (params.preferences ?? []).map((key) => ({ key, text: "x", updatedAtMs: 1 })),
       replaceGmailSnapshot: async (rows: typeof gmailSnapshot) => {
         gmailSnapshot = rows;
       },
@@ -396,6 +403,38 @@ describe("runAdaCollectPass", () => {
         delivered: true,
         deliverable: false,
       });
+    });
+
+    it("skips the quiet-day brief for a number that turned it off, and still records the collect", async () => {
+      const t = setup({ wake: open, timezone: "Europe/Rome", preferences: ["quiet_brief_off"] });
+      await t.run({ trigger: "morning" });
+      expect(t.dispatched).toEqual([]);
+      expect(t.wake()).toMatchObject({
+        lastCollectAtMs: now.getTime(),
+        lastMorningBriefAtMs: null,
+      });
+      expect(t.events()[0]).toMatchObject({ decision: "silent" });
+    });
+
+    it("still sends an urgent morning digest to a number that turned the quiet brief off", async () => {
+      google.events = [
+        {
+          id: "hearing",
+          summary: "Verdi hearing",
+          start: "2026-10-14T13:00:00.000Z",
+          end: "2026-10-14T14:00:00.000Z",
+          status: "confirmed",
+        },
+      ];
+      const t = setup({ wake: open, preferences: ["quiet_brief_off"] });
+      await t.run({ trigger: "morning" });
+      expect(t.dispatched[0]).toMatchObject({ plan: { deliver: true } });
+    });
+
+    it("keeps the brief when the only saved preference is about something else", async () => {
+      const t = setup({ wake: open, preferences: ["tone"] });
+      await t.run({ trigger: "morning" });
+      expect(t.dispatched).toHaveLength(1);
     });
 
     it("sends one brief per local day, counted on the number's own clock", async () => {

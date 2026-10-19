@@ -69,6 +69,7 @@ function memoryFor() {
     listMatterAliases: async () => [{ matterId: "m", alias: "Matter", title: "Matter" }],
     listTodos: async () => [],
     readProfile: async () => null,
+    listPreferences: async () => [],
     readWake: async () => ({ ...wake }),
     writeWake: async (patch: Partial<WakeState>) => {
       wake = { ...wake, ...patch };

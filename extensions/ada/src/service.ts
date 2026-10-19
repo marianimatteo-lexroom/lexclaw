@@ -32,6 +32,7 @@ import { saveRefreshedAccount } from "./google-tools.js";
 import { holdReconnectNote, takeHeldReconnectNote } from "./held-reconnect.js";
 import { maskNumber, logInboundSkip } from "./inbound-log.js";
 import { abortResearchJobs } from "./lexroom-jobs.js";
+import { QUIET_BRIEF_OFF_KEY } from "./memory-contract.js";
 import { openAdaMemoryFromApi, openAdaMemoryIfExistsFromApi, type MemoryStore } from "./memory.js";
 import { createMorningSchedule, createServiceTimers } from "./morning-schedule.js";
 import { lawyerOwner, toOwner } from "./owner.js";
@@ -389,14 +390,16 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
     };
   }
 
-  const [previousGmail, previousCalendar, aliases, todos, wake, profile] = await Promise.all([
-    params.memory.readGmailSnapshot(),
-    params.memory.readCalendarSnapshot(),
-    params.memory.listMatterAliases(),
-    params.memory.listTodos(),
-    params.memory.readWake(),
-    params.memory.readProfile(),
-  ]);
+  const [previousGmail, previousCalendar, aliases, todos, wake, profile, preferences] =
+    await Promise.all([
+      params.memory.readGmailSnapshot(),
+      params.memory.readCalendarSnapshot(),
+      params.memory.listMatterAliases(),
+      params.memory.listTodos(),
+      params.memory.readWake(),
+      params.memory.readProfile(),
+      params.memory.listPreferences(),
+    ]);
 
   let previousOpenTodoIds: string[] = [];
   if (wake.openTodoIdsJson) {
@@ -461,6 +464,7 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
   // an urgent plan still goes out or is held as usual.
   const morningPass =
     params.trigger === "morning" &&
+    !preferences.some((preference) => preference.key === QUIET_BRIEF_OFF_KEY) &&
     !(params.catchUp && localParts(nowMs, timeZone).hour >= CATCH_UP_BRIEF_CUTOFF_HOUR);
   const briefedToday =
     morningPass &&

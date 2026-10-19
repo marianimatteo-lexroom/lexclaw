@@ -12,13 +12,18 @@ import type {
   DeadlineUpsertResult,
   EmbeddingCandidate,
   EmbeddingItem,
+  FeedbackEntry,
+  FeedbackStatus,
   GmailSnapshotRow,
   LawyerProfile,
   MemoryFolder,
   MemoryRecord,
   MemoryRevision,
   MemoryTodo,
+  NewFeedback,
+  Preference,
   RevisionReason,
+  SetPreferenceResult,
   AdaMemoryOperations,
   WakeState,
 } from "./memory-contract.js";
@@ -30,6 +35,12 @@ export type MemoryStore = {
   upsertProfile(profile: LawyerProfile): Promise<void>;
   readProfile(): Promise<LawyerProfile | null>;
   setProfileTimezone(timezone: string, atMs: number, language?: string): Promise<void>;
+  listPreferences(): Promise<Preference[]>;
+  setPreference(key: string, text: string, atMs: number): Promise<SetPreferenceResult>;
+  removePreference(key: string): Promise<boolean>;
+  addFeedback(feedback: NewFeedback): Promise<number>;
+  listFeedback(sinceMs: number): Promise<FeedbackEntry[]>;
+  setFeedbackStatus(id: number, status: FeedbackStatus): Promise<FeedbackEntry | null>;
   upsertRecord(record: MemoryRecord, reason: RevisionReason, atMs: number): Promise<void>;
   searchRecords(
     query: string,
@@ -83,6 +94,24 @@ export function wrapMemoryWorker(worker: SqliteWorkerStore<AdaMemoryOperations>)
     },
     setProfileTimezone(timezone, atMs, language) {
       return worker.execute({ type: "setProfileTimezone", input: { timezone, atMs, language } });
+    },
+    listPreferences() {
+      return worker.execute({ type: "listPreferences", input: undefined });
+    },
+    setPreference(key, text, atMs) {
+      return worker.execute({ type: "setPreference", input: { key, text, atMs } });
+    },
+    removePreference(key) {
+      return worker.execute({ type: "removePreference", input: { key } });
+    },
+    addFeedback(feedback) {
+      return worker.execute({ type: "addFeedback", input: feedback });
+    },
+    listFeedback(sinceMs) {
+      return worker.execute({ type: "listFeedback", input: { sinceMs } });
+    },
+    setFeedbackStatus(id, status) {
+      return worker.execute({ type: "setFeedbackStatus", input: { id, status } });
     },
     upsertRecord(record, reason, atMs) {
       return worker.execute({ type: "upsertRecord", input: { record, reason, atMs } });

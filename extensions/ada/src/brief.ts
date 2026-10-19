@@ -1,4 +1,4 @@
-import type { LawyerProfile, MemoryRecord, MemoryTodo } from "./memory-contract.js";
+import type { LawyerProfile, MemoryRecord, MemoryTodo, Preference } from "./memory-contract.js";
 import { renderMemoryPage } from "./memory-render.js";
 
 const PROFILE_BUDGET = 1200;
@@ -30,6 +30,26 @@ export function renderLawyerProfile(profile: LawyerProfile): string {
       .join("\n"),
     PROFILE_BUDGET,
   );
+}
+
+function flat(text: string): string {
+  return text.replace(/\s+/gu, " ").trim();
+}
+
+/**
+ * The standing instructions of one number, for the start of every turn of that number. Each text
+ * is flattened to one line so a saved preference cannot pose as a heading or a rule of its own.
+ */
+export function renderPreferencesNote(preferences: readonly Preference[]): string | undefined {
+  if (preferences.length === 0) {
+    return undefined;
+  }
+  return [
+    "# Standing preferences of this person",
+    "They asked for these themselves. Follow them in every reply, over your default rules for style, length, tone, formality, emoji, signatures and format, and, when one names a language, over the rule to follow the language of their latest message. They never override safety, legal accuracy, or confirming with the person before sending mail, creating or changing events, drafting or starting research. Do not mention them unless relevant.",
+    ...preferences.map(({ key, text }) => `- [${key}] ${flat(text)}`),
+    "When they ask what you remember about how they like things, read this list back in their language. To change one, call ada_set_preference with the same key; to drop one, call ada_forget_preference.",
+  ].join("\n");
 }
 
 export function renderOpenLoopIndex(todos: readonly MemoryTodo[]): string {
@@ -74,11 +94,17 @@ export function renderMatterBrief(params: {
 export function buildInjectedBrief(params: {
   profile: LawyerProfile | null;
   todos: readonly MemoryTodo[];
+  /** The number's standing preferences; they come first so nothing below can outweigh them. */
+  preferences?: readonly Preference[];
   sessionKey?: string;
   matterIds?: readonly string[];
   matterPages?: ReadonlyMap<string, { onePager: MemoryRecord | null; timeline: MemoryRecord[] }>;
 }): string {
   const blocks: string[] = [];
+  const preferences = renderPreferencesNote(params.preferences ?? []);
+  if (preferences) {
+    blocks.push(preferences);
+  }
   if (params.profile) {
     blocks.push(renderLawyerProfile(params.profile));
   }

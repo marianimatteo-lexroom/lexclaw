@@ -405,6 +405,9 @@ describe("sender B cannot see sender A's memory, brief or research links", () =>
           },
         ],
         getTodo: async () => ({ id: "todo-secret", title: "Rossi: transazione riservata" }),
+        listPreferences: async () => [
+          { key: "tone", text: "Anna wants a formal tone.", updatedAtMs: 1 },
+        ],
       },
     };
     openAdaMemoryIfExistsFromApi.mockImplementation(
@@ -440,6 +443,7 @@ describe("sender B cannot see sender A's memory, brief or research links", () =>
       },
     )) as { prependContext: string };
     expect(brief.prependContext).toContain("Rossi: transazione riservata");
+    expect(brief.prependContext).toContain("- [tone] Anna wants a formal tone.");
   });
 
   it("injects nothing for a turn whose sender and session disagree", async () => {
