@@ -34,7 +34,7 @@ import { abortResearchJobs } from "./lexroom-jobs.js";
 import { openAdaMemoryFromApi, openAdaMemoryIfExistsFromApi, type MemoryStore } from "./memory.js";
 import { lawyerOwner, toOwner } from "./owner.js";
 import { buildDailyTimelineRecord, buildOnePagerRecord } from "./reconcile.js";
-import { nextSlotMs, previousSlotMs } from "./schedule.js";
+import { DEFAULT_TIME_ZONE, effectiveTimeZone, nextSlotMs, previousSlotMs } from "./schedule.js";
 import {
   readDigestReadyTemplate,
   sendDigestReadyNotice,
@@ -52,7 +52,6 @@ function readPubSubTopic(config: unknown): string | null {
 
 const POLL_MS = 15 * 60 * 1000;
 const CATCH_UP_DELAY_MS = 30 * 1000;
-const DEFAULT_TZ = "Europe/Rome";
 
 /** A plan whose dispatch failed is retried this many times before waiting for the next morning slot or lawyer message. */
 export const HELD_PLAN_MAX_ATTEMPTS = 5;
@@ -116,7 +115,7 @@ function reconnectNoteRequest(params: { owner: string; now: Date }) {
   return {
     owner: params.owner,
     plan: { deliver: false, reason: "nothing_cleared_the_bar" } as const,
-    idempotencyKey: `reconnect:${params.owner}:${dayKey(params.now, DEFAULT_TZ)}`,
+    idempotencyKey: `reconnect:${params.owner}:${dayKey(params.now, DEFAULT_TIME_ZONE)}`,
     connectOnly: true,
     reconnect: true,
   };
@@ -346,7 +345,8 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
       };
     }
     if (params.forceMorning && !params.catchUp && google.error === "not_connected") {
-      const day = dayKey(params.now, DEFAULT_TZ);
+      const ownZone = effectiveTimeZone((await params.memory.readProfile())?.timezone);
+      const day = dayKey(params.now, ownZone);
       const dispatch = await dispatchSafely(dispatchDigestTurn, {
         owner: params.owner,
         plan: { deliver: false, reason: "nothing_cleared_the_bar" },
@@ -391,7 +391,7 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
     }
   }
 
-  const timeZone = profile?.timezone ?? DEFAULT_TZ;
+  const timeZone = effectiveTimeZone(profile?.timezone);
   const deadlineIntake = await prepareDeadlineIntake({
     api: params.api,
     memory: params.memory,
@@ -628,7 +628,7 @@ export async function runAdaReconcilePass(params: {
   }
 
   const profile = await params.memory.readProfile();
-  const timeZone = profile?.timezone ?? DEFAULT_TZ;
+  const timeZone = effectiveTimeZone(profile?.timezone);
   const day = dayKey(params.now, timeZone);
   const aliases = await params.memory.listMatterAliases();
   const matterIds = [...new Set(aliases.map((entry) => entry.matterId))];
@@ -676,7 +676,16 @@ export function registerAdaService(deps: AdaServiceDeps): void {
 
   // Fallback timers for hosts that omit the V2 scheduler field (e.g. OpenClaw 2026.9.8).
   const fallbackTimers = new Set<ReturnType<typeof setTimeout>>();
+  const fallbackOnceById = new Map<string, ReturnType<typeof setTimeout>>();
+  const fallbackNoted = new Set<string>();
   let stopped = false;
+
+  const noteFallback = (kind: "setInterval" | "setTimeout", id: string) => {
+    if (!fallbackNoted.has(kind)) {
+      fallbackNoted.add(kind);
+      api.logger.info(`ada: Gateway service scheduler missing; using ${kind} (first for ${id})`);
+    }
+  };
 
   type ServiceScheduler = Pick<PluginServiceSchedulerV1, "schedule">;
   const scheduleRepeating = (params: {
@@ -704,7 +713,7 @@ export function registerAdaService(deps: AdaServiceDeps): void {
       });
       return;
     }
-    api.logger.warn(`ada: Gateway service scheduler missing; using setInterval for ${params.id}`);
+    noteFallback("setInterval", params.id);
     const first = setTimeout(() => {
       fallbackTimers.delete(first);
       void params.run();
@@ -715,6 +724,7 @@ export function registerAdaService(deps: AdaServiceDeps): void {
     }, params.delayMs);
     fallbackTimers.add(first);
   };
+  /** Like the host scheduler, scheduling an id again replaces the job still pending under it. */
   const scheduleOnce = (params: {
     scheduler: ServiceScheduler | undefined;
     id: string;
@@ -725,16 +735,23 @@ export function registerAdaService(deps: AdaServiceDeps): void {
       params.scheduler.schedule({ id: params.id, atMs: params.atMs, run: params.run });
       return;
     }
-    api.logger.warn(`ada: Gateway service scheduler missing; using setTimeout for ${params.id}`);
+    noteFallback("setTimeout", params.id);
+    const pending = fallbackOnceById.get(params.id);
+    if (pending) {
+      clearTimeout(pending);
+      fallbackTimers.delete(pending);
+    }
     const timer = setTimeout(
       () => {
         fallbackTimers.delete(timer);
+        fallbackOnceById.delete(params.id);
         void params.run();
       },
       Math.max(0, params.atMs - now().getTime()),
     );
     timer.unref?.();
     fallbackTimers.add(timer);
+    fallbackOnceById.set(params.id, timer);
   };
 
   api.registerService({
@@ -758,7 +775,7 @@ export function registerAdaService(deps: AdaServiceDeps): void {
           });
           const clock = now();
           const profile = await memory.readProfile();
-          if (forceMorning || isMorningDigestSlot(clock, profile?.timezone ?? DEFAULT_TZ)) {
+          if (forceMorning || isMorningDigestSlot(clock, effectiveTimeZone(profile?.timezone))) {
             await runAdaReconcilePass({ memory, now: clock });
           }
         } catch (error) {
@@ -768,7 +785,7 @@ export function registerAdaService(deps: AdaServiceDeps): void {
         }
       };
       /** Every number with a Google connection, and the lawyer, who is asked to connect. */
-      const tick = async (forceMorning: boolean, catchUp = false) => {
+      const tickAll = async () => {
         let owners: string[] = [];
         try {
           owners = await listCollectOwners(api);
@@ -778,40 +795,86 @@ export function registerAdaService(deps: AdaServiceDeps): void {
           );
         }
         for (const owner of owners) {
-          await tickOwner(owner, forceMorning, catchUp);
+          await tickOwner(owner, false);
         }
       };
 
-      const resolveTimeZone = async (): Promise<string> => {
+      /** A number's profile zone, Europe/Rome when it has none yet or the read fails. */
+      const ownerTimeZone = async (owner: string): Promise<string> => {
         try {
-          const lawyer = lawyerOwner(api.config);
-          const memory = lawyer ? await openAdaMemoryIfExistsFromApi(api, lawyer) : null;
-          const timeZone = (await memory?.readProfile())?.timezone ?? DEFAULT_TZ;
-          // An unknown zone name throws here instead of inside the slot math.
-          new Intl.DateTimeFormat("en-GB", { timeZone }).format(0);
-          return timeZone;
+          const memory = await openAdaMemoryIfExistsFromApi(api, owner);
+          return effectiveTimeZone((await memory?.readProfile())?.timezone);
         } catch {
-          return DEFAULT_TZ;
+          return DEFAULT_TIME_ZONE;
         }
       };
 
-      // Each run schedules the next slot from the calendar, so DST days stay at 07:40
-      // and a long run or a slow host never drifts the way a fixed 24h interval would.
-      const armMorning = async (afterMs: number): Promise<void> => {
+      // Each number's next 07:40 on its own clock. Slots come from the calendar of that zone
+      // rather than a 24h step, so DST days stay at 07:40 and a slow run never drifts them.
+      const morningSlots = new Map<string, { timeZone: string; atMs: number }>();
+      let armedAtMs: number | null = null;
+
+      /**
+       * Brings the slots in line with the numbers and zones as they are now: a number that was
+       * added gets its next slot, one that was removed loses it, and one whose zone changed gets
+       * the next 07:40 of its new zone. A slot already in the past waits for its run.
+       */
+      const refreshMorningSlots = async (): Promise<void> => {
+        let owners: string[];
+        try {
+          owners = await listCollectOwners(api);
+        } catch (error) {
+          api.logger.error(
+            `ada service could not list accounts: ${error instanceof Error ? error.message : "unknown"}`,
+          );
+          return;
+        }
+        const clock = now().getTime();
+        for (const owner of morningSlots.keys()) {
+          if (!owners.includes(owner)) {
+            morningSlots.delete(owner);
+          }
+        }
+        for (const owner of owners) {
+          const timeZone = await ownerTimeZone(owner);
+          if (morningSlots.get(owner)?.timeZone !== timeZone) {
+            morningSlots.set(owner, { timeZone, atMs: nextSlotMs(clock, timeZone) });
+          }
+        }
+      };
+
+      /** One timer, set to the earliest slot of any number; the run visits the numbers that are due. */
+      const armMorning = async (): Promise<void> => {
         if (stopped) {
           return;
         }
-        const atMs = nextSlotMs(afterMs, await resolveTimeZone());
+        await refreshMorningSlots();
+        const atMs = Math.min(...[...morningSlots.values()].map((slot) => slot.atMs));
+        if (!Number.isFinite(atMs) || atMs === armedAtMs) {
+          return;
+        }
+        armedAtMs = atMs;
         scheduleOnce({
           scheduler: ctx.scheduler,
           id: "ada-morning",
           atMs,
           run: async () => {
+            // A timer that wakes slightly early still runs the slot it was set for, once.
+            const firedFor = Math.max(now().getTime(), atMs);
             try {
-              await tick(true);
+              await refreshMorningSlots();
+              const due = [...morningSlots].filter(([, slot]) => slot.atMs <= firedFor);
+              for (const [owner, slot] of due) {
+                await tickOwner(owner, true);
+                morningSlots.set(owner, {
+                  timeZone: slot.timeZone,
+                  atMs: nextSlotMs(firedFor, slot.timeZone),
+                });
+              }
             } finally {
+              armedAtMs = null;
               try {
-                await armMorning(Math.max(now().getTime(), atMs));
+                await armMorning();
               } catch (error) {
                 api.logger.error(
                   `ada could not schedule the next morning slot: ${error instanceof Error ? error.message : "unknown"}`,
@@ -822,15 +885,21 @@ export function registerAdaService(deps: AdaServiceDeps): void {
         });
       };
 
-      // A restart can straddle the 07:40 slot. When nothing was collected since the
-      // latest slot, run the morning pass once shortly after boot.
+      // A restart can straddle a number's 07:40. When nothing was collected for a number since
+      // the latest slot of its own zone, run its morning pass once shortly after boot.
       const armCatchUp = async (): Promise<void> => {
         const clock = now().getTime();
-        const slotMs = previousSlotMs(clock, await resolveTimeZone());
         const stale: string[] = [];
         for (const owner of await listCollectOwners(api)) {
           const memory = await openAdaMemoryIfExistsFromApi(api, owner);
-          const lastCollectAtMs = memory ? (await memory.readWake()).lastCollectAtMs : null;
+          if (!memory) {
+            continue;
+          }
+          const lastCollectAtMs = (await memory.readWake()).lastCollectAtMs;
+          const slotMs = previousSlotMs(
+            clock,
+            effectiveTimeZone((await memory.readProfile())?.timezone),
+          );
           if (lastCollectAtMs !== null && lastCollectAtMs < slotMs) {
             stale.push(owner);
           }
@@ -850,15 +919,26 @@ export function registerAdaService(deps: AdaServiceDeps): void {
         });
       };
 
+      // The poll also re-arms the morning timer, so numbers added or removed and zones changed
+      // since the last run take effect within one poll.
       scheduleRepeating({
         scheduler: ctx.scheduler,
         id: "ada-poll",
         delayMs: POLL_MS,
         everyMs: POLL_MS,
-        run: () => tick(false),
+        run: async () => {
+          await tickAll();
+          try {
+            await armMorning();
+          } catch (error) {
+            api.logger.error(
+              `ada could not refresh the morning slots: ${error instanceof Error ? error.message : "unknown"}`,
+            );
+          }
+        },
       });
       try {
-        await armMorning(now().getTime());
+        await armMorning();
       } catch (error) {
         api.logger.error(
           `ada could not schedule the morning slot: ${error instanceof Error ? error.message : "unknown"}`,
@@ -880,6 +960,7 @@ export function registerAdaService(deps: AdaServiceDeps): void {
         clearInterval(timer);
       }
       fallbackTimers.clear();
+      fallbackOnceById.clear();
     },
   });
 }
