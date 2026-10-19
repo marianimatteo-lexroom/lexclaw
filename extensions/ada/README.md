@@ -131,6 +131,10 @@ With `NODE_ENV=production` the account stores refuse to open without `ADA_TOKEN_
 
 Plugin config values can reference environment variables, for example `googleNotifyAudience: "${ADA_GOOGLE_NOTIFY_AUDIENCE}"`.
 
+## No signature
+
+Ada never signs her messages: no "— Ada", "Ada" or "Ada · Lexroom" at the end, because the person already knows who answers. The persona and the skills that dictate a message say so, `start.sh` removes any older instruction to sign from `SOUL.md` and `AGENTS.md` on the volume (backup in `*.pre-ada`), and as a safety net `src/signature.ts` drops a final line of a model reply that is only the signature (case-sensitive, only when other text comes before it, so a sentence that mentions Ada is never touched). The legal disclaimer in the welcome and the `Continua su Lexroom` link line are not signatures and stay.
+
 ## Reply language
 
 Ada replies in the language of the person's most recent message, in the model's turns and in every message sent by code. The persona (`src/persona.ts`) states this as a hard rule that overrides earlier messages, the profile language, memory, and the language of tool output and digest data. In code, `message_received` records the language of each WhatsApp number's latest message in memory (`recordInboundLanguage` in `src/research-link-outbound.ts`, the same stopword detection extended with hint words for short messages); a message that carries no language ("ok", a link, an emoji) keeps the previous one. The Lexroom and Gmail/Calendar connected confirmations, the research acknowledgement, result framing and failure notes, the morning digest, the Google connect ask and the held reconnect note, and the mailbox-moved note all use it, in Italian, English, Spanish, French and German. A number with no known message (for example after a restart) falls back to its profile language, then Italian. The welcome message, the digest-ready WhatsApp template (approved in one language) and the browser pages shown after connecting are not covered.

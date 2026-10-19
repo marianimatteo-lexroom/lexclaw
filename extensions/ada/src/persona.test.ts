@@ -77,4 +77,33 @@ describe("Ada's persona", () => {
     expect(ADA_PERSONA).toMatch(/do not say you can do little or nothing/u);
     expect(ADA_PERSONA).toMatch(/wrote to the wrong person or by mistake/u);
   });
+
+  it("never signs, and does not tell the model to sign off anywhere", () => {
+    expect(ADA_PERSONA).toMatch(
+      /Never sign your messages and never end one with your name or a sign-off/u,
+    );
+    expect(ADA_PERSONA).toMatch(/the person already knows it is you/u);
+    expect(ADA_PERSONA).toMatch(/overrides SOUL\.md, AGENTS\.md, notes and earlier messages/u);
+    expect(ADA_PERSONA).not.toMatch(/sign off as|sign-off as|firma/iu);
+    const dir = join(import.meta.dirname, "..", "skills");
+    const skills = readdirSync(dir, { withFileTypes: true, recursive: true })
+      .filter((entry) => entry.isFile() && entry.name === "SKILL.md")
+      .map((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8"));
+    for (const skill of skills) {
+      expect(skill).not.toMatch(
+        /sign(?:ing)?[ -]?off as|\bsign (?:your|each|every) (?:message|repl)/iu,
+      );
+    }
+  });
+
+  it("tells the skills that dictate a WhatsApp message not to sign it", () => {
+    for (const name of ["ada-lexroom-connect", "ada-google-connect", "ada-deadline-intake"]) {
+      const skill = readFileSync(
+        join(import.meta.dirname, "..", "skills", name, "SKILL.md"),
+        "utf8",
+      );
+      expect(skill).toMatch(/Do not sign the (?:message|brief)/u);
+      expect(skill).toMatch(/the person already knows it is Ada/u);
+    }
+  });
 });

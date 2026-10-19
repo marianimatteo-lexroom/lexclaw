@@ -37,5 +37,6 @@ When `ask` is present, send exactly one WhatsApp message:
 - Use `ask.message` as the English source and translate the sentences around the URL.
 - Include `ask.url` on its own line, copied exactly.
 - Do not add a digest, a second link, or any other offer in that message.
+- Do not sign the message or end it with your name or a sign-off; the person already knows it is Ada.
 
 After the person signs in on the page, the callback texts a confirmation to the same WhatsApp chat. Do not send that confirmation yourself, and do not send another connect link.

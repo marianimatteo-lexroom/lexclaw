@@ -203,12 +203,14 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
       "<!-- ada:multi-user -->\n## Who Ada serves\n\nAda serves everyone who writes to her on WhatsApp, each in a private chat, with their own Lexroom, Gmail and Calendar connections. She never says she works for one person only. Any older line saying she works for one lawyer or one person is out of date.\n<!-- /ada:multi-user -->\n";
     const LANGUAGE_BLOCK =
       "<!-- ada:language -->\n## Language\n\nAda always replies in the language of the most recent message from the person she is talking to, and switches when they switch. That overrides any older line that names a language or says to answer in Italian, and the language of earlier messages, profiles, notes and tool output.\n<!-- /ada:language -->\n";
+    const SIGN_BLOCK =
+      "<!-- ada:no-signature -->\n## No signature\n\nAda never signs her messages and never ends one with her name or a sign-off. The person already knows it is Ada. That overrides any older line that says to sign, sign off or close messages with a name.\n<!-- /ada:no-signature -->\n";
     const IDENTITY_NOW =
       IDENTITY.replace("**Name:** Vera", "**Name:** Ada").replace(
         "assistant for one lawyer",
         "assistant for everyone who writes to her",
       ) + `\n${BLOCK}`;
-    const SOUL_NOW = `You are Ada. Do not ask what you should be called.\nADA never lies.\n\n${BLOCK}\n${LANGUAGE_BLOCK}`;
+    const SOUL_NOW = `You are Ada. Do not ask what you should be called.\nADA never lies.\n\n${BLOCK}\n${LANGUAGE_BLOCK}\n${SIGN_BLOCK}`;
     const USER = "Cliente: Vera Bianchi (Rossi SRL)\n";
 
     function seeded(config: Record<string, unknown> = {}) {
@@ -245,7 +247,7 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
       );
       expect(deploy.run().status).toBe(0);
       expect(read(deploy, "SOUL.md")).toBe(
-        `Lavori per chiunque le scriva e per chiunque le scriva.\n\n${BLOCK}\n${LANGUAGE_BLOCK}`,
+        `Lavori per chiunque le scriva e per chiunque le scriva.\n\n${BLOCK}\n${LANGUAGE_BLOCK}\n${SIGN_BLOCK}`,
       );
       expect(read(deploy, "SOUL.md.pre-ada")).toBe(
         "Lavori per una persona sola e per un solo avvocato.",
@@ -281,7 +283,9 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
         writeFileSync(join(deploy.workspace, name), text);
       }
       expect(deploy.run().status).toBe(0);
-      expect(read(deploy, "AGENTS.md")).toBe("Ciao, sono Ada. Ada answers on WhatsApp.\n");
+      expect(read(deploy, "AGENTS.md")).toBe(
+        `Ciao, sono Ada. Ada answers on WhatsApp.\n\n${SIGN_BLOCK}`,
+      );
       expect(read(deploy, "TOOLS.md")).toBe("Notes for Ada: use /vera/status.\n");
       expect(read(deploy, "HEARTBEAT.md")).toBe("Ada checks mail.\n");
       expect(read(deploy, "BOOTSTRAP.md")).toBe("Tell them you are Ada.\n");
@@ -301,7 +305,7 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
       writeFileSync(join(deploy.workspace, "AGENTS.md"), text);
       expect(deploy.run().status).toBe(0);
       expect(read(deploy, "AGENTS.md")).toBe(
-        "Sono Ada. ADA risponde. Una vera urgenza: la vera questione, vera o falsa? Ada: ok. /vera/status VERA_TOKEN_KEY vera.verus.legal\n",
+        `Sono Ada. ADA risponde. Una vera urgenza: la vera questione, vera o falsa? Ada: ok. /vera/status VERA_TOKEN_KEY vera.verus.legal\n\n${SIGN_BLOCK}`,
       );
     });
 
@@ -311,10 +315,107 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
       writeFileSync(join(deploy.workspace, "SOUL.md"), `Rispondi sempre in italiano.\n\n${BLOCK}`);
       expect(deploy.run().status).toBe(0);
       expect(read(deploy, "SOUL.md")).toBe(
-        `Rispondi sempre in italiano.\n\n${BLOCK}\n${LANGUAGE_BLOCK}`,
+        `Rispondi sempre in italiano.\n\n${BLOCK}\n${LANGUAGE_BLOCK}\n${SIGN_BLOCK}`,
       );
       expect(deploy.run().status).toBe(0);
       expect(read(deploy, "SOUL.md").split("<!-- ada:language -->")).toHaveLength(2);
+    });
+
+    describe("the instruction to sign messages", () => {
+      const seedSoul = (soul: string, agents?: string) => {
+        const deploy = boot(ENV);
+        mkdirSync(deploy.workspace, { recursive: true });
+        writeFileSync(join(deploy.workspace, "SOUL.md"), soul);
+        if (agents !== undefined) {
+          writeFileSync(join(deploy.workspace, "AGENTS.md"), agents);
+        }
+        return deploy;
+      };
+
+      it("removes the sentences that tell her to sign, keeps the rest, and keeps a backup", () => {
+        const soul = [
+          "# SOUL",
+          "",
+          "Sei calorosa e concisa.",
+          "- Sign off as Vera on every message.",
+          "- Firma sempre i messaggi con il tuo nome.",
+          "- Always end your replies with a signature.",
+          "- Chiudi ogni messaggio con Vera.",
+          "Be brief. Sign off as Ada at the end. Never invent facts.",
+          "",
+          "Rispondi sempre con chiarezza.",
+          "",
+        ].join("\n");
+        const agents = "End every message with \u2014 Vera.\nCheck the calendar first.\n";
+        const deploy = seedSoul(soul, agents);
+        const result = deploy.run();
+        expect(result.status).toBe(0);
+        expect(read(deploy, "SOUL.md")).toBe(
+          [
+            "# SOUL",
+            "",
+            "Sei calorosa e concisa.",
+            "Be brief. Never invent facts.",
+            "",
+            "Rispondi sempre con chiarezza.",
+            "",
+            BLOCK,
+            LANGUAGE_BLOCK,
+            SIGN_BLOCK,
+          ].join("\n"),
+        );
+        expect(read(deploy, "AGENTS.md")).toBe(`Check the calendar first.\n\n${SIGN_BLOCK}`);
+        expect(read(deploy, "SOUL.md.pre-ada")).toBe(soul);
+        expect(read(deploy, "AGENTS.md.pre-ada")).toBe(agents);
+        expect(`${result.stdout}${result.stderr}`).toContain(
+          "updated the assistant identity in SOUL.md",
+        );
+      });
+
+      it("is idempotent: a second boot changes nothing and keeps the first backup", () => {
+        const soul = "Sign off as Ada.\nStay warm.\n";
+        const deploy = seedSoul(soul);
+        expect(deploy.run().status).toBe(0);
+        const once = read(deploy, "SOUL.md");
+        const second = deploy.run();
+        expect(second.status).toBe(0);
+        expect(read(deploy, "SOUL.md")).toBe(once);
+        expect(once.split("<!-- ada:no-signature -->")).toHaveLength(2);
+        expect(read(deploy, "SOUL.md.pre-ada")).toBe(soul);
+        expect(`${second.stdout}${second.stderr}`).not.toContain("updated the assistant identity");
+      });
+
+      it("adds the rule to a file with nothing to remove, and leaves legitimate lines alone", () => {
+        const soul = [
+          "Never send an email without the lawyer's sign-off.",
+          "Sign the draft only after the lawyer approves it.",
+          "Pick a signature emoji.",
+          "Ask who signs the contract before you reply.",
+          "",
+        ].join("\n");
+        const deploy = seedSoul(soul);
+        expect(deploy.run().status).toBe(0);
+        const after = read(deploy, "SOUL.md");
+        expect(after.startsWith(soul)).toBe(true);
+        expect(after).toContain(SIGN_BLOCK);
+      });
+
+      it("does not strip the explanation inside its own section on a later boot", () => {
+        const deploy = seedSoul(`Stay warm.\n\n${BLOCK}\n${LANGUAGE_BLOCK}\n${SIGN_BLOCK}`);
+        const result = deploy.run();
+        expect(result.status).toBe(0);
+        expect(read(deploy, "SOUL.md")).toBe(
+          `Stay warm.\n\n${BLOCK}\n${LANGUAGE_BLOCK}\n${SIGN_BLOCK}`,
+        );
+        expect(existsSync(join(deploy.workspace, "SOUL.md.pre-ada"))).toBe(false);
+      });
+
+      it("never creates SOUL.md or AGENTS.md on a workspace that has none", () => {
+        const deploy = boot(ENV);
+        expect(deploy.run().status).toBe(0);
+        expect(existsSync(join(deploy.workspace, "SOUL.md"))).toBe(false);
+        expect(existsSync(join(deploy.workspace, "AGENTS.md"))).toBe(false);
+      });
     });
 
     it("boots on an empty workspace without creating identity files", () => {
