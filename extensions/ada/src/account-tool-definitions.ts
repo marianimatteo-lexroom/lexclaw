@@ -1,6 +1,12 @@
 import { Type } from "typebox";
 import { DEADLINE_REPLY_ACTIONS } from "./deadline-tools.js";
-import { MEMORY_FOLDERS } from "./memory-contract.js";
+import {
+  FEEDBACK_CATEGORIES,
+  FEEDBACK_MAX_TEXT_CHARS,
+  MEMORY_FOLDERS,
+  PREFERENCE_LIMITS,
+  QUIET_BRIEF_OFF_KEY,
+} from "./memory-contract.js";
 
 /**
  * The model-facing definitions of every tool that acts on one person's accounts or data. None
@@ -180,6 +186,42 @@ export const adaSetTimezoneDefinition = {
         minLength: 1,
         description: "IANA time zone name, such as Asia/Shanghai.",
       }),
+    },
+    { additionalProperties: false },
+  ),
+};
+
+export const adaSetPreferenceDefinition = {
+  name: "ada_set_preference",
+  label: "Save my preference",
+  description: `Save a standing preference of the person asking, so you follow it from now on in every chat with them. Call it whenever they tell you, in any words, how they want you to behave: style, length, tone, formality, language, emoji, signatures, how to address them, what the morning brief should contain, what to alert them about. Use a short snake_case topic as key (signature, length, tone, language, emoji, address_form, brief_content, alerts). Look at the standing preferences already in your context: when one covers the same topic, reuse its key so the new text replaces it. Write text as one standing instruction in your own words, at most ${PREFERENCE_LIMITS.maxTextChars} characters. To stop the short morning brief on quiet days use the key ${QUIET_BRIEF_OFF_KEY}. Not for time zones (use ada_set_timezone) and not for complaints about the product (use ada_report_feedback). At most ${PREFERENCE_LIMITS.maxCount} are kept; past that it returns the list so you can ask which to drop. Afterwards confirm in one short natural sentence in their language.`,
+  parameters: Type.Object(
+    {
+      key: Type.String({ minLength: 1, description: "Short snake_case topic, such as signature." }),
+      text: Type.String({ minLength: 1, description: "The standing instruction, one sentence." }),
+    },
+    { additionalProperties: false },
+  ),
+};
+
+export const adaForgetPreferenceDefinition = {
+  name: "ada_forget_preference",
+  label: "Forget my preference",
+  description: `Remove a saved standing preference of the person asking, by its key, when they take it back or ask you to stop doing it. Returns what is still saved. For ${QUIET_BRIEF_OFF_KEY} it turns the quiet-day brief back on. Confirm in one short natural sentence in their language.`,
+  parameters: Type.Object(
+    { key: Type.String({ minLength: 1, description: "Key of a saved preference." }) },
+    { additionalProperties: false },
+  ),
+};
+
+export const adaReportFeedbackDefinition = {
+  name: "ada_report_feedback",
+  label: "Pass feedback to the team",
+  description: `Record feedback about the product itself for the Lexroom team: a bug, a missing feature, a wrong or poor answer, or a complaint. Call it when the person reports such a problem, besides answering them. Personal preferences about how you behave go to ada_set_preference instead; one message can be both. Restate the problem plainly in at most ${FEEDBACK_MAX_TEXT_CHARS} characters, naming what they asked and what went wrong. Nothing is sent to anyone: the team reads it later. Afterwards tell the person in one short sentence, in their language, that you passed it to the team.`,
+  parameters: Type.Object(
+    {
+      category: Type.Union(FEEDBACK_CATEGORIES.map((category) => Type.Literal(category))),
+      text: Type.String({ minLength: 1, description: "The problem, restated plainly." }),
     },
     { additionalProperties: false },
   ),

@@ -112,6 +112,7 @@ function useMemory(overrides: Record<string, unknown> = {}) {
       openTodoIdsJson: null,
     })),
     readProfile: vi.fn(async () => null),
+    listPreferences: async () => [],
     replaceGmailSnapshot: vi.fn(async () => {}),
     replaceCalendarSnapshot: vi.fn(async () => {}),
     writeWake: vi.fn(async (_patch: Record<string, unknown>) => {}),

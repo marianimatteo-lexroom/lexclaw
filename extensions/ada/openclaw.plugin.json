@@ -126,6 +126,9 @@
       "ada_deadline_list",
       "ada_deadline_reply",
       "ada_set_timezone",
+      "ada_set_preference",
+      "ada_forget_preference",
+      "ada_report_feedback",
       "ada_memory_search",
       "ada_memory_list",
       "ada_memory_get",
@@ -175,6 +178,15 @@
       "optional": true
     },
     "ada_set_timezone": {
+      "optional": true
+    },
+    "ada_set_preference": {
+      "optional": true
+    },
+    "ada_forget_preference": {
+      "optional": true
+    },
+    "ada_report_feedback": {
       "optional": true
     },
     "ada_memory_search": {

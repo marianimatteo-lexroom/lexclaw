@@ -19,6 +19,9 @@ const TOOL_NAMES = [
   "ada_deadline_list",
   "ada_deadline_reply",
   "ada_set_timezone",
+  "ada_set_preference",
+  "ada_forget_preference",
+  "ada_report_feedback",
   "ada_memory_search",
   "ada_memory_list",
   "ada_memory_get",
@@ -58,7 +61,14 @@ it("registers digest tools, memory tools, wake service, and Google routes", () =
   expect(registerHttpRoute).toHaveBeenCalledWith(
     expect.objectContaining({ path: "/ada/status", auth: "plugin", match: "exact" }),
   );
+  expect(registerHttpRoute).toHaveBeenCalledWith(
+    expect.objectContaining({ path: "/admin/feedback", auth: "plugin", match: "prefix" }),
+  );
+  expect(registerHttpRoute).toHaveBeenCalledWith(
+    expect.objectContaining({ path: "/ada/admin/feedback", auth: "plugin", match: "prefix" }),
+  );
   for (const legacy of [
+    "/vera/admin/feedback",
     "/vera/google/callback",
     "/vera/google/notify",
     "/vera/lexroom/connect",

@@ -135,6 +135,7 @@ function createMemory(wake: Partial<WakeState> = {}, timezone?: string) {
     ],
     listTodos: async () => [],
     readProfile: async () => (timezone ? { timezone } : null),
+    listPreferences: async () => [],
     readWake: async () => ({ ...state }),
     writeWake: async (patch: Partial<WakeState>) => {
       state = { ...state, ...patch };

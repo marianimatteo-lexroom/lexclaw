@@ -69,6 +69,7 @@ function memoryFor(options: {
     listMatterAliases: async () => [],
     listTodos: async () => [],
     readProfile: async () => (zone ? ({ timezone: zone } as LawyerProfile) : null),
+    listPreferences: async () => [],
     readWake: async () => ({ ...wake }),
     writeWake: async (patch: Partial<WakeState>) => {
       wake = { ...wake, ...patch };

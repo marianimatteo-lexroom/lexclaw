@@ -28,8 +28,12 @@ import {
   DEADLINE_SOURCE_KINDS,
   DEADLINE_STATUSES,
   DEADLINE_TYPES,
+  FEEDBACK_CATEGORIES,
+  FEEDBACK_MAX_TEXT_CHARS,
+  FEEDBACK_STATUSES,
   MEMORY_FOLDERS,
   MEMORY_RECORD_TYPES,
+  PREFERENCE_LIMITS,
   REVISION_REASONS,
   TODO_OWNERS,
   TODO_STATUSES,
@@ -41,13 +45,18 @@ import {
   type DeadlineUpsertResult,
   type EmbeddingCandidate,
   type EmbeddingItem,
+  type FeedbackEntry,
+  type FeedbackStatus,
   type GmailSnapshotRow,
   type LawyerProfile,
   type MemoryFolder,
   type MemoryRecord,
   type MemoryRevision,
   type MemoryTodo,
+  type NewFeedback,
+  type Preference,
   type RevisionReason,
+  type SetPreferenceResult,
   type AdaMemoryOperations,
   type WakeState,
 } from "./memory-contract.js";
@@ -59,6 +68,7 @@ import {
   unpackVector,
 } from "./memory-embeddings.js";
 import { rankMemoryHits } from "./memory-render.js";
+import { isOwner } from "./owner.js";
 
 async function importOpenClawSdk(specifier: string): Promise<Record<string, unknown>> {
   try {
@@ -252,6 +262,23 @@ CREATE TABLE IF NOT EXISTS vera_welcomed (
   welcomed_at_ms INTEGER NOT NULL
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS vera_preferences (
+  key TEXT PRIMARY KEY,
+  text TEXT NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS vera_feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  number TEXT NOT NULL,
+  at_ms INTEGER NOT NULL,
+  category TEXT NOT NULL,
+  text TEXT NOT NULL,
+  language TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'new'
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS vera_feedback_at ON vera_feedback (at_ms);
 CREATE INDEX IF NOT EXISTS vera_deadlines_due ON vera_deadlines (due_at_ms);
 CREATE INDEX IF NOT EXISTS vera_deadlines_matter ON vera_deadlines (matter_id);
 CREATE INDEX IF NOT EXISTS vera_records_matter ON vera_records (matter_id);
@@ -365,6 +392,20 @@ type AdaMemoryDatabase = {
   vera_welcomed: {
     number: string;
     welcomed_at_ms: number;
+  };
+  vera_preferences: {
+    key: string;
+    text: string;
+    updated_at_ms: number;
+  };
+  vera_feedback: {
+    id: number;
+    number: string;
+    at_ms: number;
+    category: string;
+    text: string;
+    language: string;
+    status: string;
   };
 };
 
@@ -544,6 +585,21 @@ function emptyWake(): WakeState {
   };
 }
 
+const PREFERENCE_KEY = /^[a-z0-9_]+$/u;
+
+function feedbackEntry(row: AdaMemoryDatabase["vera_feedback"]): FeedbackEntry {
+  return {
+    id: row.id,
+    number: row.number,
+    atMs: row.at_ms,
+    // Rows only ever come from addFeedback, which validates both.
+    category: row.category as FeedbackEntry["category"],
+    text: row.text,
+    language: row.language,
+    status: row.status as FeedbackStatus,
+  };
+}
+
 class AdaMemoryDatabaseStore {
   private readonly query;
 
@@ -662,6 +718,138 @@ class AdaMemoryDatabaseStore {
       channelStyle: row.channel_style,
       generatedAtMs: row.generated_at_ms,
     };
+  }
+
+  listPreferences(): Preference[] {
+    return executeSqliteQuerySync(
+      this.db,
+      this.query.selectFrom("vera_preferences").selectAll().orderBy("key"),
+    ).rows.map((row) => ({ key: row.key, text: row.text, updatedAtMs: row.updated_at_ms }));
+  }
+
+  setPreference(key: string, text: string, atMs: number): SetPreferenceResult {
+    if (!PREFERENCE_KEY.test(key) || key.length > PREFERENCE_LIMITS.maxKeyChars) {
+      throw new Error("preference key is invalid");
+    }
+    const body = assertText(text, "preference text", PREFERENCE_LIMITS.maxTextChars);
+    if (!Number.isFinite(atMs)) {
+      throw new Error("atMs is invalid");
+    }
+    return runSqliteImmediateTransactionSync(
+      this.db,
+      (): SetPreferenceResult => {
+        const existing = executeSqliteQueryTakeFirstSync(
+          this.db,
+          this.query.selectFrom("vera_preferences").select("key").where("key", "=", key),
+        );
+        if (existing) {
+          executeSqliteQuerySync(
+            this.db,
+            this.query
+              .updateTable("vera_preferences")
+              .set({ text: body, updated_at_ms: atMs })
+              .where("key", "=", key),
+          );
+          return { ok: true, replaced: true };
+        }
+        const count = executeSqliteQueryTakeFirstSync(
+          this.db,
+          this.query
+            .selectFrom("vera_preferences")
+            .select((eb) => eb.fn.countAll<number>().as("count")),
+        );
+        if ((count?.count ?? 0) >= PREFERENCE_LIMITS.maxCount) {
+          return { ok: false, reason: "limit" };
+        }
+        executeSqliteQuerySync(
+          this.db,
+          this.query.insertInto("vera_preferences").values({
+            key,
+            text: body,
+            updated_at_ms: atMs,
+          }),
+        );
+        return { ok: true, replaced: false };
+      },
+      {
+        busyTimeoutMs: 5000,
+        databaseLabel: "ada memory",
+        operationLabel: "ada.memory.preference.set",
+      },
+    );
+  }
+
+  removePreference(key: string): boolean {
+    const result = executeSqliteQuerySync(
+      this.db,
+      this.query.deleteFrom("vera_preferences").where("key", "=", key),
+    );
+    return (result.numAffectedRows ?? 0n) > 0n;
+  }
+
+  addFeedback(feedback: NewFeedback): number {
+    if (!FEEDBACK_CATEGORIES.includes(feedback.category)) {
+      throw new Error("feedback category is invalid");
+    }
+    const text = assertText(feedback.text, "feedback text", FEEDBACK_MAX_TEXT_CHARS);
+    if (!isOwner(feedback.number) || !Number.isFinite(feedback.atMs)) {
+      throw new Error("feedback is invalid");
+    }
+    return runSqliteImmediateTransactionSync(
+      this.db,
+      () => {
+        const last = executeSqliteQueryTakeFirstSync(
+          this.db,
+          this.query.selectFrom("vera_feedback").select((eb) => eb.fn.max<number>("id").as("id")),
+        );
+        const id = (last?.id ?? 0) + 1;
+        executeSqliteQuerySync(
+          this.db,
+          this.query.insertInto("vera_feedback").values({
+            id,
+            number: feedback.number,
+            at_ms: feedback.atMs,
+            category: feedback.category,
+            text,
+            language: feedback.language.trim().slice(0, 40),
+            status: "new",
+          }),
+        );
+        return id;
+      },
+      {
+        busyTimeoutMs: 5000,
+        databaseLabel: "ada memory",
+        operationLabel: "ada.memory.feedback.add",
+      },
+    );
+  }
+
+  listFeedback(sinceMs: number): FeedbackEntry[] {
+    return executeSqliteQuerySync(
+      this.db,
+      this.query
+        .selectFrom("vera_feedback")
+        .selectAll()
+        .where("at_ms", ">=", sinceMs)
+        .orderBy("at_ms")
+        .orderBy("id"),
+    ).rows.map(feedbackEntry);
+  }
+
+  setFeedbackStatus(id: number, status: FeedbackStatus): FeedbackEntry | null {
+    if (!FEEDBACK_STATUSES.includes(status)) {
+      throw new Error("feedback status is invalid");
+    }
+    executeSqliteQuerySync(
+      this.db,
+      this.query.updateTable("vera_feedback").set({ status }).where("id", "=", id),
+    );
+    const row = executeSqliteQueryTakeFirstSync(
+      this.db,
+      this.query.selectFrom("vera_feedback").selectAll().where("id", "=", id),
+    );
+    return row ? feedbackEntry(row) : null;
   }
 
   upsertRecord(record: MemoryRecord, reason: RevisionReason, atMs: number): undefined {
@@ -1480,6 +1668,7 @@ class AdaMemoryDatabaseStore {
     const copy = openNodeSqliteDatabase(destination);
     try {
       copy.exec("DELETE FROM vera_welcomed");
+      copy.exec("DELETE FROM vera_feedback");
     } finally {
       copy.close();
     }
@@ -1578,6 +1767,18 @@ export function createSqliteWorkerBackend(
             command.input.atMs,
             command.input.language,
           );
+        case "listPreferences":
+          return database.listPreferences();
+        case "setPreference":
+          return database.setPreference(command.input.key, command.input.text, command.input.atMs);
+        case "removePreference":
+          return database.removePreference(command.input.key);
+        case "addFeedback":
+          return database.addFeedback(command.input);
+        case "listFeedback":
+          return database.listFeedback(command.input.sinceMs);
+        case "setFeedbackStatus":
+          return database.setFeedbackStatus(command.input.id, command.input.status);
         case "upsertRecord":
           return database.upsertRecord(
             command.input.record,

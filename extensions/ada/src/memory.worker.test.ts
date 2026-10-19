@@ -317,3 +317,96 @@ describe("ada welcome markers", () => {
     void second.close();
   });
 });
+
+describe("ada preferences and feedback storage", () => {
+  it("adds the tables to a database from before them without touching its rows", () => {
+    const databasePath = path.join(tempDirs.make("ada-additive-"), "memory.sqlite");
+    const old = new DatabaseSync(databasePath);
+    old.exec(`CREATE TABLE vera_welcomed (number TEXT PRIMARY KEY, welcomed_at_ms INTEGER NOT NULL) STRICT;
+      INSERT INTO vera_welcomed VALUES ('393331111111', 5);`);
+    old.close();
+
+    const backend = createSqliteWorkerBackend(undefined, { databasePath });
+    try {
+      expect(
+        backend.execute({ type: "claimWelcome", input: { number: "393331111111", atMs: 9 } }),
+      ).toBe(false);
+      expect(backend.execute({ type: "listPreferences", input: undefined })).toEqual([]);
+      expect(backend.execute({ type: "listFeedback", input: { sinceMs: 0 } })).toEqual([]);
+    } finally {
+      void backend.close();
+    }
+    const reopened = createSqliteWorkerBackend(undefined, { databasePath });
+    void reopened.close();
+  });
+
+  it("keeps preferences and feedback across a reopen and rejects invalid input", () => {
+    const databasePath = path.join(tempDirs.make("ada-persist-"), "memory.sqlite");
+    const first = createSqliteWorkerBackend(undefined, { databasePath });
+    first.execute({ type: "setPreference", input: { key: "tone", text: "Be formal.", atMs: 1 } });
+    first.execute({
+      type: "addFeedback",
+      input: {
+        number: "393331111111",
+        atMs: 5,
+        category: "bug",
+        text: "Broken.",
+        language: "en",
+      },
+    });
+    void first.close();
+    const second = createSqliteWorkerBackend(undefined, { databasePath });
+    try {
+      expect(second.execute({ type: "listPreferences", input: undefined })).toEqual([
+        { key: "tone", text: "Be formal.", updatedAtMs: 1 },
+      ]);
+      expect(second.execute({ type: "listFeedback", input: { sinceMs: 0 } })).toHaveLength(1);
+      expect(() =>
+        second.execute({ type: "setPreference", input: { key: "Bad Key", text: "x", atMs: 1 } }),
+      ).toThrow(/preference key is invalid/u);
+      expect(() =>
+        second.execute({
+          type: "addFeedback",
+          input: {
+            number: "393331111111",
+            atMs: 5,
+            category: "spam" as never,
+            text: "x",
+            language: "",
+          },
+        }),
+      ).toThrow(/category is invalid/u);
+    } finally {
+      void second.close();
+    }
+  });
+
+  it("leaves other numbers' feedback out of the copy a lawyer adopts", () => {
+    const dir = tempDirs.make("ada-export-");
+    const registry = createSqliteWorkerBackend(undefined, {
+      databasePath: path.join(dir, "memory.sqlite"),
+    });
+    try {
+      registry.execute({
+        type: "addFeedback",
+        input: {
+          number: "393332222222",
+          atMs: 5,
+          category: "bug",
+          text: "Broken.",
+          language: "en",
+        },
+      });
+      const copy = path.join(dir, "adopted.sqlite");
+      registry.execute({ type: "exportSnapshot", input: { path: copy } });
+      const adopted = createSqliteWorkerBackend(undefined, { databasePath: copy });
+      try {
+        expect(adopted.execute({ type: "listFeedback", input: { sinceMs: 0 } })).toEqual([]);
+      } finally {
+        void adopted.close();
+      }
+    } finally {
+      void registry.close();
+    }
+  });
+});
