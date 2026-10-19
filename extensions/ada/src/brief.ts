@@ -17,13 +17,13 @@ export function renderLawyerProfile(profile: LawyerProfile): string {
   return clip(
     [
       "# Profile",
-      `- Name: ${profile.name}`,
+      profile.name ? `- Name: ${profile.name}` : null,
       `- Timezone: ${profile.timezone}`,
       profile.email ? `- Email: ${profile.email}` : null,
-      `- Language: ${profile.language}`,
-      `- Jurisdiction: ${profile.jurisdiction}`,
-      `- Autonomy: ${profile.autonomy}`,
-      `- Channel style: ${profile.channelStyle}`,
+      profile.language ? `- Language: ${profile.language}` : null,
+      profile.jurisdiction ? `- Jurisdiction: ${profile.jurisdiction}` : null,
+      profile.autonomy ? `- Autonomy: ${profile.autonomy}` : null,
+      profile.channelStyle ? `- Channel style: ${profile.channelStyle}` : null,
       `- Generated: ${generated} (may lag up to a day)`,
     ]
       .filter((line): line is string => line !== null)

@@ -59,6 +59,7 @@ Disable the Gateway model heartbeat for this install (`agents.defaults.heartbeat
       "ada_send_email",
       "ada_deadline_list",
       "ada_deadline_reply",
+      "ada_set_timezone",
       "ada_memory_search",
       "ada_memory_list",
       "ada_memory_get",

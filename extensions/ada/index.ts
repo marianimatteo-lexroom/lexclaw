@@ -20,6 +20,7 @@ import {
   adaReadCalendarDefinition,
   adaReadInboxDefinition,
   adaSendEmailDefinition,
+  adaSetTimezoneDefinition,
   adaTodoGetDefinition,
   adaTodoListDefinition,
   adaUpdateCalendarEventDefinition,
@@ -83,6 +84,7 @@ import { openWakeWindow, recordSenderInbound, registerAdaService } from "./src/s
 import { handleAdaShortLink } from "./src/short-links-http.js";
 import { registerStatusReactionHooks } from "./src/status-reactions.js";
 import { handleAdaStatus } from "./src/status.js";
+import { executeAdaSetTimezone } from "./src/timezone-tool.js";
 import { handleAdaGoogleNotify } from "./src/watch.js";
 import { registerWelcomeHook } from "./src/welcome.js";
 import {
@@ -361,6 +363,13 @@ const tools = defineToolPlugin({
         adaDeadlineReplyDefinition,
         (args, { owner, api, config, signal }) =>
           executeAdaDeadlineReply(args, config, api, owner, signal),
+      ),
+    }),
+    tool({
+      ...adaSetTimezoneDefinition,
+      optional: true,
+      factory: ownerToolFactory(adaSetTimezoneDefinition, (args, { owner, api }) =>
+        executeAdaSetTimezone(api, owner, args),
       ),
     }),
     tool({

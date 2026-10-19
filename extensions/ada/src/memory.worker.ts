@@ -595,6 +595,52 @@ class AdaMemoryDatabaseStore {
     return undefined;
   }
 
+  setProfileTimezone(timezone: string, atMs: number): undefined {
+    const zone = assertText(timezone, "timezone", 80);
+    if (!Number.isFinite(atMs)) {
+      throw new Error("atMs is invalid");
+    }
+    runSqliteImmediateTransactionSync(
+      this.db,
+      () => {
+        const existing = executeSqliteQueryTakeFirstSync(
+          this.db,
+          this.query.selectFrom("vera_profile").select("id").where("id", "=", PROFILE_ID),
+        );
+        if (existing) {
+          executeSqliteQuerySync(
+            this.db,
+            this.query
+              .updateTable("vera_profile")
+              .set({ timezone: zone, generated_at_ms: atMs })
+              .where("id", "=", PROFILE_ID),
+          );
+          return;
+        }
+        executeSqliteQuerySync(
+          this.db,
+          this.query.insertInto("vera_profile").values({
+            id: PROFILE_ID,
+            name: "",
+            timezone: zone,
+            email: null,
+            language: "",
+            jurisdiction: "",
+            autonomy: "",
+            channel_style: "",
+            generated_at_ms: atMs,
+          }),
+        );
+      },
+      {
+        busyTimeoutMs: 5000,
+        databaseLabel: "ada memory",
+        operationLabel: "ada.memory.profile.timezone",
+      },
+    );
+    return undefined;
+  }
+
   readProfile(): LawyerProfile | null {
     const row = executeSqliteQueryTakeFirstSync(
       this.db,
@@ -1516,6 +1562,8 @@ export function createSqliteWorkerBackend(
           return database.upsertProfile(command.input);
         case "readProfile":
           return database.readProfile();
+        case "setProfileTimezone":
+          return database.setProfileTimezone(command.input.timezone, command.input.atMs);
         case "upsertRecord":
           return database.upsertRecord(
             command.input.record,

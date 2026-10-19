@@ -29,6 +29,7 @@ import { adaStatePath } from "./state-paths.js";
 export type MemoryStore = {
   upsertProfile(profile: LawyerProfile): Promise<void>;
   readProfile(): Promise<LawyerProfile | null>;
+  setProfileTimezone(timezone: string, atMs: number): Promise<void>;
   upsertRecord(record: MemoryRecord, reason: RevisionReason, atMs: number): Promise<void>;
   searchRecords(
     query: string,
@@ -79,6 +80,9 @@ export function wrapMemoryWorker(worker: SqliteWorkerStore<AdaMemoryOperations>)
     },
     readProfile() {
       return worker.execute({ type: "readProfile", input: undefined });
+    },
+    setProfileTimezone(timezone, atMs) {
+      return worker.execute({ type: "setProfileTimezone", input: { timezone, atMs } });
     },
     upsertRecord(record, reason, atMs) {
       return worker.execute({ type: "upsertRecord", input: { record, reason, atMs } });

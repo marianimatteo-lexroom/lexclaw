@@ -233,6 +233,8 @@ type Operation<Input, Output> = { input: Input; output: Output };
 export type AdaMemoryOperations = {
   upsertProfile: Operation<LawyerProfile, undefined>;
   readProfile: Operation<undefined, LawyerProfile | null>;
+  /** Saves only the zone; a number with no profile yet gets one whose other fields are blank. */
+  setProfileTimezone: Operation<{ timezone: string; atMs: number }, undefined>;
   upsertRecord: Operation<
     { record: MemoryRecord; reason: RevisionReason; atMs: number },
     undefined

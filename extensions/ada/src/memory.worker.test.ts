@@ -205,6 +205,55 @@ describe("ada memory store", () => {
   });
 });
 
+describe("ada profile time zone", () => {
+  it("creates a blank profile for a number that has none, then changes only the zone", () => {
+    const backend = openBackend();
+    try {
+      expect(backend.execute({ type: "readProfile", input: undefined })).toBeNull();
+      backend.execute({
+        type: "setProfileTimezone",
+        input: { timezone: "Asia/Shanghai", atMs: 1000 },
+      });
+      expect(backend.execute({ type: "readProfile", input: undefined })).toMatchObject({
+        name: "",
+        timezone: "Asia/Shanghai",
+        language: "",
+        generatedAtMs: 1000,
+      });
+
+      backend.execute({
+        type: "upsertProfile",
+        input: {
+          name: "Avv. Test",
+          timezone: "Europe/Rome",
+          email: "avv@example.com",
+          language: "it",
+          jurisdiction: "IT",
+          autonomy: "text only",
+          channelStyle: "short",
+          generatedAtMs: 2000,
+        },
+      });
+      backend.execute({
+        type: "setProfileTimezone",
+        input: { timezone: "America/New_York", atMs: 3000 },
+      });
+      expect(backend.execute({ type: "readProfile", input: undefined })).toEqual({
+        name: "Avv. Test",
+        timezone: "America/New_York",
+        email: "avv@example.com",
+        language: "it",
+        jurisdiction: "IT",
+        autonomy: "text only",
+        channelStyle: "short",
+        generatedAtMs: 3000,
+      });
+    } finally {
+      void backend.close();
+    }
+  });
+});
+
 describe("ada welcome markers", () => {
   it("claims a number once, survives a reopen, and can be released", () => {
     const databasePath = path.join(tempDirs.make("ada-welcome-"), "memory.sqlite");

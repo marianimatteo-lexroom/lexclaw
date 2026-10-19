@@ -324,6 +324,7 @@ describe("a tool call that is not a private chat with a known sender is refused"
     ["ada_draft", { matterId: "m", prompt: "p", confirmed: true }],
     ["ada_deadline_list", {}],
     ["ada_deadline_reply", { ref: "1", action: "track" }],
+    ["ada_set_timezone", { timezone: "Asia/Shanghai" }],
     ["ada_memory_search", { query: "q", matterId: "m" }],
     ["ada_memory_list", { folder: "knowledge/facts", matterId: "m" }],
     ["ada_memory_get", { id: "i", matterId: "m" }],

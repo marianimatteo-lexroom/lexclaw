@@ -169,6 +169,22 @@ export const adaDeadlineReplyDefinition = {
   ),
 };
 
+export const adaSetTimezoneDefinition = {
+  name: "ada_set_timezone",
+  label: "Set my time zone",
+  description:
+    "Save the time zone of the person asking, so their morning brief arrives at 07:40 where they are. Call it when they say where they are, are traveling or have moved, or ask for the brief at their local time, with the IANA name of that place (for example Asia/Shanghai for China, Europe/Rome for Italy, America/New_York for New York). Without a saved zone the brief follows Europe/Rome. Returns the saved zone and when the next brief is due.",
+  parameters: Type.Object(
+    {
+      timezone: Type.String({
+        minLength: 1,
+        description: "IANA time zone name, such as Asia/Shanghai.",
+      }),
+    },
+    { additionalProperties: false },
+  ),
+};
+
 export const adaMemorySearchDefinition = {
   name: "ada_memory_search",
   label: "Search matter memory",
