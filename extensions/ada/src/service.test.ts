@@ -212,14 +212,20 @@ describe("runAdaCollectPass", () => {
       openTodoIdsJson: null,
       ...params.wake,
     };
+    let gmailSnapshot: Awaited<ReturnType<MemoryStore["readGmailSnapshot"]>> = [];
+    let calendarSnapshot: Awaited<ReturnType<MemoryStore["readCalendarSnapshot"]>> = [];
     const memory = {
-      readGmailSnapshot: async () => [],
-      readCalendarSnapshot: async () => [],
+      readGmailSnapshot: async () => gmailSnapshot,
+      readCalendarSnapshot: async () => calendarSnapshot,
       listMatterAliases: async () => [{ matterId: "verdi", alias: "Verdi", title: "Verdi" }],
       listTodos: async () => [],
       readProfile: async () => (params.timezone ? { timezone: params.timezone } : null),
-      replaceGmailSnapshot: async () => {},
-      replaceCalendarSnapshot: async () => {},
+      replaceGmailSnapshot: async (rows: typeof gmailSnapshot) => {
+        gmailSnapshot = rows;
+      },
+      replaceCalendarSnapshot: async (rows: typeof calendarSnapshot) => {
+        calendarSnapshot = rows;
+      },
       readWake: async () => wake,
       writeWake: async (patch: Partial<WakeState>) => {
         wake = { ...wake, ...patch };
@@ -481,6 +487,48 @@ describe("runAdaCollectPass", () => {
       const urgent = setup({ wake: open, timezone: "Europe/Rome" });
       await urgent.run({ trigger: "morning", catchUp: true, at: new Date("2026-10-14T15:00:00Z") });
       expect(urgent.dispatched[0]).toMatchObject({ plan: { deliver: true } });
+    });
+
+    it("sends one message, not two, when a poll lands in the 07:40 minute before the morning pass", async () => {
+      google.events = [];
+      google.messages = [{ ...unreadVerdi, subject: "Verdi: please confirm the hearing?" }];
+      const t = setup({ wake: open, timezone: "Europe/Rome" });
+      await t.run({ trigger: "poll", at: new Date("2026-10-14T05:40:20.000Z") });
+      await t.run({ trigger: "morning", at: new Date("2026-10-14T05:40:30.000Z") });
+      expect(t.dispatched).toHaveLength(1);
+      expect(t.dispatched[0]).toMatchObject({
+        plan: { deliver: true },
+        idempotencyKey: expect.stringMatching(/^digest:.*:2026-10-14:verdi$/u),
+      });
+      expect(t.wake().lastMorningBriefAtMs).toBe(Date.parse("2026-10-14T05:40:20.000Z"));
+      expect(t.events()[1]).toMatchObject({ trigger: "morning", decision: "silent" });
+    });
+
+    it("does not say nothing is urgent when an alert already went out earlier the same local day", async () => {
+      google.events = [];
+      google.messages = [];
+      const earlier = Date.parse("2026-10-14T03:00:00.000Z");
+      const alerted = setup({
+        wake: { ...open, lastDigestAtMs: earlier },
+        timezone: "Europe/Rome",
+      });
+      await alerted.run({ trigger: "morning" });
+      expect(alerted.dispatched[0]?.brief).toMatchObject({ alertedToday: true });
+
+      const yesterday = setup({
+        wake: { ...open, lastDigestAtMs: Date.parse("2026-10-13T08:00:00.000Z") },
+        timezone: "Europe/Rome",
+      });
+      await yesterday.run({ trigger: "morning" });
+      expect(yesterday.dispatched[0]?.brief).toMatchObject({ alertedToday: false });
+
+      // 03:00Z on the 14th is the evening of the 13th in Los Angeles.
+      const otherZone = setup({
+        wake: { ...open, lastDigestAtMs: earlier },
+        timezone: "America/Los_Angeles",
+      });
+      await otherZone.run({ trigger: "morning" });
+      expect(otherZone.dispatched[0]?.brief).toMatchObject({ alertedToday: false });
     });
 
     it("counts an urgent morning digest as the day's brief", async () => {

@@ -32,6 +32,7 @@ type Words = {
   connectSend: (url: string) => string;
   connectExpired: (url: string) => string;
   quietIntro: string;
+  quietIntroAfterAlert: string;
   quietAgenda: string;
   quietNoEvents: string;
   allDay: string;
@@ -68,6 +69,7 @@ const WORDS: Record<Language, Words> = {
     connectExpired: (url) =>
       `Il collegamento al tuo Gmail è scaduto: ecco il link per ricollegarlo (vale 30 minuti)\n${url}`,
     quietIntro: "Buongiorno. Niente di urgente per oggi.",
+    quietIntroAfterAlert: "Buongiorno. Nient'altro di nuovo da segnalare.",
     quietAgenda: "Agenda di oggi:",
     quietNoEvents: "Agenda di oggi: nessun impegno.",
     allDay: "tutto il giorno",
@@ -104,6 +106,7 @@ const WORDS: Record<Language, Words> = {
     connectExpired: (url) =>
       `The connection to your Gmail has expired: here is the link to connect it again (it is valid for 30 minutes)\n${url}`,
     quietIntro: "Good morning. Nothing urgent today.",
+    quietIntroAfterAlert: "Good morning. Nothing else new to report.",
     quietAgenda: "Today's agenda:",
     quietNoEvents: "Today's agenda: nothing scheduled.",
     allDay: "all day",
@@ -141,6 +144,7 @@ const WORDS: Record<Language, Words> = {
     connectExpired: (url) =>
       `La conexión con tu Gmail ha caducado: aquí tienes el enlace para volver a conectarlo (vale 30 minutos)\n${url}`,
     quietIntro: "Buenos días. Nada urgente para hoy.",
+    quietIntroAfterAlert: "Buenos días. Nada más nuevo que señalar.",
     quietAgenda: "Agenda de hoy:",
     quietNoEvents: "Agenda de hoy: ningún compromiso.",
     allDay: "todo el día",
@@ -178,6 +182,7 @@ const WORDS: Record<Language, Words> = {
     connectExpired: (url) =>
       `La connexion à votre Gmail a expiré : voici le lien pour la reconnecter (valable 30 minutes)\n${url}`,
     quietIntro: "Bonjour. Rien d'urgent aujourd'hui.",
+    quietIntroAfterAlert: "Bonjour. Rien d'autre de nouveau à signaler.",
     quietAgenda: "Agenda du jour :",
     quietNoEvents: "Agenda du jour : aucun rendez-vous.",
     allDay: "toute la journée",
@@ -214,6 +219,7 @@ const WORDS: Record<Language, Words> = {
     connectExpired: (url) =>
       `Die Verbindung zu Ihrem Gmail ist abgelaufen: Hier ist der Link zum erneuten Verbinden (30 Minuten gültig)\n${url}`,
     quietIntro: "Guten Morgen. Heute nichts Dringendes.",
+    quietIntroAfterAlert: "Guten Morgen. Sonst nichts Neues zu melden.",
     quietAgenda: "Termine heute:",
     quietNoEvents: "Termine heute: keine.",
     allDay: "ganztägig",
@@ -316,7 +322,7 @@ const QUIET_EVENTS_MAX = 6;
  */
 export function renderQuietBriefText(brief: QuietBrief, language: Language): string {
   const words = WORDS[language];
-  const blocks = [words.quietIntro];
+  const blocks = [brief.alertedToday ? words.quietIntroAfterAlert : words.quietIntro];
   if (brief.events.length === 0) {
     blocks.push(words.quietNoEvents);
   } else {

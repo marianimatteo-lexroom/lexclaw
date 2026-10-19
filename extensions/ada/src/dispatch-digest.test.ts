@@ -127,6 +127,7 @@ describe("dispatchDigest", () => {
   it("sends the quiet-day brief to its owner, in the language of their latest message", async () => {
     const { api, sent } = setup({ [FABIO]: { language: "Italian", timezone: "Asia/Shanghai" } });
     const brief = {
+      alertedToday: false,
       events: [{ time: "09:30", summary: "Hearing" }],
       unreadMail: 0,
       unreadMailCapped: false,

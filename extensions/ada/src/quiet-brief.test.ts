@@ -102,6 +102,18 @@ describe("buildQuietBrief", () => {
     ).toBe(true);
   });
 
+  it("carries whether an alert already went out today, false by default", () => {
+    const input = {
+      ...base,
+      now: new Date("2026-10-14T05:40:00.000Z"),
+      timeZone: "Europe/Rome",
+      events: [],
+      inbox: [],
+    };
+    expect(buildQuietBrief(input).alertedToday).toBe(false);
+    expect(buildQuietBrief({ ...input, alertedToday: true }).alertedToday).toBe(true);
+  });
+
   it("keeps the nearest deadlines inside two weeks, at most three", () => {
     const brief = buildQuietBrief({
       ...base,
@@ -128,6 +140,7 @@ describe("buildQuietBrief", () => {
 
 describe("renderQuietBriefText", () => {
   const full: QuietBrief = {
+    alertedToday: false,
     events: [
       { time: null, summary: "Ferie" },
       { time: "09:30", summary: "Udienza Rossi" },
@@ -138,6 +151,7 @@ describe("renderQuietBriefText", () => {
     deadlines: [{ matter: "Rossi SRL", type: "hearing", due: "2026-10-17 09:30", daysLeft: 3 }],
   };
   const empty: QuietBrief = {
+    alertedToday: false,
     events: [],
     unreadMail: 0,
     unreadMailCapped: false,
@@ -178,6 +192,26 @@ describe("renderQuietBriefText", () => {
       ["de", "Guten Morgen. Heute nichts Dringendes."],
     ] as const) {
       expect(renderQuietBriefText(full, language).startsWith(intro)).toBe(true);
+    }
+  });
+
+  it("does not say nothing is urgent when an alert already went out today", () => {
+    const text = renderQuietBriefText({ ...full, alertedToday: true }, "it");
+    expect(text.split("\n\n")).toEqual([
+      "Buongiorno. Nient'altro di nuovo da segnalare.",
+      "Agenda di oggi:\n• tutto il giorno Ferie\n• 09:30 Udienza Rossi",
+      "Posta: 3 email non lette.\n• Rossi SRL: Memoria",
+      "Udienze e scadenze:\n• Rossi SRL: udienza 2026-10-17 09:30 (tra 3 giorni)",
+    ]);
+    for (const [language, intro] of [
+      ["en", "Good morning. Nothing else new to report."],
+      ["es", "Buenos días. Nada más nuevo que señalar."],
+      ["fr", "Bonjour. Rien d'autre de nouveau à signaler."],
+      ["de", "Guten Morgen. Sonst nichts Neues zu melden."],
+    ] as const) {
+      expect(
+        renderQuietBriefText({ ...empty, alertedToday: true }, language).startsWith(intro),
+      ).toBe(true);
     }
   });
 

@@ -16,6 +16,8 @@ const TITLE_CHARS = 80;
  * the words around them are written per language at send time.
  */
 export type QuietBrief = {
+  /** An urgent alert already went to this number earlier today, so the brief cannot say nothing is urgent. */
+  alertedToday: boolean;
   /** Today's events in the person's own zone, in order; `time` is null for an all-day event. */
   events: Array<{ time: string | null; summary: string }>;
   /** Unread messages in the inbox window Ada read. */
@@ -71,6 +73,7 @@ export function buildQuietBrief(input: {
   inboxLimit: number;
   aliases: readonly MatterAlias[];
   deadlines?: readonly DigestDeadlineInput[];
+  alertedToday?: boolean;
 }): QuietBrief {
   const unread = input.inbox.filter((message) => message.unread);
   const mailHighlights: QuietBrief["mailHighlights"] = [];
@@ -87,6 +90,7 @@ export function buildQuietBrief(input: {
     }
   }
   return {
+    alertedToday: input.alertedToday ?? false,
     events: todaysEvents(input.events, input.now, input.timeZone),
     unreadMail: unread.length,
     unreadMailCapped: input.inbox.length >= input.inboxLimit,
