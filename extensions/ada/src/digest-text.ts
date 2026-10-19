@@ -1,4 +1,5 @@
 import type { DigestDeadlineLine, DigestPlan, RankedDigestItem } from "./digest.js";
+import type { QuietBrief } from "./quiet-brief.js";
 import type { Language } from "./research-link-outbound.js";
 
 type DeliverablePlan = Extract<DigestPlan, { deliver: true }>;
@@ -30,6 +31,13 @@ type Words = {
   connect: (url: string) => string;
   connectSend: (url: string) => string;
   connectExpired: (url: string) => string;
+  quietIntro: string;
+  quietAgenda: string;
+  quietNoEvents: string;
+  allDay: string;
+  untitled: string;
+  more: (count: number) => string;
+  unreadMail: (count: number, capped: boolean) => string;
 };
 
 const WORDS: Record<Language, Words> = {
@@ -59,6 +67,14 @@ const WORDS: Record<Language, Words> = {
       `Posso leggere Gmail e Google Calendar, ma non ancora inviare email.\nApri questo link e consenti l'invio:\n${url}`,
     connectExpired: (url) =>
       `Il collegamento al tuo Gmail è scaduto: ecco il link per ricollegarlo (vale 30 minuti)\n${url}`,
+    quietIntro: "Buongiorno. Niente di urgente per oggi.",
+    quietAgenda: "Agenda di oggi:",
+    quietNoEvents: "Agenda di oggi: nessun impegno.",
+    allDay: "tutto il giorno",
+    untitled: "(senza titolo)",
+    more: (count) => `…e altri ${count}`,
+    unreadMail: (count, capped) =>
+      `Posta: ${count}${capped ? "+" : ""} ${count === 1 && !capped ? "email non letta" : "email non lette"}.`,
   },
   en: {
     intro: "Good morning. This one should not wait:",
@@ -87,6 +103,14 @@ const WORDS: Record<Language, Words> = {
       `I can read Gmail and Google Calendar, but I cannot send email yet.\nOpen this link and approve sending:\n${url}`,
     connectExpired: (url) =>
       `The connection to your Gmail has expired: here is the link to connect it again (it is valid for 30 minutes)\n${url}`,
+    quietIntro: "Good morning. Nothing urgent today.",
+    quietAgenda: "Today's agenda:",
+    quietNoEvents: "Today's agenda: nothing scheduled.",
+    allDay: "all day",
+    untitled: "(untitled)",
+    more: (count) => `…and ${count} more`,
+    unreadMail: (count, capped) =>
+      `Mail: ${count}${capped ? "+" : ""} unread ${count === 1 && !capped ? "email" : "emails"}.`,
   },
   es: {
     intro: "Buenos días. Esto no puede esperar:",
@@ -116,6 +140,14 @@ const WORDS: Record<Language, Words> = {
       `Puedo leer Gmail y Google Calendar, pero todavía no puedo enviar correos.\nAbre este enlace y autoriza el envío:\n${url}`,
     connectExpired: (url) =>
       `La conexión con tu Gmail ha caducado: aquí tienes el enlace para volver a conectarlo (vale 30 minutos)\n${url}`,
+    quietIntro: "Buenos días. Nada urgente para hoy.",
+    quietAgenda: "Agenda de hoy:",
+    quietNoEvents: "Agenda de hoy: ningún compromiso.",
+    allDay: "todo el día",
+    untitled: "(sin título)",
+    more: (count) => `…y ${count} más`,
+    unreadMail: (count, capped) =>
+      `Correo: ${count}${capped ? "+" : ""} ${count === 1 && !capped ? "correo sin leer" : "correos sin leer"}.`,
   },
   fr: {
     intro: "Bonjour. Ceci ne peut pas attendre :",
@@ -145,6 +177,14 @@ const WORDS: Record<Language, Words> = {
       `Je peux lire Gmail et Google Agenda, mais pas encore envoyer d'e-mails.\nOuvrez ce lien et autorisez l'envoi :\n${url}`,
     connectExpired: (url) =>
       `La connexion à votre Gmail a expiré : voici le lien pour la reconnecter (valable 30 minutes)\n${url}`,
+    quietIntro: "Bonjour. Rien d'urgent aujourd'hui.",
+    quietAgenda: "Agenda du jour :",
+    quietNoEvents: "Agenda du jour : aucun rendez-vous.",
+    allDay: "toute la journée",
+    untitled: "(sans titre)",
+    more: (count) => `…et ${count} autres`,
+    unreadMail: (count, capped) =>
+      `Courrier : ${count}${capped ? "+" : ""} ${count === 1 && !capped ? "e-mail non lu" : "e-mails non lus"}.`,
   },
   de: {
     intro: "Guten Morgen. Das kann nicht warten:",
@@ -173,6 +213,14 @@ const WORDS: Record<Language, Words> = {
       `Ich kann Gmail und Google Kalender lesen, aber noch keine E-Mails senden.\nÖffnen Sie diesen Link und erlauben Sie das Senden:\n${url}`,
     connectExpired: (url) =>
       `Die Verbindung zu Ihrem Gmail ist abgelaufen: Hier ist der Link zum erneuten Verbinden (30 Minuten gültig)\n${url}`,
+    quietIntro: "Guten Morgen. Heute nichts Dringendes.",
+    quietAgenda: "Termine heute:",
+    quietNoEvents: "Termine heute: keine.",
+    allDay: "ganztägig",
+    untitled: "(ohne Titel)",
+    more: (count) => `…und ${count} weitere`,
+    unreadMail: (count, capped) =>
+      `Post: ${count}${capped ? "+" : ""} ungelesene ${count === 1 && !capped ? "E-Mail" : "E-Mails"}.`,
   },
 };
 
@@ -257,6 +305,45 @@ export function renderDigestText(
   blocks.push(
     `${words.steps}\n${words.research(research.matterLabel, plan.items.find((item) => item.matterId === research.matterId)?.summary ?? research.instruction)}\n${words.draft(draft.matterLabel)}`,
   );
+  return blocks.join("\n\n");
+}
+
+const QUIET_EVENTS_MAX = 6;
+
+/**
+ * The morning brief for a quiet day: one short message with the agenda, unread mail and the
+ * hearings and deadlines coming up, and no offers to reply to.
+ */
+export function renderQuietBriefText(brief: QuietBrief, language: Language): string {
+  const words = WORDS[language];
+  const blocks = [words.quietIntro];
+  if (brief.events.length === 0) {
+    blocks.push(words.quietNoEvents);
+  } else {
+    const shown = brief.events.slice(0, QUIET_EVENTS_MAX).map((event) => {
+      const when = event.time ?? words.allDay;
+      return `• ${when} ${event.summary || words.untitled}`;
+    });
+    if (brief.events.length > QUIET_EVENTS_MAX) {
+      shown.push(`• ${words.more(brief.events.length - QUIET_EVENTS_MAX)}`);
+    }
+    blocks.push(`${words.quietAgenda}\n${shown.join("\n")}`);
+  }
+  if (brief.unreadMail > 0) {
+    blocks.push(
+      [
+        words.unreadMail(brief.unreadMail, brief.unreadMailCapped),
+        ...brief.mailHighlights.map((mail) => `• ${mail.matter}: ${mail.subject}`),
+      ].join("\n"),
+    );
+  }
+  if (brief.deadlines.length > 0) {
+    const lines = brief.deadlines.map((line) => {
+      const kind = line.type === "hearing" ? words.hearing : words.deadline;
+      return `• ${line.matter}: ${kind} ${line.due} (${daysLabel(line.daysLeft, words)})`;
+    });
+    blocks.push(`${words.deadlines}\n${lines.join("\n")}`);
+  }
   return blocks.join("\n\n");
 }
 

@@ -51,6 +51,11 @@ describe("google parsers", () => {
       date: "Fri, 9 Oct 2026 08:00:00 +0200",
       snippet: "Please confirm the hearing",
     });
+    expect(parseGmailMessage({ id: "msg-2", labelIds: ["INBOX", "UNREAD"] })).toMatchObject({
+      id: "msg-2",
+      unread: true,
+    });
+    expect(parseGmailMessage({ id: "msg-3", labelIds: ["INBOX"] })).not.toHaveProperty("unread");
     expect(
       parseCalendarEvents({
         items: [

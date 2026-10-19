@@ -33,6 +33,7 @@ import { maskNumber, logInboundSkip } from "./inbound-log.js";
 import { abortResearchJobs } from "./lexroom-jobs.js";
 import { openAdaMemoryFromApi, openAdaMemoryIfExistsFromApi, type MemoryStore } from "./memory.js";
 import { lawyerOwner, toOwner } from "./owner.js";
+import { buildQuietBrief } from "./quiet-brief.js";
 import { buildDailyTimelineRecord, buildOnePagerRecord } from "./reconcile.js";
 import { DEFAULT_TIME_ZONE, effectiveTimeZone, nextSlotMs, previousSlotMs } from "./schedule.js";
 import {
@@ -52,6 +53,8 @@ function readPubSubTopic(config: unknown): string | null {
 
 const POLL_MS = 15 * 60 * 1000;
 const CATCH_UP_DELAY_MS = 30 * 1000;
+/** How many inbox messages a pass reads; a full window is shown as "N+" in the quiet brief. */
+const INBOX_WINDOW = 10;
 
 /** A plan whose dispatch failed is retried this many times before waiting for the next morning slot or lawyer message. */
 export const HELD_PLAN_MAX_ATTEMPTS = 5;
@@ -70,23 +73,36 @@ type DeliverablePlan = Extract<DigestPlan, { deliver: true }>;
 
 export type DigestDeliveryDecision =
   | { action: "silent" }
+  | { action: "brief" }
   | { action: "batch" }
   | { action: "hold"; plan: DeliverablePlan }
   | { action: "dispatch"; plan: DeliverablePlan };
 
-/** Decide after collectDigest: model only on dispatch. */
+/**
+ * Decide after collectDigest: no model is involved. A quiet morning pass still earns the short
+ * brief, but only inside the WhatsApp window and never a second time on the same local day.
+ */
 export function decideDigestDelivery(params: {
   result: CollectResult;
   forceMorning: boolean;
+  /** The 07:40 pass for this number, not a poll or a release of a held plan. */
+  morningPass: boolean;
+  /** A morning brief already went out on this local day and no held plan is owed. */
+  briefedToday: boolean;
   timeZone: string;
   now: Date;
   lastLawyerInboundAtMs: number | null;
 }): DigestDeliveryDecision {
   const plan = params.result.plan;
   if (!plan.deliver) {
-    return { action: "silent" };
+    const owed = params.morningPass && !params.briefedToday;
+    return owed && whatsappWindowOpen(params.lastLawyerInboundAtMs, params.now.getTime())
+      ? { action: "brief" }
+      : { action: "silent" };
   }
-  const morning = params.forceMorning || isMorningDigestSlot(params.now, params.timeZone);
+  const morning =
+    (params.forceMorning && !params.briefedToday) ||
+    isMorningDigestSlot(params.now, params.timeZone);
   if (!morning && !params.result.urgent) {
     return { action: "batch" };
   }
@@ -151,7 +167,7 @@ async function loadGoogleReads(api: OpenClawPluginApi, owner: string, now: Date)
       `ada google refreshed token not saved owner=${maskNumber(owner)}: ${error instanceof Error ? error.message : "unknown"}`,
     );
   });
-  const inbox = await listInboxMessages({ accessToken: token.accessToken, max: 10 });
+  const inbox = await listInboxMessages({ accessToken: token.accessToken, max: INBOX_WINDOW });
   if (!inbox.ok) {
     return { ok: false as const, error: `gmail_${inbox.status}` };
   }
@@ -437,10 +453,19 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
     held ? mergeDigestPlans(held, result.plan, params.now) : result.plan,
     deadlineIntake?.digest.lines,
   );
+  const day = dayKey(params.now, timeZone);
+  const morningPass = params.trigger === "morning";
+  const briefedToday =
+    morningPass &&
+    held === null &&
+    wake.lastMorningBriefAtMs !== null &&
+    dayKey(new Date(wake.lastMorningBriefAtMs), timeZone) === day;
   const decision = decideDigestDelivery({
     // A held plan is already owed to the lawyer, so it skips the morning-or-urgent gate.
     result: { ...result, plan, urgent: result.urgent || (held !== null && plan.deliver) },
     forceMorning: params.forceMorning,
+    morningPass,
+    briefedToday,
     timeZone,
     now: params.now,
     lastLawyerInboundAtMs: wake.lastLawyerInboundAtMs,
@@ -490,6 +515,41 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
     };
   }
 
+  if (decision.action === "brief") {
+    const brief = buildQuietBrief({
+      now: params.now,
+      timeZone,
+      events: google.events,
+      inbox: google.messages,
+      inboxLimit: INBOX_WINDOW,
+      aliases,
+      deadlines: deadlineIntake?.digest.lines,
+    });
+    const dispatch = await dispatchSafely(dispatchDigestTurn, {
+      owner: params.owner,
+      plan,
+      brief,
+      idempotencyKey: `brief:${params.owner}:${day}`,
+    });
+    // Nothing urgent was dropped, so the baseline advances whether or not the brief went out.
+    await commitSnapshots();
+    await params.memory.writeWake({
+      lastCollectAtMs: nowMs,
+      openTodoIdsJson: JSON.stringify(openTodoIds),
+      ...noHeldPlan,
+      ...(dispatch.ok ? { lastDigestAtMs: nowMs, lastMorningBriefAtMs: nowMs } : {}),
+    });
+    return {
+      collected: true,
+      delivered: dispatch.ok,
+      held: false,
+      result,
+      ...(dispatch.ok ? {} : { reason: dispatch.reason ?? "dispatch_rejected" }),
+      decision: "brief",
+      windowOpen,
+    };
+  }
+
   if (decision.action === "hold") {
     // One template per held plan. The claim is written with the hold, before the send, so a
     // crash or a timeout that Kapso actually accepted can never produce a second nudge.
@@ -532,7 +592,6 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
     };
   }
 
-  const day = dayKey(params.now, timeZone);
   const itemIds = decision.plan.items.map((item) => item.matterId).join(",");
   const deadlineIds = decision.plan.deliver
     ? decision.plan.deadlines?.map((line) => line.id).join(",")
@@ -572,6 +631,7 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
   await params.memory.writeWake({
     lastCollectAtMs: nowMs,
     lastDigestAtMs: nowMs,
+    ...(params.forceMorning ? { lastMorningBriefAtMs: nowMs } : {}),
     openTodoIdsJson: JSON.stringify(openTodoIds),
     ...noHeldPlan,
   });

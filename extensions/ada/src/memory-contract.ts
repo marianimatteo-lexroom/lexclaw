@@ -110,6 +110,8 @@ export type WakeState = {
   lastCollectAtMs: number | null;
   /** Last time a digest turn was accepted for delivery. */
   lastDigestAtMs: number | null;
+  /** When the morning brief was last delivered to this number: the once-a-local-day guard. */
+  lastMorningBriefAtMs: number | null;
   heldPlanJson: string | null;
   /** Failed dispatch attempts for the held plan; zero while it waits on the WhatsApp window. */
   heldPlanAttempts: number;
@@ -130,6 +132,7 @@ export const EMPTY_WAKE_STATE: WakeState = {
   lastReconcileAtMs: null,
   lastCollectAtMs: null,
   lastDigestAtMs: null,
+  lastMorningBriefAtMs: null,
   heldPlanJson: null,
   heldPlanAttempts: 0,
   heldPlanNextAttemptAtMs: null,

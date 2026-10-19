@@ -17,6 +17,7 @@ const BRUNO = "393332222222";
 const LAWYER = "390000000000";
 const DINO = "393334444444";
 const ELSA = "393339999999";
+const FABIO = "393335555555";
 
 const NO_PLAN: DigestPlan = { deliver: false, reason: "nothing_cleared_the_bar" };
 const PLAN: DigestPlan = {
@@ -121,6 +122,42 @@ describe("dispatchDigest", () => {
     recordInboundLanguage(ANNA, "Ok e Google?");
     await dispatchDigest(api, { owner: ANNA, plan: PLAN, idempotencyKey: "lang-3" });
     expect(sent[2]?.text).toContain("Buongiorno. Questo non può aspettare:");
+  });
+
+  it("sends the quiet-day brief to its owner, in the language of their latest message", async () => {
+    const { api, sent } = setup({ [FABIO]: { language: "Italian", timezone: "Asia/Shanghai" } });
+    const brief = {
+      events: [{ time: "09:30", summary: "Hearing" }],
+      unreadMail: 0,
+      unreadMailCapped: false,
+      mailHighlights: [],
+      deadlines: [],
+    };
+    recordInboundLanguage(FABIO, "Please tell me what is on today");
+    expect(
+      await dispatchDigest(api, { owner: FABIO, plan: NO_PLAN, brief, idempotencyKey: "brief-1" }),
+    ).toEqual({ ok: true });
+    expect(sent).toEqual([
+      {
+        to: `+${FABIO}`,
+        text: "Good morning. Nothing urgent today.\n\nToday's agenda:\n• 09:30 Hearing",
+      },
+    ]);
+    expect(takeConnectOffers(FABIO, { runId: "r", inboundAtMs: Date.now() })).toEqual([]);
+
+    await dispatchDigest(api, { owner: FABIO, plan: NO_PLAN, brief, idempotencyKey: "brief-1" });
+    expect(sent).toHaveLength(1);
+  });
+
+  it("still sends nothing for a plan with nothing urgent and no brief", async () => {
+    const { api, sent } = setup();
+    expect(
+      await dispatchDigest(api, { owner: ANNA, plan: NO_PLAN, idempotencyKey: "none" }),
+    ).toEqual({
+      ok: false,
+      reason: "nothing_to_send",
+    });
+    expect(sent).toEqual([]);
   });
 
   it("sends a different owner's digest to that owner, never to the previous one", async () => {

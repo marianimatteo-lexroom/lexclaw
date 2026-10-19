@@ -110,6 +110,7 @@ function createMemory(wake: Partial<WakeState> = {}, timezone?: string) {
     lastReconcileAtMs: null,
     lastCollectAtMs: null,
     lastDigestAtMs: null,
+    lastMorningBriefAtMs: null,
     heldPlanJson: null,
     heldPlanAtMs: null,
     heldPlanAttempts: 0,

@@ -197,7 +197,26 @@ describe("ada memory store", () => {
         heldPlanNextAttemptAtMs: null,
         heldPlanTemplateAttemptedAtMs: null,
         lastDigestAtMs: null,
+        lastMorningBriefAtMs: null,
         heldPlanAtMs: null,
+      });
+    } finally {
+      void backend.close();
+    }
+  });
+
+  it("keeps the morning brief marker apart from the digest marker", () => {
+    const backend = openBackend();
+    try {
+      backend.execute({ type: "writeWake", input: { lastDigestAtMs: 10 } });
+      expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
+        lastDigestAtMs: 10,
+        lastMorningBriefAtMs: null,
+      });
+      backend.execute({ type: "writeWake", input: { lastMorningBriefAtMs: 30 } });
+      expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
+        lastDigestAtMs: 10,
+        lastMorningBriefAtMs: 30,
       });
     } finally {
       void backend.close();

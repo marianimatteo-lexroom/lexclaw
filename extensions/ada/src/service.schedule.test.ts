@@ -52,6 +52,7 @@ function memoryFor(options: {
     lastReconcileAtMs: null,
     lastCollectAtMs: options.lastCollectAtMs ?? null,
     lastDigestAtMs: null,
+    lastMorningBriefAtMs: null,
     heldPlanJson: null,
     heldPlanAtMs: null,
     heldPlanAttempts: 0,
