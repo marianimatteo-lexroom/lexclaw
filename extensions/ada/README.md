@@ -123,6 +123,7 @@ With `NODE_ENV=production` the account stores refuse to open without `ADA_TOKEN_
 | ---------------------------- | ------------- | ------------------------------------------------------------------------------------- |
 | `ADA_TOKEN_KEY`              | environment   | AES-256 key for tokens at rest. Required in production. `VERA_TOKEN_KEY` still works. |
 | `ADA_WELCOME_ENABLED`        | environment   | `false` (also `0`, `off`, `no`) turns the first-message welcome off. Default on.      |
+| `ADA_ADMIN_TOKEN`            | environment   | Bearer token (16+ chars) for `/admin/feedback`. Unset: the endpoint returns 404.      |
 | `googleNotifyAudience`       | plugin config | Audience of the Pub/Sub push OIDC token. Enables JWT verification.                    |
 | `googleNotifyIssuer`         | plugin config | Expected issuer. Defaults to `https://accounts.google.com` or `accounts.google.com`.  |
 | `googleNotifyServiceAccount` | plugin config | Required `email` claim (verified) of the push subscription service account.           |
@@ -138,6 +139,26 @@ Ada never signs her messages: no "— Ada", "Ada" or "Ada · Lexroom" at the end
 ## Reply language
 
 Ada replies in the language of the person's most recent message, in the model's turns and in every message sent by code. The persona (`src/persona.ts`) states this as a hard rule that overrides earlier messages, the profile language, memory, and the language of tool output and digest data. In code, `message_received` records the language of each WhatsApp number's latest message in memory (`recordInboundLanguage` in `src/research-link-outbound.ts`, the same stopword detection extended with hint words for short messages); a message that carries no language ("ok", a link, an emoji) keeps the previous one. The Lexroom and Gmail/Calendar connected confirmations, the research acknowledgement, result framing and failure notes, the morning digest, the Google connect ask and the held reconnect note, and the mailbox-moved note all use it, in Italian, English, Spanish, French and German. A number with no known message (for example after a restart) falls back to its profile language, then Italian. The welcome message, the digest-ready WhatsApp template (approved in one language) and the browser pages shown after connecting are not covered.
+
+## Preferences and feedback
+
+Ada adapts to each person without a code change. When someone says how they want her to work (style, length, tone, formality, language, emoji, signatures, how to address them, what the morning brief covers, what to alert on), in any words, the model calls `ada_set_preference` with a short topic `key` and one standing instruction as `text`, and confirms in one sentence in the person's language. `ada_forget_preference` removes one. There is no list tool: the saved preferences are already in the context of every turn, so "what do you remember about me?" is answered from them.
+
+- **Storage.** The `vera_preferences` table (`key`, `text`, `updated_at_ms`) in the number's own `memory/<number>.sqlite`, so one number can never read or write another's. A key is lower-case words joined by underscores (at most 40 characters), a text is one flattened line of at most 300 characters, and at most 30 are kept: a new topic past the cap is refused with the list so Ada asks which to drop, while updating an existing key always works. Saving under an existing key replaces it, which is how a changed mind or a conflicting preference overwrites the old one; the tool description and the persona tell the model to reuse the key of the same topic from its context. The table is created with `CREATE TABLE IF NOT EXISTS` at startup; no existing table or row changes.
+- **In the turn.** The `before_prompt_build` brief hook (`buildInjectedBrief` in `src/brief.ts`) puts a block headed "Standing preferences of this person" first in the injected context of every turn of that number. It says the preferences override Ada's default rules for style, length, tone, formality, emoji, signatures and format, and a language the person asked for replaces the follow-the-latest-message rule, but never safety, legal accuracy, or confirming with the person before sending mail, changing a calendar, drafting or starting research.
+- **Code-sent messages.** The digest, the quiet-day brief, the connect asks and the research push are written by code from fixed per-language text, not by a model, so a free-text preference cannot reshape them. Two preferences map to structured settings that already exist: the time zone (`ada_set_timezone`), and the quiet-day brief, which is skipped on quiet mornings while the preference `quiet_brief_off` is saved (urgent digests are unaffected; forgetting the key turns the brief back on). The reply to a digest or a push is a normal model turn and follows every preference.
+- **Product feedback.** A bug, a missing feature, a wrong answer or a complaint is recorded with `ada_report_feedback` (`category`: `bug`, `missing_feature`, `wrong_answer`, `complaint`, `other`; `text` of at most 1000 characters), and Ada tells the person in one sentence that she passed it to the team. Nothing is sent to anyone. One message can be both a preference and a report. Reports go to the `vera_feedback` table of the registry file `memory.sqlite` (`id`, `number`, `at_ms`, `category`, `text`, `language`, `status`); the registry is the one database that is not per number, and its feedback rows are left out of the copy the configured lawyer adopts from it.
+
+### Reading the feedback log
+
+The team reads the log over HTTP, because the Railway volume has no shell. The endpoint is disabled (404 for every request) until `ADA_ADMIN_TOKEN` is set to a token of 16 or more characters; then every request needs `Authorization: Bearer <ADA_ADMIN_TOKEN>`, compared in constant time, and a missing or wrong token gets 401. It is served at `/admin/feedback` and, like the other routes, under `/ada` and `/vera`.
+
+```bash
+curl -sS -H "Authorization: Bearer $ADA_ADMIN_TOKEN" "https://ada.example.com/admin/feedback?since=1760860000000"
+curl -sS -X POST -H "Authorization: Bearer $ADA_ADMIN_TOKEN" -d '{"status":"triaged"}' https://ada.example.com/admin/feedback/12
+```
+
+`GET /admin/feedback` returns `{ "ok": true, "entries": [...] }`, oldest first, with the reports at or after `since` (milliseconds since the epoch, default 0; a bad value is a 400). Poll with the largest `atMs` you have seen and drop repeats by `id`. Each entry is `id`, `numberLast4`, `numberHash`, `at` (ISO time), `atMs`, `category`, `text`, `language` (or `null`) and `status` (`new` or `triaged`). The number is never returned in full: `numberLast4` is its last four digits and `numberHash` is the first 12 hex characters of a SHA-256 of it, the same for every report of one number, so reports can be grouped. The hash is a pseudonym, not a secret: phone numbers are a small space, so treat the token as the protection. `POST /admin/feedback/<id>` with `{"status":"new"|"triaged"}` sets the status and returns the entry (404 for an unknown id, 400 for a bad id or body). Responses are `no-store`.
 
 ## First-message welcome
 
@@ -281,7 +302,7 @@ When Ada accepts an inbound Kapso WhatsApp message, she marks that WhatsApp mess
 
 ## Memory
 
-Memory is one file per WhatsApp number, and these tools read only the memory of the person asking. Read-only tools: `ada_memory_search`, `ada_memory_list`, `ada_memory_get`, `ada_memory_history`, `ada_todo_list`, `ada_todo_get`. Every page except lawyer-global preferences requires a `matterId`. Search is case-insensitive substring match on aliases, title, and id. The daily reconcile writes timeline notes and one-pagers; the answering turn never writes matter memory. The one write a turn can make is `ada_set_timezone`, which saves the time zone in the profile of the person asking.
+Memory is one file per WhatsApp number, and these tools read only the memory of the person asking. Read-only tools: `ada_memory_search`, `ada_memory_list`, `ada_memory_get`, `ada_memory_history`, `ada_todo_list`, `ada_todo_get`. Every page except lawyer-global preferences requires a `matterId`. Search is case-insensitive substring match on aliases, title, and id. The daily reconcile writes timeline notes and one-pagers; the answering turn never writes matter memory. The writes a turn can make are `ada_set_timezone` (the time zone in the profile of the person asking), `ada_set_preference` and `ada_forget_preference` (their standing preferences, see [Preferences and feedback](#preferences-and-feedback)), and `ada_report_feedback` (a row in the shared feedback log).
 
 ## Deadline and hearing intake
 
