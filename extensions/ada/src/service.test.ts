@@ -231,6 +231,7 @@ describe("runAdaCollectPass", () => {
         dispatchOk?: boolean;
         trigger?: "poll" | "inbound" | "morning";
         at?: Date;
+        catchUp?: boolean;
       } = {},
     ) =>
       runAdaCollectPass({
@@ -239,6 +240,7 @@ describe("runAdaCollectPass", () => {
         now: overrides.at ?? now,
         forceMorning: overrides.trigger === "morning" || overrides.trigger === "inbound",
         trigger: overrides.trigger ?? "poll",
+        catchUp: overrides.catchUp,
         dispatchDigestTurn: async (request) => {
           dispatched.push(request);
           return overrides.dispatchOk === false
@@ -424,6 +426,61 @@ describe("runAdaCollectPass", () => {
       await t.run({ trigger: "morning" });
       expect(t.dispatched).toHaveLength(2);
       expect(t.wake().lastMorningBriefAtMs).toBe(now.getTime());
+    });
+
+    it("sends the brief from a catch-up before 11:00 local time, and skips it from 11:00 on", async () => {
+      google.events = [];
+      google.messages = [];
+      // Rome is UTC+2 on 14 October: 08:59Z is 10:59 local, 09:00Z is 11:00.
+      const early = setup({ wake: open, timezone: "Europe/Rome" });
+      await early.run({ trigger: "morning", catchUp: true, at: new Date("2026-10-14T08:59:00Z") });
+      expect(early.dispatched).toHaveLength(1);
+      expect(early.wake().lastMorningBriefAtMs).toBe(Date.parse("2026-10-14T08:59:00Z"));
+
+      const late = setup({ wake: open, timezone: "Europe/Rome" });
+      await late.run({ trigger: "morning", catchUp: true, at: new Date("2026-10-14T09:00:00Z") });
+      expect(late.dispatched).toEqual([]);
+      expect(late.wake()).toMatchObject({
+        lastCollectAtMs: Date.parse("2026-10-14T09:00:00Z"),
+        lastMorningBriefAtMs: null,
+      });
+      expect(late.events()[0]).toMatchObject({ result: "collected", decision: "silent" });
+
+      // The same hour on the number's own clock: 09:00Z is 17:00 in Shanghai, still too late,
+      // and 01:00Z is 09:00 in Shanghai, early enough.
+      const shanghai = setup({ wake: open, timezone: "Asia/Shanghai" });
+      await shanghai.run({
+        trigger: "morning",
+        catchUp: true,
+        at: new Date("2026-10-14T09:00:00Z"),
+      });
+      await shanghai.run({
+        trigger: "morning",
+        catchUp: true,
+        at: new Date("2026-10-15T01:00:00Z"),
+      });
+      expect(shanghai.dispatched).toHaveLength(1);
+    });
+
+    it("still sends the regular 07:40 pass whatever the hour, and an urgent plan from a late catch-up", async () => {
+      google.events = [];
+      google.messages = [];
+      const regular = setup({ wake: open, timezone: "Europe/Rome" });
+      await regular.run({ trigger: "morning", at: new Date("2026-10-14T15:00:00Z") });
+      expect(regular.dispatched).toHaveLength(1);
+
+      google.events = [
+        {
+          id: "hearing",
+          summary: "Verdi hearing",
+          start: "2026-10-14T16:00:00.000Z",
+          end: "2026-10-14T17:00:00.000Z",
+          status: "confirmed",
+        },
+      ];
+      const urgent = setup({ wake: open, timezone: "Europe/Rome" });
+      await urgent.run({ trigger: "morning", catchUp: true, at: new Date("2026-10-14T15:00:00Z") });
+      expect(urgent.dispatched[0]).toMatchObject({ plan: { deliver: true } });
     });
 
     it("counts an urgent morning digest as the day's brief", async () => {

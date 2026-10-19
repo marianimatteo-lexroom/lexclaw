@@ -7,6 +7,7 @@ import {
   type CollectResult,
 } from "./collector.js";
 import { prepareDeadlineIntake } from "./deadline-intake.js";
+import { localParts } from "./deadline-time.js";
 import {
   mergeDigestPlans,
   numberDeadlineLines,
@@ -53,6 +54,8 @@ function readPubSubTopic(config: unknown): string | null {
 
 const POLL_MS = 15 * 60 * 1000;
 const CATCH_UP_DELAY_MS = 30 * 1000;
+/** A catch-up after boot sends the quiet brief only while the number's local time is before this hour. */
+const CATCH_UP_BRIEF_CUTOFF_HOUR = 11;
 /** How many inbox messages a pass reads; a full window is shown as "N+" in the quiet brief. */
 const INBOX_WINDOW = 10;
 
@@ -85,7 +88,7 @@ export type DigestDeliveryDecision =
 export function decideDigestDelivery(params: {
   result: CollectResult;
   forceMorning: boolean;
-  /** The 07:40 pass for this number, not a poll or a release of a held plan. */
+  /** The 07:40 pass for this number that owes a quiet brief: not a poll, a release, or a late catch-up. */
   morningPass: boolean;
   /** A morning brief already went out on this local day and no held plan is owed. */
   briefedToday: boolean;
@@ -454,7 +457,11 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
     deadlineIntake?.digest.lines,
   );
   const day = dayKey(params.now, timeZone);
-  const morningPass = params.trigger === "morning";
+  // A catch-up that runs once the local morning is over skips the quiet brief for that day;
+  // an urgent plan still goes out or is held as usual.
+  const morningPass =
+    params.trigger === "morning" &&
+    !(params.catchUp && localParts(nowMs, timeZone).hour >= CATCH_UP_BRIEF_CUTOFF_HOUR);
   const briefedToday =
     morningPass &&
     held === null &&
