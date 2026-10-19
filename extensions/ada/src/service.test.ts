@@ -10,6 +10,14 @@ import { decideDigestDelivery, runAdaCollectPass, type AdaCollectLogEvent } from
 const google = vi.hoisted(() => ({
   account: null as { email: string } | null,
   events: [] as Array<{ id: string; summary: string; start: string; end: string; status: string }>,
+  messages: [] as Array<{
+    id: string;
+    from: string;
+    subject: string;
+    date: string;
+    snippet: string;
+    unread?: true;
+  }>,
 }));
 
 vi.mock("./google-account.js", () => ({
