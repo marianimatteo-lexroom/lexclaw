@@ -1,17 +1,26 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { noteConnectOffer } from "./connect-offers.js";
-import { digestOfferDetail, renderDigestText, renderGoogleConnectText } from "./digest-text.js";
+import {
+  digestOfferDetail,
+  renderDigestText,
+  renderGoogleConnectText,
+  renderQuietBriefText,
+} from "./digest-text.js";
 import type { DigestPlan } from "./digest.js";
 import { googleConnectConfigFrom } from "./google-connect.js";
 import { sendAdaWhatsAppText } from "./google-notify.js";
 import { executeAdaGoogleConnect } from "./google-tools.js";
 import { openAdaMemoryIfExistsFromApi } from "./memory.js";
+import type { QuietBrief } from "./quiet-brief.js";
 import { resolveLanguage } from "./research-link-outbound.js";
+import { effectiveTimeZone } from "./schedule.js";
 
 export type DigestDispatchRequest = {
   /** The WhatsApp number this digest is for: the only number it is ever sent to. */
   owner: string;
   plan: DigestPlan;
+  /** With a plan that has nothing urgent: the short brief to send instead of staying silent. */
+  brief?: QuietBrief;
   idempotencyKey: string;
   /** Ask the owner to connect Google instead of sending a digest. */
   connectOnly?: boolean;
@@ -23,7 +32,6 @@ export type DigestDispatchRequest = {
 
 export type DigestDispatchResult = { ok: boolean; reason?: string };
 
-const DEFAULT_TIME_ZONE = "Europe/Rome";
 const SENT_TTL_MS = 24 * 60 * 60 * 1000;
 
 /** Digests already sent in this process, so a pass that retries after a late failure never repeats one. */
@@ -76,7 +84,9 @@ export async function dispatchDigest(
       request.reconnect ? "expired" : "connect",
     );
   } else if (request.plan.deliver) {
-    text = renderDigestText(request.plan, language, profile?.timezone ?? DEFAULT_TIME_ZONE);
+    text = renderDigestText(request.plan, language, effectiveTimeZone(profile?.timezone));
+  } else if (request.brief) {
+    text = renderQuietBriefText(request.brief, language);
   } else {
     return { ok: false, reason: "nothing_to_send" };
   }

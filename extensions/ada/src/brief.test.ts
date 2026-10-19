@@ -64,6 +64,24 @@ describe("renderLawyerProfile", () => {
     expect(renderLawyerProfile({ ...PROFILE, email: null })).not.toContain("Email");
   });
 
+  it("leaves out the fields a number never filled in, such as a profile that only has a zone", () => {
+    const text = renderLawyerProfile({
+      ...PROFILE,
+      name: "",
+      email: null,
+      language: "",
+      jurisdiction: "",
+      autonomy: "",
+      channelStyle: "",
+      timezone: "Asia/Shanghai",
+    });
+    expect(text.split("\n")).toEqual([
+      "# Profile",
+      "- Timezone: Asia/Shanghai",
+      expect.stringContaining("Generated"),
+    ]);
+  });
+
   it("clips an oversized profile to its budget with an ellipsis", () => {
     const text = renderLawyerProfile({ ...PROFILE, name: "N".repeat(5000) });
     expect(text).toHaveLength(1200);

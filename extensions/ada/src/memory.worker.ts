@@ -208,6 +208,7 @@ CREATE TABLE IF NOT EXISTS vera_wake_state (
   last_reconcile_at_ms INTEGER,
   last_collect_at_ms INTEGER,
   last_digest_at_ms INTEGER,
+  last_morning_brief_at_ms INTEGER,
   held_plan_json TEXT,
   held_plan_attempts INTEGER NOT NULL DEFAULT 0,
   held_plan_next_attempt_at_ms INTEGER,
@@ -325,6 +326,7 @@ type AdaMemoryDatabase = {
     last_reconcile_at_ms: number | null;
     last_collect_at_ms: number | null;
     last_digest_at_ms: number | null;
+    last_morning_brief_at_ms: number | null;
     held_plan_json: string | null;
     held_plan_attempts: number;
     held_plan_next_attempt_at_ms: number | null;
@@ -531,6 +533,7 @@ function emptyWake(): WakeState {
     lastReconcileAtMs: null,
     lastCollectAtMs: null,
     lastDigestAtMs: null,
+    lastMorningBriefAtMs: null,
     heldPlanJson: null,
     heldPlanAttempts: 0,
     heldPlanNextAttemptAtMs: null,
@@ -590,6 +593,52 @@ class AdaMemoryDatabaseStore {
         busyTimeoutMs: 5000,
         databaseLabel: "ada memory",
         operationLabel: "ada.memory.profile.upsert",
+      },
+    );
+    return undefined;
+  }
+
+  setProfileTimezone(timezone: string, atMs: number, language = ""): undefined {
+    const zone = assertText(timezone, "timezone", 80);
+    if (!Number.isFinite(atMs)) {
+      throw new Error("atMs is invalid");
+    }
+    runSqliteImmediateTransactionSync(
+      this.db,
+      () => {
+        const existing = executeSqliteQueryTakeFirstSync(
+          this.db,
+          this.query.selectFrom("vera_profile").select("id").where("id", "=", PROFILE_ID),
+        );
+        if (existing) {
+          executeSqliteQuerySync(
+            this.db,
+            this.query
+              .updateTable("vera_profile")
+              .set({ timezone: zone, generated_at_ms: atMs })
+              .where("id", "=", PROFILE_ID),
+          );
+          return;
+        }
+        executeSqliteQuerySync(
+          this.db,
+          this.query.insertInto("vera_profile").values({
+            id: PROFILE_ID,
+            name: "",
+            timezone: zone,
+            email: null,
+            language: language.trim().slice(0, 40),
+            jurisdiction: "",
+            autonomy: "",
+            channel_style: "",
+            generated_at_ms: atMs,
+          }),
+        );
+      },
+      {
+        busyTimeoutMs: 5000,
+        databaseLabel: "ada memory",
+        operationLabel: "ada.memory.profile.timezone",
       },
     );
     return undefined;
@@ -1035,6 +1084,7 @@ class AdaMemoryDatabaseStore {
       lastReconcileAtMs: row.last_reconcile_at_ms,
       lastCollectAtMs: row.last_collect_at_ms,
       lastDigestAtMs: row.last_digest_at_ms ?? null,
+      lastMorningBriefAtMs: row.last_morning_brief_at_ms ?? null,
       heldPlanJson: row.held_plan_json,
       heldPlanAttempts: row.held_plan_attempts,
       heldPlanNextAttemptAtMs: row.held_plan_next_attempt_at_ms,
@@ -1063,6 +1113,10 @@ class AdaMemoryDatabaseStore {
             patch.lastCollectAtMs !== undefined ? patch.lastCollectAtMs : current.lastCollectAtMs,
           lastDigestAtMs:
             patch.lastDigestAtMs !== undefined ? patch.lastDigestAtMs : current.lastDigestAtMs,
+          lastMorningBriefAtMs:
+            patch.lastMorningBriefAtMs !== undefined
+              ? patch.lastMorningBriefAtMs
+              : current.lastMorningBriefAtMs,
           heldPlanJson:
             patch.heldPlanJson !== undefined ? patch.heldPlanJson : current.heldPlanJson,
           heldPlanAttempts:
@@ -1098,6 +1152,7 @@ class AdaMemoryDatabaseStore {
             last_reconcile_at_ms: next.lastReconcileAtMs,
             last_collect_at_ms: next.lastCollectAtMs,
             last_digest_at_ms: next.lastDigestAtMs,
+            last_morning_brief_at_ms: next.lastMorningBriefAtMs,
             held_plan_json: next.heldPlanJson,
             held_plan_attempts: next.heldPlanAttempts,
             held_plan_next_attempt_at_ms: next.heldPlanNextAttemptAtMs,
@@ -1473,6 +1528,7 @@ function openAdaMemoryDatabase(dbPath: string): AdaMemoryDatabaseStore {
     for (const [column, type] of [
       ["open_todo_ids_json", "TEXT"],
       ["last_digest_at_ms", "INTEGER"],
+      ["last_morning_brief_at_ms", "INTEGER"],
       ["held_plan_at_ms", "INTEGER"],
     ] as const) {
       if (!wakeColumns.some((existing) => existing.name === column)) {
@@ -1516,6 +1572,12 @@ export function createSqliteWorkerBackend(
           return database.upsertProfile(command.input);
         case "readProfile":
           return database.readProfile();
+        case "setProfileTimezone":
+          return database.setProfileTimezone(
+            command.input.timezone,
+            command.input.atMs,
+            command.input.language,
+          );
         case "upsertRecord":
           return database.upsertRecord(
             command.input.record,

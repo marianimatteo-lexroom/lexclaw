@@ -60,8 +60,25 @@ function addDays(date: LocalDate, days: number): LocalDate {
 
 export type DailySlot = { hour: number; minute: number };
 
-/** The 07:40 digest slot in the lawyer's timezone. */
+/** The 07:40 brief slot, read on each number's own clock. */
 export const MORNING_SLOT: DailySlot = { hour: 7, minute: 40 };
+
+/** The zone for a number that has not said where it is. */
+export const DEFAULT_TIME_ZONE = "Europe/Rome";
+
+/** True for a zone name the runtime knows, so a bad profile value never reaches the slot math. */
+export function validTimeZone(zone: string): boolean {
+  try {
+    return new Intl.DateTimeFormat("en", { timeZone: zone }).resolvedOptions().timeZone !== "";
+  } catch {
+    return false;
+  }
+}
+
+/** A number's profile zone, or Europe/Rome when it has none or the saved one is not a zone. */
+export function effectiveTimeZone(profileZone: string | null | undefined): string {
+  return profileZone && validTimeZone(profileZone) ? profileZone : DEFAULT_TIME_ZONE;
+}
 
 /**
  * First occurrence of `slot` strictly after `afterMs`. Walks calendar days in the

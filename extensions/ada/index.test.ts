@@ -18,6 +18,7 @@ const TOOL_NAMES = [
   "ada_update_calendar_event",
   "ada_deadline_list",
   "ada_deadline_reply",
+  "ada_set_timezone",
   "ada_memory_search",
   "ada_memory_list",
   "ada_memory_get",

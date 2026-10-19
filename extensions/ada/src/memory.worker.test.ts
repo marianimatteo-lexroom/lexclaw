@@ -197,7 +197,100 @@ describe("ada memory store", () => {
         heldPlanNextAttemptAtMs: null,
         heldPlanTemplateAttemptedAtMs: null,
         lastDigestAtMs: null,
+        lastMorningBriefAtMs: null,
         heldPlanAtMs: null,
+      });
+    } finally {
+      void backend.close();
+    }
+  });
+
+  it("keeps the morning brief marker apart from the digest marker", () => {
+    const backend = openBackend();
+    try {
+      backend.execute({ type: "writeWake", input: { lastDigestAtMs: 10 } });
+      expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
+        lastDigestAtMs: 10,
+        lastMorningBriefAtMs: null,
+      });
+      backend.execute({ type: "writeWake", input: { lastMorningBriefAtMs: 30 } });
+      expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
+        lastDigestAtMs: 10,
+        lastMorningBriefAtMs: 30,
+      });
+    } finally {
+      void backend.close();
+    }
+  });
+});
+
+describe("ada profile time zone", () => {
+  it("creates a blank profile for a number that has none, then changes only the zone", () => {
+    const backend = openBackend();
+    try {
+      expect(backend.execute({ type: "readProfile", input: undefined })).toBeNull();
+      backend.execute({
+        type: "setProfileTimezone",
+        input: { timezone: "Asia/Shanghai", atMs: 1000 },
+      });
+      expect(backend.execute({ type: "readProfile", input: undefined })).toMatchObject({
+        name: "",
+        timezone: "Asia/Shanghai",
+        language: "",
+        generatedAtMs: 1000,
+      });
+
+      backend.execute({
+        type: "upsertProfile",
+        input: {
+          name: "Avv. Test",
+          timezone: "Europe/Rome",
+          email: "avv@example.com",
+          language: "it",
+          jurisdiction: "IT",
+          autonomy: "text only",
+          channelStyle: "short",
+          generatedAtMs: 2000,
+        },
+      });
+      backend.execute({
+        type: "setProfileTimezone",
+        input: { timezone: "America/New_York", atMs: 3000 },
+      });
+      expect(backend.execute({ type: "readProfile", input: undefined })).toEqual({
+        name: "Avv. Test",
+        timezone: "America/New_York",
+        email: "avv@example.com",
+        language: "it",
+        jurisdiction: "IT",
+        autonomy: "text only",
+        channelStyle: "short",
+        generatedAtMs: 3000,
+      });
+    } finally {
+      void backend.close();
+    }
+  });
+});
+
+describe("ada profile language on creation", () => {
+  it("is set only when the profile is created, never over an existing one", () => {
+    const backend = openBackend();
+    try {
+      backend.execute({
+        type: "setProfileTimezone",
+        input: { timezone: "Asia/Shanghai", atMs: 1000, language: "en" },
+      });
+      expect(backend.execute({ type: "readProfile", input: undefined })).toMatchObject({
+        language: "en",
+      });
+      backend.execute({
+        type: "setProfileTimezone",
+        input: { timezone: "Europe/Rome", atMs: 2000, language: "de" },
+      });
+      expect(backend.execute({ type: "readProfile", input: undefined })).toMatchObject({
+        timezone: "Europe/Rome",
+        language: "en",
       });
     } finally {
       void backend.close();

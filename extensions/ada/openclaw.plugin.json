@@ -125,6 +125,7 @@
       "ada_update_calendar_event",
       "ada_deadline_list",
       "ada_deadline_reply",
+      "ada_set_timezone",
       "ada_memory_search",
       "ada_memory_list",
       "ada_memory_get",
@@ -171,6 +172,9 @@
       "optional": true
     },
     "ada_deadline_reply": {
+      "optional": true
+    },
+    "ada_set_timezone": {
       "optional": true
     },
     "ada_memory_search": {

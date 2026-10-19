@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { nextSlotMs, previousSlotMs } from "./schedule.js";
+import { effectiveTimeZone, nextSlotMs, previousSlotMs } from "./schedule.js";
 
 const ROME = "Europe/Rome";
+const SHANGHAI = "Asia/Shanghai";
 
 describe("nextSlotMs", () => {
   it("picks today's 07:40 when it is still ahead, tomorrow's when it has passed", () => {
@@ -53,6 +54,44 @@ describe("nextSlotMs", () => {
     expect(
       new Date(nextSlotMs(Date.parse("2026-03-07T12:40:00Z"), "America/New_York")).toISOString(),
     ).toBe("2026-03-08T11:40:00.000Z");
+  });
+});
+
+describe("one instant, two clocks", () => {
+  const iso = (ms: number) => new Date(ms).toISOString();
+
+  it("gives Shanghai (UTC+8, no DST) and Rome their own 07:40", () => {
+    const at = Date.parse("2026-10-06T03:00:00Z");
+    expect(iso(nextSlotMs(at, SHANGHAI))).toBe("2026-10-06T23:40:00.000Z");
+    expect(iso(nextSlotMs(at, ROME))).toBe("2026-10-06T05:40:00.000Z");
+  });
+
+  it("moves Rome by an hour on 25 October 2026 and leaves Shanghai alone", () => {
+    const beforeChange = Date.parse("2026-10-24T12:00:00Z");
+    expect(iso(nextSlotMs(beforeChange, ROME))).toBe("2026-10-25T06:40:00.000Z");
+    expect(iso(nextSlotMs(beforeChange, SHANGHAI))).toBe("2026-10-24T23:40:00.000Z");
+    const afterRome = Date.parse("2026-10-25T06:40:00Z");
+    expect(iso(nextSlotMs(afterRome, ROME))).toBe("2026-10-26T06:40:00.000Z");
+    expect(iso(nextSlotMs(afterRome, SHANGHAI))).toBe("2026-10-25T23:40:00.000Z");
+  });
+
+  it("finds Shanghai's latest slot, which falls on the previous UTC day", () => {
+    expect(iso(previousSlotMs(Date.parse("2026-10-06T03:00:00Z"), SHANGHAI))).toBe(
+      "2026-10-05T23:40:00.000Z",
+    );
+    expect(iso(previousSlotMs(Date.parse("2026-10-06T03:00:00Z"), ROME))).toBe(
+      "2026-10-05T05:40:00.000Z",
+    );
+  });
+});
+
+describe("effectiveTimeZone", () => {
+  it("uses the profile zone, and Europe/Rome when there is none or it is not a zone", () => {
+    expect(effectiveTimeZone(SHANGHAI)).toBe(SHANGHAI);
+    expect(effectiveTimeZone(null)).toBe(ROME);
+    expect(effectiveTimeZone(undefined)).toBe(ROME);
+    expect(effectiveTimeZone("")).toBe(ROME);
+    expect(effectiveTimeZone("Mars/Olympus")).toBe(ROME);
   });
 });
 

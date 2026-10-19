@@ -173,6 +173,7 @@ function memory(lastLawyerInboundAtMs: number | null = NOW.getTime() - HOUR_MS):
     lastReconcileAtMs: null,
     lastCollectAtMs: null,
     lastDigestAtMs: null,
+    lastMorningBriefAtMs: null,
     heldPlanJson: null,
     heldPlanAtMs: null,
     heldPlanAttempts: 0,

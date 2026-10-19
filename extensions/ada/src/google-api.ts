@@ -17,6 +17,8 @@ export type InboxMessage = {
   subject: string;
   date: string;
   snippet: string;
+  /** Gmail still has it as unread; absent otherwise. */
+  unread?: true;
 };
 
 export type CalendarEvent = {
@@ -194,6 +196,7 @@ export function parseGmailMessage(payload: unknown): InboxMessage | null {
   const record = payload as {
     id?: unknown;
     snippet?: unknown;
+    labelIds?: unknown;
     payload?: { headers?: unknown };
   };
   if (typeof record.id !== "string" || record.id.length === 0) {
@@ -205,6 +208,9 @@ export function parseGmailMessage(payload: unknown): InboxMessage | null {
     subject: headerValue(record.payload?.headers, "subject"),
     date: headerValue(record.payload?.headers, "date"),
     snippet: typeof record.snippet === "string" ? clip(record.snippet, 240) : "",
+    ...(Array.isArray(record.labelIds) && record.labelIds.includes("UNREAD")
+      ? { unread: true as const }
+      : {}),
   };
 }
 

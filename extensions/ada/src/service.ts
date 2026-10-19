@@ -1,4 +1,4 @@
-import type { OpenClawPluginApi, PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { runCollectExclusive } from "./collect-lock.js";
 import {
   collectDigest,
@@ -7,6 +7,7 @@ import {
   type CollectResult,
 } from "./collector.js";
 import { prepareDeadlineIntake } from "./deadline-intake.js";
+import { localParts } from "./deadline-time.js";
 import {
   mergeDigestPlans,
   numberDeadlineLines,
@@ -32,9 +33,11 @@ import { holdReconnectNote, takeHeldReconnectNote } from "./held-reconnect.js";
 import { maskNumber, logInboundSkip } from "./inbound-log.js";
 import { abortResearchJobs } from "./lexroom-jobs.js";
 import { openAdaMemoryFromApi, openAdaMemoryIfExistsFromApi, type MemoryStore } from "./memory.js";
+import { createMorningSchedule, createServiceTimers } from "./morning-schedule.js";
 import { lawyerOwner, toOwner } from "./owner.js";
+import { buildQuietBrief } from "./quiet-brief.js";
 import { buildDailyTimelineRecord, buildOnePagerRecord } from "./reconcile.js";
-import { nextSlotMs, previousSlotMs } from "./schedule.js";
+import { DEFAULT_TIME_ZONE, effectiveTimeZone } from "./schedule.js";
 import {
   readDigestReadyTemplate,
   sendDigestReadyNotice,
@@ -51,8 +54,10 @@ function readPubSubTopic(config: unknown): string | null {
 }
 
 const POLL_MS = 15 * 60 * 1000;
-const CATCH_UP_DELAY_MS = 30 * 1000;
-const DEFAULT_TZ = "Europe/Rome";
+/** A catch-up after boot sends the quiet brief only while the number's local time is before this hour. */
+const CATCH_UP_BRIEF_CUTOFF_HOUR = 11;
+/** How many inbox messages a pass reads; a full window is shown as "N+" in the quiet brief. */
+const INBOX_WINDOW = 10;
 
 /** A plan whose dispatch failed is retried this many times before waiting for the next morning slot or lawyer message. */
 export const HELD_PLAN_MAX_ATTEMPTS = 5;
@@ -71,23 +76,36 @@ type DeliverablePlan = Extract<DigestPlan, { deliver: true }>;
 
 export type DigestDeliveryDecision =
   | { action: "silent" }
+  | { action: "brief" }
   | { action: "batch" }
   | { action: "hold"; plan: DeliverablePlan }
   | { action: "dispatch"; plan: DeliverablePlan };
 
-/** Decide after collectDigest: model only on dispatch. */
+/**
+ * Decide after collectDigest: no model is involved. A quiet morning pass still earns the short
+ * brief, but only inside the WhatsApp window and never a second time on the same local day.
+ */
 export function decideDigestDelivery(params: {
   result: CollectResult;
   forceMorning: boolean;
+  /** The 07:40 pass for this number that owes a quiet brief: not a poll, a release, or a late catch-up. */
+  morningPass: boolean;
+  /** A morning brief already went out on this local day and no held plan is owed. */
+  briefedToday: boolean;
   timeZone: string;
   now: Date;
   lastLawyerInboundAtMs: number | null;
 }): DigestDeliveryDecision {
   const plan = params.result.plan;
   if (!plan.deliver) {
-    return { action: "silent" };
+    const owed = params.morningPass && !params.briefedToday;
+    return owed && whatsappWindowOpen(params.lastLawyerInboundAtMs, params.now.getTime())
+      ? { action: "brief" }
+      : { action: "silent" };
   }
-  const morning = params.forceMorning || isMorningDigestSlot(params.now, params.timeZone);
+  const morning =
+    (params.forceMorning && !params.briefedToday) ||
+    isMorningDigestSlot(params.now, params.timeZone);
   if (!morning && !params.result.urgent) {
     return { action: "batch" };
   }
@@ -116,7 +134,7 @@ function reconnectNoteRequest(params: { owner: string; now: Date }) {
   return {
     owner: params.owner,
     plan: { deliver: false, reason: "nothing_cleared_the_bar" } as const,
-    idempotencyKey: `reconnect:${params.owner}:${dayKey(params.now, DEFAULT_TZ)}`,
+    idempotencyKey: `reconnect:${params.owner}:${dayKey(params.now, DEFAULT_TIME_ZONE)}`,
     connectOnly: true,
     reconnect: true,
   };
@@ -152,7 +170,7 @@ async function loadGoogleReads(api: OpenClawPluginApi, owner: string, now: Date)
       `ada google refreshed token not saved owner=${maskNumber(owner)}: ${error instanceof Error ? error.message : "unknown"}`,
     );
   });
-  const inbox = await listInboxMessages({ accessToken: token.accessToken, max: 10 });
+  const inbox = await listInboxMessages({ accessToken: token.accessToken, max: INBOX_WINDOW });
   if (!inbox.ok) {
     return { ok: false as const, error: `gmail_${inbox.status}` };
   }
@@ -346,7 +364,8 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
       };
     }
     if (params.forceMorning && !params.catchUp && google.error === "not_connected") {
-      const day = dayKey(params.now, DEFAULT_TZ);
+      const ownZone = effectiveTimeZone((await params.memory.readProfile())?.timezone);
+      const day = dayKey(params.now, ownZone);
       const dispatch = await dispatchSafely(dispatchDigestTurn, {
         owner: params.owner,
         plan: { deliver: false, reason: "nothing_cleared_the_bar" },
@@ -391,7 +410,7 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
     }
   }
 
-  const timeZone = profile?.timezone ?? DEFAULT_TZ;
+  const timeZone = effectiveTimeZone(profile?.timezone);
   const deadlineIntake = await prepareDeadlineIntake({
     api: params.api,
     memory: params.memory,
@@ -437,10 +456,23 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
     held ? mergeDigestPlans(held, result.plan, params.now) : result.plan,
     deadlineIntake?.digest.lines,
   );
+  const day = dayKey(params.now, timeZone);
+  // A catch-up that runs once the local morning is over skips the quiet brief for that day;
+  // an urgent plan still goes out or is held as usual.
+  const morningPass =
+    params.trigger === "morning" &&
+    !(params.catchUp && localParts(nowMs, timeZone).hour >= CATCH_UP_BRIEF_CUTOFF_HOUR);
+  const briefedToday =
+    morningPass &&
+    held === null &&
+    wake.lastMorningBriefAtMs !== null &&
+    dayKey(new Date(wake.lastMorningBriefAtMs), timeZone) === day;
   const decision = decideDigestDelivery({
     // A held plan is already owed to the lawyer, so it skips the morning-or-urgent gate.
     result: { ...result, plan, urgent: result.urgent || (held !== null && plan.deliver) },
     forceMorning: params.forceMorning,
+    morningPass,
+    briefedToday,
     timeZone,
     now: params.now,
     lastLawyerInboundAtMs: wake.lastLawyerInboundAtMs,
@@ -490,6 +522,43 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
     };
   }
 
+  if (decision.action === "brief") {
+    const brief = buildQuietBrief({
+      now: params.now,
+      timeZone,
+      events: google.events,
+      inbox: google.messages,
+      inboxLimit: INBOX_WINDOW,
+      aliases,
+      deadlines: deadlineIntake?.digest.lines,
+      alertedToday:
+        wake.lastDigestAtMs !== null && dayKey(new Date(wake.lastDigestAtMs), timeZone) === day,
+    });
+    const dispatch = await dispatchSafely(dispatchDigestTurn, {
+      owner: params.owner,
+      plan,
+      brief,
+      idempotencyKey: `brief:${params.owner}:${day}`,
+    });
+    // Nothing urgent was dropped, so the baseline advances whether or not the brief went out.
+    await commitSnapshots();
+    await params.memory.writeWake({
+      lastCollectAtMs: nowMs,
+      openTodoIdsJson: JSON.stringify(openTodoIds),
+      ...noHeldPlan,
+      ...(dispatch.ok ? { lastDigestAtMs: nowMs, lastMorningBriefAtMs: nowMs } : {}),
+    });
+    return {
+      collected: true,
+      delivered: dispatch.ok,
+      held: false,
+      result,
+      ...(dispatch.ok ? {} : { reason: dispatch.reason ?? "dispatch_rejected" }),
+      decision: "brief",
+      windowOpen,
+    };
+  }
+
   if (decision.action === "hold") {
     // One template per held plan. The claim is written with the hold, before the send, so a
     // crash or a timeout that Kapso actually accepted can never produce a second nudge.
@@ -532,7 +601,6 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
     };
   }
 
-  const day = dayKey(params.now, timeZone);
   const itemIds = decision.plan.items.map((item) => item.matterId).join(",");
   const deadlineIds = decision.plan.deliver
     ? decision.plan.deadlines?.map((line) => line.id).join(",")
@@ -572,6 +640,9 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
   await params.memory.writeWake({
     lastCollectAtMs: nowMs,
     lastDigestAtMs: nowMs,
+    ...(params.forceMorning || isMorningDigestSlot(params.now, timeZone)
+      ? { lastMorningBriefAtMs: nowMs }
+      : {}),
     openTodoIdsJson: JSON.stringify(openTodoIds),
     ...noHeldPlan,
   });
@@ -628,7 +699,7 @@ export async function runAdaReconcilePass(params: {
   }
 
   const profile = await params.memory.readProfile();
-  const timeZone = profile?.timezone ?? DEFAULT_TZ;
+  const timeZone = effectiveTimeZone(profile?.timezone);
   const day = dayKey(params.now, timeZone);
   const aliases = await params.memory.listMatterAliases();
   const matterIds = [...new Set(aliases.map((entry) => entry.matterId))];
@@ -673,69 +744,8 @@ export function registerAdaService(deps: AdaServiceDeps): void {
   const now = deps.now ?? (() => new Date());
   const dispatchDigestTurn =
     deps.dispatchDigestTurn ?? ((request: DigestDispatchRequest) => dispatchDigest(api, request));
-
-  // Fallback timers for hosts that omit the V2 scheduler field (e.g. OpenClaw 2026.9.8).
-  const fallbackTimers = new Set<ReturnType<typeof setTimeout>>();
+  const timers = createServiceTimers({ logger: api.logger, now });
   let stopped = false;
-
-  type ServiceScheduler = Pick<PluginServiceSchedulerV1, "schedule">;
-  const scheduleRepeating = (params: {
-    scheduler:
-      | {
-          schedule: (job: {
-            id: string;
-            delayMs: number;
-            everyMs?: number;
-            run: () => void | Promise<void>;
-          }) => void;
-        }
-      | undefined;
-    id: string;
-    delayMs: number;
-    everyMs: number;
-    run: () => void | Promise<void>;
-  }) => {
-    if (params.scheduler) {
-      params.scheduler.schedule({
-        id: params.id,
-        delayMs: params.delayMs,
-        everyMs: params.everyMs,
-        run: params.run,
-      });
-      return;
-    }
-    api.logger.warn(`ada: Gateway service scheduler missing; using setInterval for ${params.id}`);
-    const first = setTimeout(() => {
-      fallbackTimers.delete(first);
-      void params.run();
-      const interval = setInterval(() => {
-        void params.run();
-      }, params.everyMs);
-      fallbackTimers.add(interval);
-    }, params.delayMs);
-    fallbackTimers.add(first);
-  };
-  const scheduleOnce = (params: {
-    scheduler: ServiceScheduler | undefined;
-    id: string;
-    atMs: number;
-    run: () => void | Promise<void>;
-  }) => {
-    if (params.scheduler) {
-      params.scheduler.schedule({ id: params.id, atMs: params.atMs, run: params.run });
-      return;
-    }
-    api.logger.warn(`ada: Gateway service scheduler missing; using setTimeout for ${params.id}`);
-    const timer = setTimeout(
-      () => {
-        fallbackTimers.delete(timer);
-        void params.run();
-      },
-      Math.max(0, params.atMs - now().getTime()),
-    );
-    timer.unref?.();
-    fallbackTimers.add(timer);
-  };
 
   api.registerService({
     id: "ada-instinct-wake",
@@ -758,7 +768,7 @@ export function registerAdaService(deps: AdaServiceDeps): void {
           });
           const clock = now();
           const profile = await memory.readProfile();
-          if (forceMorning || isMorningDigestSlot(clock, profile?.timezone ?? DEFAULT_TZ)) {
+          if (forceMorning || isMorningDigestSlot(clock, effectiveTimeZone(profile?.timezone))) {
             await runAdaReconcilePass({ memory, now: clock });
           }
         } catch (error) {
@@ -768,7 +778,7 @@ export function registerAdaService(deps: AdaServiceDeps): void {
         }
       };
       /** Every number with a Google connection, and the lawyer, who is asked to connect. */
-      const tick = async (forceMorning: boolean, catchUp = false) => {
+      const tickAll = async () => {
         let owners: string[] = [];
         try {
           owners = await listCollectOwners(api);
@@ -778,87 +788,39 @@ export function registerAdaService(deps: AdaServiceDeps): void {
           );
         }
         for (const owner of owners) {
-          await tickOwner(owner, forceMorning, catchUp);
+          await tickOwner(owner, false);
         }
       };
+      const { armMorning, armCatchUp } = createMorningSchedule({
+        api,
+        now,
+        scheduler: ctx.scheduler,
+        timers,
+        listOwners: () => listCollectOwners(api),
+        runOwner: tickOwner,
+        isStopped: () => stopped,
+      });
 
-      const resolveTimeZone = async (): Promise<string> => {
-        try {
-          const lawyer = lawyerOwner(api.config);
-          const memory = lawyer ? await openAdaMemoryIfExistsFromApi(api, lawyer) : null;
-          const timeZone = (await memory?.readProfile())?.timezone ?? DEFAULT_TZ;
-          // An unknown zone name throws here instead of inside the slot math.
-          new Intl.DateTimeFormat("en-GB", { timeZone }).format(0);
-          return timeZone;
-        } catch {
-          return DEFAULT_TZ;
-        }
-      };
-
-      // Each run schedules the next slot from the calendar, so DST days stay at 07:40
-      // and a long run or a slow host never drifts the way a fixed 24h interval would.
-      const armMorning = async (afterMs: number): Promise<void> => {
-        if (stopped) {
-          return;
-        }
-        const atMs = nextSlotMs(afterMs, await resolveTimeZone());
-        scheduleOnce({
-          scheduler: ctx.scheduler,
-          id: "ada-morning",
-          atMs,
-          run: async () => {
-            try {
-              await tick(true);
-            } finally {
-              try {
-                await armMorning(Math.max(now().getTime(), atMs));
-              } catch (error) {
-                api.logger.error(
-                  `ada could not schedule the next morning slot: ${error instanceof Error ? error.message : "unknown"}`,
-                );
-              }
-            }
-          },
-        });
-      };
-
-      // A restart can straddle the 07:40 slot. When nothing was collected since the
-      // latest slot, run the morning pass once shortly after boot.
-      const armCatchUp = async (): Promise<void> => {
-        const clock = now().getTime();
-        const slotMs = previousSlotMs(clock, await resolveTimeZone());
-        const stale: string[] = [];
-        for (const owner of await listCollectOwners(api)) {
-          const memory = await openAdaMemoryIfExistsFromApi(api, owner);
-          const lastCollectAtMs = memory ? (await memory.readWake()).lastCollectAtMs : null;
-          if (lastCollectAtMs !== null && lastCollectAtMs < slotMs) {
-            stale.push(owner);
-          }
-        }
-        if (stale.length === 0) {
-          return;
-        }
-        scheduleOnce({
-          scheduler: ctx.scheduler,
-          id: "ada-catch-up",
-          atMs: clock + CATCH_UP_DELAY_MS,
-          run: async () => {
-            for (const owner of stale) {
-              await tickOwner(owner, true, true);
-            }
-          },
-        });
-      };
-
-      scheduleRepeating({
+      // The poll also re-arms the morning timer, so numbers added or removed and zones changed
+      // since the last run take effect within one poll.
+      timers.scheduleRepeating({
         scheduler: ctx.scheduler,
         id: "ada-poll",
         delayMs: POLL_MS,
         everyMs: POLL_MS,
-        run: () => tick(false),
+        run: async () => {
+          await tickAll();
+          try {
+            await armMorning();
+          } catch (error) {
+            api.logger.error(
+              `ada could not refresh the morning slots: ${error instanceof Error ? error.message : "unknown"}`,
+            );
+          }
+        },
       });
       try {
-        await armMorning(now().getTime());
+        await armMorning();
       } catch (error) {
         api.logger.error(
           `ada could not schedule the morning slot: ${error instanceof Error ? error.message : "unknown"}`,
@@ -875,11 +837,7 @@ export function registerAdaService(deps: AdaServiceDeps): void {
     stop() {
       stopped = true;
       abortResearchJobs();
-      for (const timer of fallbackTimers) {
-        clearTimeout(timer);
-        clearInterval(timer);
-      }
-      fallbackTimers.clear();
+      timers.stop();
     },
   });
 }
