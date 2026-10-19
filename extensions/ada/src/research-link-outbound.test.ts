@@ -366,4 +366,34 @@ describe("the outbound hooks", () => {
     expect(await sending(hooked)).toBeUndefined();
     expect(hooked.split(URL_A)).toHaveLength(2);
   });
+
+  it("drops a trailing signature from the final reply even when no link is waiting", async () => {
+    const { reply } = register();
+    const result = await reply("final", `${ITALIAN}\n\n— Ada`);
+    expect(result?.payload?.text).toBe(ITALIAN);
+    expect(await reply("final", ITALIAN)).toBeUndefined();
+  });
+
+  it("drops the signature before it adds the research link, so the link stays last", async () => {
+    const { reply } = register();
+    markResearchLinkReady(URL_A, OWNER);
+    expect((await reply("final", `${ITALIAN}\n\n— Ada · Lexroom`))?.payload?.text).toBe(
+      `${ITALIAN}\n\nContinua su Lexroom: ${URL_A}`,
+    );
+    const fallback = register();
+    markResearchLinkReady(URL_B, OWNER);
+    expect((await fallback.sending(`${ITALIAN}\n\n– Ada`))?.content).toBe(
+      `${ITALIAN}\n\nContinua su Lexroom: ${URL_B}`,
+    );
+  });
+
+  it("leaves a reply that only mentions Ada untouched", async () => {
+    const { reply, sending } = register();
+    expect(await reply("final", "Ada ti aiuterà con la ricerca.\nChiedi pure.")).toBeUndefined();
+    expect(await reply("final", "Mi chiamo Ada")).toBeUndefined();
+    expect(await reply("final", "Ada")).toBeUndefined();
+    expect(await reply("final", "Partecipanti:\nMarco\nAda")).toBeUndefined();
+    expect(await reply("final", "Cordiali saluti,\nAda")).toBeUndefined();
+    expect(await sending("Prima riga.\nRisponde Ada.")).toBeUndefined();
+  });
 });

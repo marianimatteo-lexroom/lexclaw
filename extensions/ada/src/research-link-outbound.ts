@@ -2,6 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { logInboundSkip } from "./inbound-log.js";
 import { lexroomLogger } from "./lexroom-log.js";
 import { sessionKeyOwner, toOwner } from "./owner.js";
+import { stripTrailingSignature } from "./signature.js";
 
 /**
  * The link to a research in the Lexroom app is added to the reply by code, not by the model: a
@@ -332,7 +333,7 @@ export function registerResearchLinkHooks(
     ) {
       return undefined;
     }
-    const next = await append(text, ownerOf(ctx), "reply_payload_sending");
+    const next = await append(stripTrailingSignature(text), ownerOf(ctx), "reply_payload_sending");
     return next === text ? undefined : { payload: { ...event.payload, text: next } };
   });
 
@@ -340,7 +341,11 @@ export function registerResearchLinkHooks(
     if (payloadHookRuns || !event.content.trim() || event.content.trim() === "NO_REPLY") {
       return undefined;
     }
-    const next = await append(event.content, ownerOf(ctx, event.to), "message_sending");
+    const next = await append(
+      stripTrailingSignature(event.content),
+      ownerOf(ctx, event.to),
+      "message_sending",
+    );
     return next === event.content ? undefined : { content: next };
   });
 }

@@ -190,6 +190,10 @@ migrate_legacy_plugin
 # turn the known "one lawyer / one person only" phrases into
 # "everyone who writes to her", and append one marked section that says she serves every sender.
 # SOUL.md also gets a marked section that says she answers in the language of the latest message.
+# SOUL.md and AGENTS.md also get a marked section that says she never signs her messages, and in
+# every file the exact sentence "Introduce yourself and sign off as Ada." (the one the old persona
+# carried) is removed; no other line is ever matched, so legal instructions about signatures stay.
+# A change of either kind also keeps a separate .pre-nosig copy, made once.
 # Each section is appended once; its marker makes a second run a no-op. In AGENTS.md, TOOLS.md,
 # HEARTBEAT.md and BOOTSTRAP.md only the standalone word is renamed. The first change keeps a
 # .pre-ada copy of each file beside it. Every other character, USER.md, MEMORY.md and memory/ (a
@@ -213,19 +217,49 @@ migrate_identity_name() {
     const langBlock =
       LANG_MARK +
       "\n## Language\n\nAda always replies in the language of the most recent message from the person she is talking to, and switches when they switch. That overrides any older line that names a language or says to answer in Italian, and the language of earlier messages, profiles, notes and tool output.\n<!-- /ada:language -->\n";
+    const SIGN_MARK = "<!-- ada:no-signature -->";
+    const signBlock =
+      SIGN_MARK +
+      "\n## No signature\n\nAda never signs her messages and never ends one with her name or a sign-off. The person already knows it is Ada. That overrides any older line that says to sign, sign off or close messages with a name.\n<!-- /ada:no-signature -->\n";
+    const signing = [
+      "Introduce yourself and sign off as Ada.",
+      "Introduce yourself and sign off as Vera.",
+    ];
+    const stripSigning = (text) => {
+      const at = text.indexOf(SIGN_MARK);
+      const head = at < 0 ? text : text.slice(0, at);
+      const tail = at < 0 ? "" : text.slice(at);
+      let removed = false;
+      const kept = [];
+      for (const line of head.split("\n")) {
+        const prefix = /^\s*(?:[-*>]\s+|\d+[.)]\s+)?/u.exec(line)[0];
+        const rest = line.slice(prefix.length).split(/(?<=[.!?])\s+/u);
+        const left = rest.filter((sentence) => !signing.includes(sentence.trim()));
+        if (left.length === rest.length) {
+          kept.push(line);
+          continue;
+        }
+        removed = true;
+        if (left.length > 0) kept.push(prefix + left.join(" "));
+      }
+      if (!removed) return text;
+      return kept.join("\n").replace(/\n{3,}/gu, "\n\n") + tail;
+    };
     const files = [
       { name: "IDENTITY.md", serves: true },
-      { name: "SOUL.md", serves: true, language: true },
-      { name: "AGENTS.md" },
+      { name: "SOUL.md", serves: true, language: true, noSignature: true },
+      { name: "AGENTS.md", noSignature: true },
       { name: "TOOLS.md" },
       { name: "HEARTBEAT.md" },
       { name: "BOOTSTRAP.md" },
     ];
-    for (const { name, serves, language } of files) {
+    for (const { name, serves, language, noSignature } of files) {
       const file = path.join(process.argv[1], name);
       if (!fs.existsSync(file)) continue;
       const before = fs.readFileSync(file, "utf8");
-      let after = before.replace(word, ada);
+      const renamed = before.replace(word, ada);
+      let after = stripSigning(renamed);
+      let signChanged = after !== renamed;
       if (serves) {
         const at = after.indexOf(MARK);
         let head = at < 0 ? after : after.slice(0, at);
@@ -236,7 +270,18 @@ migrate_identity_name() {
       if (language && !after.includes(LANG_MARK)) {
         after = after.replace(/\s*$/u, "") + "\n\n" + langBlock;
       }
+      if (noSignature && !after.includes(SIGN_MARK)) {
+        after = after.replace(/\s*$/u, "") + "\n\n" + signBlock;
+        signChanged = true;
+      }
       if (after === before) continue;
+      if (signChanged) {
+        try {
+          fs.copyFileSync(file, file + ".pre-nosig", fs.constants.COPYFILE_EXCL);
+        } catch (error) {
+          if (error.code !== "EEXIST") throw error;
+        }
+      }
       try {
         fs.copyFileSync(file, file + ".pre-ada", fs.constants.COPYFILE_EXCL);
       } catch (error) {
@@ -245,7 +290,7 @@ migrate_identity_name() {
       fs.writeFileSync(file, after);
       console.log("[start] updated the assistant identity in " + name);
     }
-  ' "${WORKSPACE_DIR}" || log "WARNING: could not update the workspace identity files; the plugin still tells the model its name is Ada, that she serves everyone and that she answers in the language of the latest message"
+  ' "${WORKSPACE_DIR}" || log "WARNING: could not update the workspace identity files; the plugin still tells the model its name is Ada, that she serves everyone, that she answers in the language of the latest message and that she never signs"
   local current
   current="$(oc config get agents.entries.main.identity.name --json 2>/dev/null || true)"
   if printf '%s' "${current}" | grep -qE '(^|[^[:alnum:]])(Vera|VERA)([^[:alnum:]]|$)'; then
