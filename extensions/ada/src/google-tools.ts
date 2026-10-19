@@ -27,6 +27,7 @@ import {
 } from "./google-connect.js";
 import { maskNumber } from "./inbound-log.js";
 import { openAdaMemoryIfExistsFromApi } from "./memory.js";
+import { DEFAULT_TIME_ZONE, validTimeZone } from "./schedule.js";
 
 type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger" | "config">;
 
@@ -351,19 +352,10 @@ export type CalendarEventArgs = {
   confirmed: boolean;
 };
 
-const FALLBACK_TIME_ZONE = "Europe/Rome";
 const DATE_TIME = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(:\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})?$/u;
 const MAX_GUESTS = 20;
 
 const oneLine = (value: string) => !/[\r\n]/u.test(value);
-
-function validTimeZone(zone: string): boolean {
-  try {
-    return new Intl.DateTimeFormat("en", { timeZone: zone }).resolvedOptions().timeZone !== "";
-  } catch {
-    return false;
-  }
-}
 
 type ReadEvent = {
   event: CalendarEventInput;
@@ -543,7 +535,7 @@ export async function changeConnectedCalendarEvent(params: {
       input.namedTimeZone ??
       (current?.ok ? current.timeZone : undefined) ??
       params.profileTimeZone ??
-      FALLBACK_TIME_ZONE;
+      DEFAULT_TIME_ZONE;
     if (current?.ok && current.wasAllDay) {
       event.wasAllDay = true;
     }
