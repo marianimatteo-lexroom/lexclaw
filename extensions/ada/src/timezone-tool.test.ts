@@ -7,6 +7,7 @@ const memory = vi.hoisted(() => ({
 }));
 vi.mock("./memory.js", () => ({ openAdaMemoryFromApi: memory.open }));
 
+import { clearInboundLanguages, recordInboundLanguage } from "./research-link-outbound.js";
 import { executeAdaSetTimezone } from "./timezone-tool.js";
 
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
@@ -16,6 +17,7 @@ const NOW = new Date("2026-10-06T03:00:00.000Z");
 
 beforeEach(() => {
   vi.clearAllMocks();
+  clearInboundLanguages();
   memory.opened.length = 0;
   memory.setProfileTimezone.mockResolvedValue(undefined);
   memory.open.mockImplementation(async (_api: unknown, owner: string) => {
@@ -33,13 +35,24 @@ describe("ada_set_timezone", () => {
       nextBriefAt: "2026-10-06T23:40:00.000Z",
     });
     expect(memory.opened).toEqual([OWNER]);
-    expect(memory.setProfileTimezone).toHaveBeenCalledWith("Asia/Shanghai", NOW.getTime());
+    expect(memory.setProfileTimezone).toHaveBeenCalledWith(
+      "Asia/Shanghai",
+      NOW.getTime(),
+      undefined,
+    );
+  });
+
+  it("passes the language the number last wrote in, and only that number's", async () => {
+    recordInboundLanguage(OWNER, "Hello, I am in Shanghai for the next two weeks");
+    recordInboundLanguage("393332222222", "Buongiorno, sono a Milano");
+    await executeAdaSetTimezone(api, OWNER, { timezone: "Asia/Shanghai" }, NOW);
+    expect(memory.setProfileTimezone).toHaveBeenCalledWith("Asia/Shanghai", NOW.getTime(), "en");
   });
 
   it("stores the canonical spelling of a zone written in another case", async () => {
     const result = await executeAdaSetTimezone(api, OWNER, { timezone: " europe/rome " }, NOW);
     expect(result).toMatchObject({ ok: true, timezone: "Europe/Rome" });
-    expect(memory.setProfileTimezone).toHaveBeenCalledWith("Europe/Rome", NOW.getTime());
+    expect(memory.setProfileTimezone).toHaveBeenCalledWith("Europe/Rome", NOW.getTime(), undefined);
   });
 
   it.each(["Mars/Olympus", "", "+08:00", "Shanghai time"])(

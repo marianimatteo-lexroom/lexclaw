@@ -273,6 +273,31 @@ describe("ada profile time zone", () => {
   });
 });
 
+describe("ada profile language on creation", () => {
+  it("is set only when the profile is created, never over an existing one", () => {
+    const backend = openBackend();
+    try {
+      backend.execute({
+        type: "setProfileTimezone",
+        input: { timezone: "Asia/Shanghai", atMs: 1000, language: "en" },
+      });
+      expect(backend.execute({ type: "readProfile", input: undefined })).toMatchObject({
+        language: "en",
+      });
+      backend.execute({
+        type: "setProfileTimezone",
+        input: { timezone: "Europe/Rome", atMs: 2000, language: "de" },
+      });
+      expect(backend.execute({ type: "readProfile", input: undefined })).toMatchObject({
+        timezone: "Europe/Rome",
+        language: "en",
+      });
+    } finally {
+      void backend.close();
+    }
+  });
+});
+
 describe("ada welcome markers", () => {
   it("claims a number once, survives a reopen, and can be released", () => {
     const databasePath = path.join(tempDirs.make("ada-welcome-"), "memory.sqlite");

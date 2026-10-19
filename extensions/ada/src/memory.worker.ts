@@ -598,7 +598,7 @@ class AdaMemoryDatabaseStore {
     return undefined;
   }
 
-  setProfileTimezone(timezone: string, atMs: number): undefined {
+  setProfileTimezone(timezone: string, atMs: number, language = ""): undefined {
     const zone = assertText(timezone, "timezone", 80);
     if (!Number.isFinite(atMs)) {
       throw new Error("atMs is invalid");
@@ -627,7 +627,7 @@ class AdaMemoryDatabaseStore {
             name: "",
             timezone: zone,
             email: null,
-            language: "",
+            language: language.trim().slice(0, 40),
             jurisdiction: "",
             autonomy: "",
             channel_style: "",
@@ -1573,7 +1573,11 @@ export function createSqliteWorkerBackend(
         case "readProfile":
           return database.readProfile();
         case "setProfileTimezone":
-          return database.setProfileTimezone(command.input.timezone, command.input.atMs);
+          return database.setProfileTimezone(
+            command.input.timezone,
+            command.input.atMs,
+            command.input.language,
+          );
         case "upsertRecord":
           return database.upsertRecord(
             command.input.record,

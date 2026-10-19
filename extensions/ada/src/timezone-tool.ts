@@ -1,6 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { maskNumber } from "./inbound-log.js";
 import { openAdaMemoryFromApi } from "./memory.js";
+import { inboundLanguage } from "./research-link-outbound.js";
 import { nextSlotMs, validTimeZone } from "./schedule.js";
 
 type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger" | "config">;
@@ -33,7 +34,9 @@ export async function executeAdaSetTimezone(
   }
   try {
     const memory = await openAdaMemoryFromApi(api, owner);
-    await memory.setProfileTimezone(zone, now.getTime());
+    // Only used if this creates the profile: the language the number last wrote in, so the
+    // brief is not forced into Italian after a restart.
+    await memory.setProfileTimezone(zone, now.getTime(), inboundLanguage(owner));
   } catch (error) {
     api.logger.error(
       `ada time zone not saved owner=${maskNumber(owner)}: ${error instanceof Error ? error.message : "unknown"}`,
