@@ -133,7 +133,7 @@ Plugin config values can reference environment variables, for example `googleNot
 
 ## No signature
 
-Ada never signs her messages: no "— Ada", "Ada" or "Ada · Lexroom" at the end, because the person already knows who answers. The persona and the skills that dictate a message say so, `start.sh` removes any older instruction to sign from `SOUL.md` and `AGENTS.md` on the volume (backup in `*.pre-ada`), and as a safety net `src/signature.ts` drops a final line of a model reply that is only the signature (case-sensitive, only when other text comes before it, so a sentence that mentions Ada is never touched). The legal disclaimer in the welcome and the `Continua su Lexroom` link line are not signatures and stay.
+Ada never signs her messages: no "— Ada", "Ada" or "Ada · Lexroom" at the end, because the person already knows who answers. The persona and the skills that dictate a message say so. `start.sh` removes only the exact old persona sentence "Introduce yourself and sign off as Ada." from the workspace files on the volume, appends a marked "No signature" section to `SOUL.md` and `AGENTS.md`, and keeps a one-time `*.pre-nosig` backup. As a narrow safety net, `src/signature.ts` drops the last line of a model reply only when it is `— Ada`, `– Ada` or `—Ada`, optionally followed by ` · Lexroom` or `, Lexroom`, comes after a blank line and has text before it; a bare `Ada`, `*Ada*`, a hyphen signature or a name at the end of a list or draft is never touched. The legal disclaimer in the welcome and the `Continua su Lexroom` link line are not signatures and stay.
 
 ## Reply language
 

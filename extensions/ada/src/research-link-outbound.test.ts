@@ -377,12 +377,12 @@ describe("the outbound hooks", () => {
   it("drops the signature before it adds the research link, so the link stays last", async () => {
     const { reply } = register();
     markResearchLinkReady(URL_A, OWNER);
-    expect((await reply("final", `${ITALIAN}\nAda · Lexroom`))?.payload?.text).toBe(
+    expect((await reply("final", `${ITALIAN}\n\n— Ada · Lexroom`))?.payload?.text).toBe(
       `${ITALIAN}\n\nContinua su Lexroom: ${URL_A}`,
     );
     const fallback = register();
     markResearchLinkReady(URL_B, OWNER);
-    expect((await fallback.sending(`${ITALIAN}\n\nAda`))?.content).toBe(
+    expect((await fallback.sending(`${ITALIAN}\n\n– Ada`))?.content).toBe(
       `${ITALIAN}\n\nContinua su Lexroom: ${URL_B}`,
     );
   });
@@ -392,6 +392,8 @@ describe("the outbound hooks", () => {
     expect(await reply("final", "Ada ti aiuterà con la ricerca.\nChiedi pure.")).toBeUndefined();
     expect(await reply("final", "Mi chiamo Ada")).toBeUndefined();
     expect(await reply("final", "Ada")).toBeUndefined();
+    expect(await reply("final", "Partecipanti:\nMarco\nAda")).toBeUndefined();
+    expect(await reply("final", "Cordiali saluti,\nAda")).toBeUndefined();
     expect(await sending("Prima riga.\nRisponde Ada.")).toBeUndefined();
   });
 });

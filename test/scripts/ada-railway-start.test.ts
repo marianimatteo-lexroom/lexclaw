@@ -322,92 +322,107 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
     });
 
     describe("the instruction to sign messages", () => {
-      const seedSoul = (soul: string, agents?: string) => {
+      const LEGAL_LINES = [
+        "Always check that the contract includes the signature of both parties before filing.",
+        "When drafting a letter for the lawyer, add a signature block with their name and bar number.",
+        "Concludi l'atto con la firma dell'avvocato e la procura alle liti.",
+        "Chiudi la PEC con la firma digitale del difensore.",
+        "Never send an email without the lawyer's sign-off.",
+        "Sign the draft only after the lawyer approves it.",
+        "Close every reply with a short summary of next steps.",
+      ];
+      const seed = (files: Record<string, string>) => {
         const deploy = boot(ENV);
         mkdirSync(deploy.workspace, { recursive: true });
-        writeFileSync(join(deploy.workspace, "SOUL.md"), soul);
-        if (agents !== undefined) {
-          writeFileSync(join(deploy.workspace, "AGENTS.md"), agents);
+        for (const [name, text] of Object.entries(files)) {
+          writeFileSync(join(deploy.workspace, name), text);
         }
         return deploy;
       };
 
-      it("removes the sentences that tell her to sign, keeps the rest, and keeps a backup", () => {
-        const soul = [
-          "# SOUL",
-          "",
-          "Sei calorosa e concisa.",
-          "- Sign off as Vera on every message.",
-          "- Firma sempre i messaggi con il tuo nome.",
-          "- Always end your replies with a signature.",
-          "- Chiudi ogni messaggio con Vera.",
-          "Be brief. Sign off as Ada at the end. Never invent facts.",
-          "",
-          "Rispondi sempre con chiarezza.",
-          "",
-        ].join("\n");
-        const agents = "End every message with \u2014 Vera.\nCheck the calendar first.\n";
-        const deploy = seedSoul(soul, agents);
+      it("removes only the known persona sentence, and keeps both backups", () => {
+        const soul = "# SOUL\n\nBe warm.\n- Introduce yourself and sign off as Vera.\nBe brief.\n";
+        const agents =
+          "Introduce yourself and sign off as Ada. Check the calendar first.\nIntroduce yourself and sign off as Ada.\n";
+        const deploy = seed({ "SOUL.md": soul, "AGENTS.md": agents });
         const result = deploy.run();
         expect(result.status).toBe(0);
         expect(read(deploy, "SOUL.md")).toBe(
-          [
-            "# SOUL",
-            "",
-            "Sei calorosa e concisa.",
-            "Be brief. Never invent facts.",
-            "",
-            "Rispondi sempre con chiarezza.",
-            "",
-            BLOCK,
-            LANGUAGE_BLOCK,
-            SIGN_BLOCK,
-          ].join("\n"),
+          ["# SOUL", "", "Be warm.", "Be brief.", "", BLOCK, LANGUAGE_BLOCK, SIGN_BLOCK].join("\n"),
         );
         expect(read(deploy, "AGENTS.md")).toBe(`Check the calendar first.\n\n${SIGN_BLOCK}`);
+        expect(read(deploy, "SOUL.md.pre-nosig")).toBe(soul);
+        expect(read(deploy, "AGENTS.md.pre-nosig")).toBe(agents);
         expect(read(deploy, "SOUL.md.pre-ada")).toBe(soul);
-        expect(read(deploy, "AGENTS.md.pre-ada")).toBe(agents);
         expect(`${result.stdout}${result.stderr}`).toContain(
           "updated the assistant identity in SOUL.md",
         );
       });
 
-      it("is idempotent: a second boot changes nothing and keeps the first backup", () => {
-        const soul = "Sign off as Ada.\nStay warm.\n";
-        const deploy = seedSoul(soul);
+      it("keeps every legal instruction about signatures, signing and closing", () => {
+        const agents = `${LEGAL_LINES.join("\n")}\n`;
+        const deploy = seed({ "AGENTS.md": agents, "SOUL.md": agents });
+        expect(deploy.run().status).toBe(0);
+        for (const name of ["AGENTS.md", "SOUL.md"]) {
+          const after = read(deploy, name);
+          expect(after.startsWith(agents)).toBe(true);
+          for (const line of LEGAL_LINES) {
+            expect(after).toContain(line);
+          }
+          expect(after).toContain(SIGN_BLOCK);
+        }
+        expect(read(deploy, "AGENTS.md.pre-nosig")).toBe(agents);
+      });
+
+      it("matches the sentence exactly: another case or wording is left alone", () => {
+        const agents =
+          "introduce yourself and sign off as ada.\nIntroduce yourself and sign off as Ada Legal.\nIntroduce yourself, then sign off as Ada.\n";
+        const deploy = seed({ "AGENTS.md": agents });
+        expect(deploy.run().status).toBe(0);
+        expect(read(deploy, "AGENTS.md")).toBe(`${agents}\n${SIGN_BLOCK}`);
+      });
+
+      it("renames the word first, so the Vera wording of the old persona goes too", () => {
+        const deploy = seed({
+          "AGENTS.md": "Introduce yourself and sign off as Vera.\nCheck mail.\n",
+        });
+        expect(deploy.run().status).toBe(0);
+        expect(read(deploy, "AGENTS.md")).toBe(`Check mail.\n\n${SIGN_BLOCK}`);
+      });
+
+      it("is idempotent: a second boot changes nothing and keeps the first backups", () => {
+        const soul = "Introduce yourself and sign off as Ada.\nStay warm.\n";
+        const deploy = seed({ "SOUL.md": soul });
         expect(deploy.run().status).toBe(0);
         const once = read(deploy, "SOUL.md");
         const second = deploy.run();
         expect(second.status).toBe(0);
         expect(read(deploy, "SOUL.md")).toBe(once);
         expect(once.split("<!-- ada:no-signature -->")).toHaveLength(2);
-        expect(read(deploy, "SOUL.md.pre-ada")).toBe(soul);
+        expect(read(deploy, "SOUL.md.pre-nosig")).toBe(soul);
         expect(`${second.stdout}${second.stderr}`).not.toContain("updated the assistant identity");
       });
 
-      it("adds the rule to a file with nothing to remove, and leaves legitimate lines alone", () => {
-        const soul = [
-          "Never send an email without the lawyer's sign-off.",
-          "Sign the draft only after the lawyer approves it.",
-          "Pick a signature emoji.",
-          "Ask who signs the contract before you reply.",
-          "",
-        ].join("\n");
-        const deploy = seedSoul(soul);
+      it("writes its own backup even when a .pre-ada copy from the rename already exists", () => {
+        const deploy = seed({ "SOUL.md": `Stay warm.\n\n${BLOCK}\n${LANGUAGE_BLOCK}` });
+        writeFileSync(join(deploy.workspace, "SOUL.md.pre-ada"), "the Vera original\n");
         expect(deploy.run().status).toBe(0);
-        const after = read(deploy, "SOUL.md");
-        expect(after.startsWith(soul)).toBe(true);
-        expect(after).toContain(SIGN_BLOCK);
-      });
-
-      it("does not strip the explanation inside its own section on a later boot", () => {
-        const deploy = seedSoul(`Stay warm.\n\n${BLOCK}\n${LANGUAGE_BLOCK}\n${SIGN_BLOCK}`);
-        const result = deploy.run();
-        expect(result.status).toBe(0);
         expect(read(deploy, "SOUL.md")).toBe(
           `Stay warm.\n\n${BLOCK}\n${LANGUAGE_BLOCK}\n${SIGN_BLOCK}`,
         );
-        expect(existsSync(join(deploy.workspace, "SOUL.md.pre-ada"))).toBe(false);
+        expect(read(deploy, "SOUL.md.pre-ada")).toBe("the Vera original\n");
+        expect(read(deploy, "SOUL.md.pre-nosig")).toBe(`Stay warm.\n\n${BLOCK}\n${LANGUAGE_BLOCK}`);
+      });
+
+      it("writes no .pre-nosig when this migration changes nothing", () => {
+        const deploy = seed({
+          "SOUL.md": `Stay warm.\n\n${BLOCK}\n${LANGUAGE_BLOCK}\n${SIGN_BLOCK}`,
+          "TOOLS.md": "Notes for Vera.\n",
+        });
+        expect(deploy.run().status).toBe(0);
+        expect(existsSync(join(deploy.workspace, "SOUL.md.pre-nosig"))).toBe(false);
+        expect(existsSync(join(deploy.workspace, "TOOLS.md.pre-nosig"))).toBe(false);
+        expect(read(deploy, "TOOLS.md")).toBe("Notes for Ada.\n");
       });
 
       it("never creates SOUL.md or AGENTS.md on a workspace that has none", () => {

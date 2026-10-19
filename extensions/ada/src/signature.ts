@@ -2,20 +2,21 @@
  * Ada never signs her messages: the person writing to her already knows who answers. The persona
  * says so, and this is the safety net for a model that signs anyway.
  *
- * Only a last line that is nothing but the signature is removed, and only when other text comes
- * before it. Matching is case-sensitive, so "ada" in running text, a sentence that mentions Ada
- * and a reply that is just "Ada" (the answer to "what is your name?") are left alone.
+ * Replies carry legal content (names of parties, heirs, drafts for a client who may be called
+ * Ada), so the net is deliberately narrow. Text is cut only when the whole reply ends with a blank
+ * line and then one line that is an em or en dash followed by "Ada", optionally with
+ * " · Lexroom" or ", Lexroom", and some text comes before it. A bare "Ada", "*Ada*", a hyphen
+ * signature, or a name on the last line of a list or a draft is never touched.
  */
-const SIGNATURE_LINE =
-  /^[ \t]*(?:[—–~-][ \t]*)?([*_]{0,2})Ada(?:[ \t]*(?:[·|,—–-]|di|of|at|from|@)[ \t]*Lexroom)?\1[ \t]*$/u;
+const SIGNATURE_TAIL = /\n[ \t]*\n[ \t]*[—–][ \t]?Ada(?:(?: · |, )Lexroom)?[ \t]*$/u;
 
-/** `text` without a trailing standalone signature line such as "— Ada", "Ada" or "Ada · Lexroom". */
+/** `text` without a trailing "— Ada" style signature line, or unchanged. */
 export function stripTrailingSignature(text: string): string {
   const body = text.trimEnd();
-  const lastBreak = body.lastIndexOf("\n");
-  if (lastBreak < 0 || !SIGNATURE_LINE.test(body.slice(lastBreak + 1))) {
+  const match = SIGNATURE_TAIL.exec(body);
+  if (!match) {
     return text;
   }
-  const rest = body.slice(0, lastBreak).trimEnd();
+  const rest = body.slice(0, match.index).trimEnd();
   return rest.length > 0 ? rest : text;
 }
