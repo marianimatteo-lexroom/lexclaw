@@ -38,7 +38,7 @@ function memoryStore() {
   const db: KapsoInboundDb = {
     spool: async (entry: NewSpooledWebhook) => {
       next += 1;
-      rows.set(next, { ...entry, id: next, attempts: 0 });
+      rows.set(next, { ...entry, id: next, attempts: 0, answeredAtMs: null });
       return next;
     },
     listSpooled: async () => [...rows.values()].toSorted((a, b) => a.id - b.id),
@@ -49,6 +49,12 @@ function memoryStore() {
       }
       row.attempts += 1;
       return row.attempts;
+    },
+    markAnswered: async (id, atMs) => {
+      const row = rows.get(id);
+      if (row) {
+        row.answeredAtMs = atMs;
+      }
     },
     unspool: async (id) => {
       rows.delete(id);
@@ -110,6 +116,12 @@ describe("the saved webhooks", () => {
       });
       expect(Buffer.from(listed[0]?.bodyBase64 ?? "", "base64").toString()).toContain("uno");
 
+      backend.execute({ type: "markAnswered", input: { id: first as number, atMs: 77 } });
+      expect(
+        (backend.execute({ type: "listSpooled", input: undefined }) as SpooledWebhook[]).map(
+          (row) => row.answeredAtMs,
+        ),
+      ).toEqual([77, null]);
       backend.execute({ type: "unspool", input: { id: first as number } });
       const rest = backend.execute({ type: "listSpooled", input: undefined }) as SpooledWebhook[];
       expect(rest.map((row) => row.senderKey)).toEqual([BRUNO]);
@@ -267,29 +279,98 @@ describe("the hand-off queue", () => {
     expect(forward).toHaveBeenCalledTimes(1);
   });
 
-  it("stops waiting on shutdown and leaves the saved webhook for the next start", async () => {
+  it("lets a hand-off that is running finish on shutdown, so the turn is not cut off and replayed", async () => {
     const gate = deferred();
-    let signalSeen: AbortSignal | undefined;
     const store = memoryStore();
+    const started = vi.fn();
     const queue = createKapsoInboundQueue({
       store: async () => store.db,
-      forward: async (_row, signal) => {
-        signalSeen = signal;
-        await new Promise<void>((resolve) => {
-          signal.addEventListener("abort", () => resolve());
-        });
-        return "unavailable";
+      forward: async () => {
+        started();
+        await gate.promise;
+        return "delivered";
       },
       log: quietLog,
       sleep: noSleep,
     });
     await queue.accept(entry(ANNA));
-    await vi.waitFor(() => expect(signalSeen).toBeDefined());
+    await vi.waitFor(() => expect(started).toHaveBeenCalled());
     queue.stop();
-    await queue.settled();
     gate.resolve();
-    expect(store.rows.size).toBe(1);
-    expect([...store.rows.values()][0]?.attempts).toBe(0);
+    await queue.settled();
+    expect(store.rows.size).toBe(0);
+  });
+
+  it("ends the wait between retries on shutdown and leaves the saved webhook for the next start", async () => {
+    const store = memoryStore();
+    const queue = createKapsoInboundQueue({
+      store: async () => store.db,
+      forward: async () => "unavailable",
+      log: quietLog,
+      sleep: async (_ms, signal) => {
+        queue.stop();
+        expect(signal.aborted).toBe(true);
+      },
+    });
+    await queue.accept(entry(ANNA));
+    await queue.settled();
+    expect([...store.rows.values()].map((row) => row.attempts)).toEqual([1]);
+  });
+
+  it("does not replay a webhook whose reply already went out, even when the hand-off was cut", async () => {
+    const store = memoryStore();
+    const gate = deferred();
+    const first = createKapsoInboundQueue({
+      store: async () => store.db,
+      forward: async () => {
+        await gate.promise;
+        return "unavailable";
+      },
+      log: quietLog,
+      sleep: noSleep,
+    });
+    await first.accept(entry(ANNA, "a1"));
+    await first.accept(entry(ANNA, "a2"));
+    await vi.waitFor(async () => expect(await store.db.listSpooled()).toHaveLength(2));
+    await first.noteAnswered(ANNA, 1234);
+    await first.noteAnswered(BRUNO, 1234);
+    expect([...store.rows.values()].map((row) => row.answeredAtMs)).toEqual([1234, null]);
+
+    // A restart: what was answered is dropped, what was not is handed over.
+    const handed: string[] = [];
+    const second = createKapsoInboundQueue({
+      store: async () => store.db,
+      forward: async (row) => {
+        handed.push(JSON.parse(Buffer.from(row.bodyBase64, "base64").toString()).message.text);
+        return "delivered";
+      },
+      log: quietLog,
+      sleep: noSleep,
+    });
+    expect(await second.resume()).toBe(1);
+    await second.settled();
+    expect(handed).toEqual(["a2"]);
+    expect(store.rows.size).toBe(0);
+    gate.resolve();
+    first.stop();
+  });
+
+  it("does not hand an answered webhook over again when the plugin's answer never came back", async () => {
+    const store = memoryStore();
+    const forward = vi.fn(async (): Promise<ForwardOutcome> => {
+      await queue.noteAnswered(ANNA);
+      return "unavailable";
+    });
+    const queue = createKapsoInboundQueue({
+      store: async () => store.db,
+      forward,
+      log: quietLog,
+      sleep: noSleep,
+    });
+    await queue.accept(entry(ANNA));
+    await queue.settled();
+    expect(forward).toHaveBeenCalledTimes(1);
+    expect(store.rows.size).toBe(0);
   });
 });
 
@@ -458,7 +539,7 @@ describe("the webhook request", () => {
       origin: () => plugin.origin,
       path: () => "/kapso/webhook",
     });
-    const row: SpooledWebhook = { ...entry(ANNA), id: 1, attempts: 0 };
+    const row: SpooledWebhook = { ...entry(ANNA), id: 1, attempts: 0, answeredAtMs: null };
     const signal = new AbortController().signal;
     expect(await forward(row, signal)).toBe("delivered");
     expect(await forward(row, signal)).toBe("unavailable");
@@ -467,7 +548,7 @@ describe("the webhook request", () => {
   });
 
   it("never hands a webhook to its own route, and waits while the gateway port is unknown", async () => {
-    const row: SpooledWebhook = { ...entry(ANNA), id: 1, attempts: 0 };
+    const row: SpooledWebhook = { ...entry(ANNA), id: 1, attempts: 0, answeredAtMs: null };
     const signal = new AbortController().signal;
     const fetchImpl = vi.fn();
     const self = createLoopbackForward({
@@ -522,6 +603,49 @@ describe("the webhook request", () => {
     expect(verifyKapsoSignature(body, good, ["x"])).toBe(false);
     expect(verifyKapsoSignature(body, undefined, ["s"])).toBe(false);
     expect(verifyKapsoSignature(body, "zz", ["s"])).toBe(false);
+  });
+
+  it("records on the saved webhook that Ada's reply to that number went out", async () => {
+    const store = memoryStore();
+    openAdaKapsoInboundFromApi.mockResolvedValue(store.db);
+    const gate = deferred();
+    const plugin = await serve((_req, res) => {
+      void gate.promise.then(() => res.end("{}"));
+    });
+    servers.push(plugin);
+    vi.stubEnv("OPENCLAW_GATEWAY_PORT", String(plugin.port));
+    const hooks = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
+    const api = createTestPluginApi({
+      id: "ada",
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+      config: configWithSecret as OpenClawPluginApi["config"],
+      on: ((name: string, handler: (event: unknown, ctx: unknown) => Promise<void>) => {
+        hooks.set(name, handler);
+      }) as OpenClawPluginApi["on"],
+    });
+    const queue = registerAdaKapsoWebhook(api, { resumeDelayMs: 0 });
+    await queue.accept(entry(ANNA));
+    const answered = () => [...store.rows.values()][0]?.answeredAtMs;
+    const sentTo = (
+      to: string,
+      event: Record<string, unknown> = {},
+      ctx: Record<string, unknown> = {},
+    ) =>
+      hooks.get("message_sent")?.(
+        { to, content: "risposta", success: true, runId: "run-1", ...event },
+        { channelId: "kapso-whatsapp", ...ctx },
+      );
+    await sentTo(`+${BRUNO}`);
+    await sentTo(`+${ANNA}`, { success: false });
+    await sentTo(`+${ANNA}`, { runId: undefined });
+    await sentTo(`+${ANNA}`, {}, { channelId: "telegram" });
+    expect(answered()).toBeNull();
+    await sentTo(`+${ANNA}`);
+    expect(answered()).toEqual(expect.any(Number));
+    gate.resolve();
+    await queue.settled();
+    expect(store.rows.size).toBe(0);
+    vi.unstubAllEnvs();
   });
 
   it("registers the fast route under both prefixes and replays saved webhooks when the service starts", async () => {

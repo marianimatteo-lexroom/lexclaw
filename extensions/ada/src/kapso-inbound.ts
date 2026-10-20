@@ -37,6 +37,7 @@ export function openAdaKapsoInboundFromApi(
     spool: (entry) => worker.execute({ type: "spool", input: { entry } }),
     listSpooled: () => worker.execute({ type: "listSpooled", input: undefined }),
     noteAttempt: (id) => worker.execute({ type: "noteAttempt", input: { id } }),
+    markAnswered: (id, atMs) => worker.execute({ type: "markAnswered", input: { id, atMs } }),
     unspool: (id) => worker.execute({ type: "unspool", input: { id } }),
   }));
   stores.set(databasePath, opening);

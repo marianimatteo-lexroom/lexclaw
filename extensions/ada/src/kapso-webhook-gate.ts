@@ -10,7 +10,7 @@ import type {
   SpooledWebhook,
 } from "./kapso-inbound-contract.js";
 import { openAdaKapsoInboundFromApi } from "./kapso-inbound.js";
-import { toOwner } from "./owner.js";
+import { sessionKeyOwner, toOwner } from "./owner.js";
 import { ADA_WHATSAPP_CHANNEL } from "./whatsapp-number.js";
 
 const MESSAGE_RECEIVED_EVENT = "whatsapp.message.received";
@@ -63,7 +63,11 @@ export function createKapsoInboundQueue(deps: {
   const sleep = deps.sleep ?? sleepFor;
   const chains = new Map<string, Promise<void>>();
   const queued = new Set<number>();
+  /** The hand-off now running for each sender, so a reply that goes out can be recorded on it. */
+  const running = new Map<string, SpooledWebhook>();
+  /** Ends the waits between retries on shutdown; a hand-off already running is left to finish. */
   let controller = new AbortController();
+  const handOffSignal = new AbortController().signal;
 
   async function finish(entry: SpooledWebhook, reason: string): Promise<void> {
     await (await deps.store()).unspool(entry.id);
@@ -75,35 +79,48 @@ export function createKapsoInboundQueue(deps: {
   async function handle(entry: SpooledWebhook): Promise<void> {
     const { signal } = controller;
     let attempts = entry.attempts;
-    while (!signal.aborted) {
-      const outcome = await deps.forward(entry, signal).catch((): ForwardOutcome => "unavailable");
-      if (signal.aborted) {
-        return;
+    running.set(entry.senderKey, entry);
+    try {
+      while (!signal.aborted) {
+        const outcome = await deps
+          .forward(entry, handOffSignal)
+          .catch((): ForwardOutcome => "unavailable");
+        if (outcome === "delivered") {
+          return await finish({ ...entry, attempts }, "handled");
+        }
+        if (outcome === "rejected") {
+          return await finish({ ...entry, attempts }, "rejected by the channel plugin and dropped");
+        }
+        if (entry.answeredAtMs !== null) {
+          // The person already has the reply; handing it over again would answer it twice.
+          return await finish({ ...entry, attempts }, "answered, not handed over again");
+        }
+        if (signal.aborted) {
+          return;
+        }
+        attempts = await (await deps.store()).noteAttempt(entry.id);
+        if (
+          attempts >= MAX_TOTAL_ATTEMPTS ||
+          (outcome === "failed" && attempts - entry.attempts >= FAILED_ATTEMPTS)
+        ) {
+          deps.log.error(
+            `ada kapso webhook dropped after ${attempts} failed attempts sender=${maskNumber(entry.senderKey)} id=${entry.id}`,
+          );
+          return await finish({ ...entry, attempts }, "dropped");
+        }
+        const delay = RETRY_DELAYS_MS[attempts - 1 - entry.attempts];
+        if (delay === undefined) {
+          deps.log.warn(
+            `ada kapso webhook kept for the next start sender=${maskNumber(entry.senderKey)} id=${entry.id} attempts=${attempts}`,
+          );
+          return;
+        }
+        await sleep(delay, signal);
       }
-      if (outcome === "delivered") {
-        return await finish({ ...entry, attempts }, "handled");
+    } finally {
+      if (running.get(entry.senderKey) === entry) {
+        running.delete(entry.senderKey);
       }
-      if (outcome === "rejected") {
-        return await finish({ ...entry, attempts }, "rejected by the channel plugin and dropped");
-      }
-      attempts = await (await deps.store()).noteAttempt(entry.id);
-      const delay = RETRY_DELAYS_MS[attempts - 1 - entry.attempts];
-      if (
-        attempts >= MAX_TOTAL_ATTEMPTS ||
-        (outcome === "failed" && attempts - entry.attempts >= FAILED_ATTEMPTS)
-      ) {
-        deps.log.error(
-          `ada kapso webhook dropped after ${attempts} failed attempts sender=${maskNumber(entry.senderKey)} id=${entry.id}`,
-        );
-        return await finish({ ...entry, attempts }, "dropped");
-      }
-      if (delay === undefined) {
-        deps.log.warn(
-          `ada kapso webhook kept for the next start sender=${maskNumber(entry.senderKey)} id=${entry.id} attempts=${attempts}`,
-        );
-        return;
-      }
-      await sleep(delay, signal);
     }
   }
 
@@ -137,7 +154,9 @@ export function createKapsoInboundQueue(deps: {
     const store = await deps.store();
     let resumed = 0;
     for (const row of await store.listSpooled()) {
-      if (row.attempts >= MAX_TOTAL_ATTEMPTS) {
+      if (row.answeredAtMs !== null) {
+        await finish(row, "answered before the restart, not replayed");
+      } else if (row.attempts >= MAX_TOTAL_ATTEMPTS) {
         await finish(row, "dropped after too many failed attempts");
       } else if (!queued.has(row.id)) {
         enqueue({ ...row });
@@ -156,7 +175,7 @@ export function createKapsoInboundQueue(deps: {
         () => undefined,
         () => undefined,
       ));
-      enqueue({ ...entry, id, attempts: 0 });
+      enqueue({ ...entry, id, attempts: 0, answeredAtMs: null });
       return id;
     },
     /** Queues what an earlier run saved and did not finish, oldest first; returns how many it queued. */
@@ -168,9 +187,20 @@ export function createKapsoInboundQueue(deps: {
       );
       return await run;
     },
-    /** Gives up waiting and in-flight hand-offs; what is saved stays saved for the next start. */
+    /**
+     * Ends the waits between retries. A hand-off already running is left to finish, so the
+     * plugin's turn is not cut off and replayed; what is still saved is replayed at the next start.
+     */
     stop(): void {
       controller.abort();
+    },
+    /** Ada's reply to `senderKey`'s message went out: its saved webhook must not be replayed. */
+    async noteAnswered(senderKey: string, atMs = Date.now()): Promise<void> {
+      const entry = running.get(senderKey);
+      if (entry && entry.answeredAtMs === null) {
+        entry.answeredAtMs = atMs;
+        await (await deps.store()).markAnswered(entry.id, atMs);
+      }
     },
     /** Resolves when nothing is queued. */
     async settled(): Promise<void> {
@@ -411,6 +441,19 @@ export function registerAdaKapsoWebhook(
         log: api.logger,
       });
     },
+  });
+  api.on("message_sent", async (event, ctx) => {
+    const owner = sessionKeyOwner(event.sessionKey ?? ctx.sessionKey) ?? toOwner(event.to);
+    if (!event.success || !event.runId || ctx.channelId !== ADA_WHATSAPP_CHANNEL || !owner) {
+      return;
+    }
+    try {
+      await queue.noteAnswered(owner);
+    } catch (error) {
+      api.logger.error(
+        `ada kapso webhook answer not recorded: ${error instanceof Error ? error.message : "unknown"}`,
+      );
+    }
   });
   let resumeTimer: ReturnType<typeof setTimeout> | undefined;
   api.registerService({

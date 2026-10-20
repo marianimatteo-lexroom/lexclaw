@@ -96,7 +96,8 @@ CREATE TABLE IF NOT EXISTS ada_kapso_inbound (
   headers_json TEXT NOT NULL,
   body_base64 TEXT NOT NULL,
   received_at_ms INTEGER NOT NULL,
-  attempts INTEGER NOT NULL DEFAULT 0
+  attempts INTEGER NOT NULL DEFAULT 0,
+  answered_at_ms INTEGER
 ) STRICT;
 `;
 
@@ -109,6 +110,7 @@ type AdaKapsoInboundDatabase = {
     body_base64: string;
     received_at_ms: number;
     attempts: number | null;
+    answered_at_ms: number | null;
   };
 };
 
@@ -186,6 +188,7 @@ class AdaKapsoInboundStore {
         bodyBase64: row.body_base64,
         receivedAtMs: row.received_at_ms,
         attempts: row.attempts ?? 0,
+        answeredAtMs: row.answered_at_ms,
       }),
     );
   }
@@ -211,6 +214,17 @@ class AdaKapsoInboundStore {
         operationLabel: "ada.kapso.inbound.attempt",
       },
     );
+  }
+
+  markAnswered(id: number, atMs: number): undefined {
+    executeSqliteQuerySync(
+      this.db,
+      this.query
+        .updateTable("ada_kapso_inbound")
+        .set({ answered_at_ms: atMs })
+        .where("id", "=", id),
+    );
+    return undefined;
   }
 
   unspool(id: number): undefined {
@@ -277,6 +291,8 @@ export function createSqliteWorkerBackend(
           return database.listSpooled();
         case "noteAttempt":
           return database.noteAttempt(command.input.id);
+        case "markAnswered":
+          return database.markAnswered(command.input.id, command.input.atMs);
         case "unspool":
           return database.unspool(command.input.id);
       }
