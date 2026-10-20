@@ -467,8 +467,9 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
     params.trigger === "morning" &&
     !preferences.some((preference) => preference.key === QUIET_BRIEF_OFF_KEY) &&
     !(params.catchUp && localParts(nowMs, timeZone).hour >= CATCH_UP_BRIEF_CUTOFF_HOUR);
+  // Read from the stored time alone: a quiet-brief preference or a late catch-up changes whether a
+  // brief is owed, not whether this morning already had one, so forceMorning is demoted either way.
   const briefedToday =
-    morningPass &&
     held === null &&
     wake.lastMorningBriefAtMs !== null &&
     dayKey(new Date(wake.lastMorningBriefAtMs), timeZone) === day;

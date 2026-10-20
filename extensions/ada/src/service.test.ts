@@ -431,6 +431,56 @@ describe("runAdaCollectPass", () => {
       expect(t.dispatched[0]).toMatchObject({ plan: { deliver: true } });
     });
 
+    it("does not send a second morning digest on a day that already had one, even with the quiet brief off", async () => {
+      // A hearing two days away clears the bar but is not urgent, so only forceMorning would send it.
+      google.events = [
+        {
+          id: "hearing",
+          summary: "Verdi hearing",
+          start: "2026-10-16T09:00:00.000Z",
+          end: "2026-10-16T10:00:00.000Z",
+          status: "confirmed",
+        },
+      ];
+      const sentThisMorning = Date.parse("2026-10-14T05:40:00.000Z");
+      const first = setup({
+        wake: { ...open, lastMorningBriefAtMs: null },
+        timezone: "Europe/Rome",
+      });
+      await first.run({ trigger: "morning" });
+      expect(first.dispatched[0]).toMatchObject({ plan: { deliver: true } });
+
+      const again = setup({
+        wake: { ...open, lastMorningBriefAtMs: sentThisMorning },
+        timezone: "Europe/Rome",
+        preferences: ["quiet_brief_off"],
+      });
+      await again.run({ trigger: "morning" });
+      expect(again.dispatched).toEqual([]);
+      expect(again.events()[0]).toMatchObject({ decision: "batch" });
+
+      // The same holds for a late catch-up, which owes no brief either.
+      const catchUp = setup({
+        wake: { ...open, lastMorningBriefAtMs: sentThisMorning },
+        timezone: "Europe/Rome",
+      });
+      await catchUp.run({
+        trigger: "morning",
+        catchUp: true,
+        at: new Date("2026-10-14T12:00:00.000Z"),
+      });
+      expect(catchUp.dispatched).toEqual([]);
+
+      // A different day is a new morning.
+      const nextDay = setup({
+        wake: { ...open, lastMorningBriefAtMs: sentThisMorning - 24 * 3_600_000 },
+        timezone: "Europe/Rome",
+        preferences: ["quiet_brief_off"],
+      });
+      await nextDay.run({ trigger: "morning" });
+      expect(nextDay.dispatched[0]).toMatchObject({ plan: { deliver: true } });
+    });
+
     it("keeps the brief when the only saved preference is about something else", async () => {
       const t = setup({ wake: open, preferences: ["tone"] });
       await t.run({ trigger: "morning" });
