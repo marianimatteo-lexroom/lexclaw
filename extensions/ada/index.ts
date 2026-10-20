@@ -457,6 +457,8 @@ const entry = definePluginEntry({
         (await (await openAdaMemoryIfExistsFromApi(api, owner))?.readProfile())?.language,
     );
 
+    registerAnnouncementRelease(api);
+
     registerWelcomeHook(api, {
       onGreetingAnswered: (sessionKey) => {
         void statusReactions.finished({ sessionKey, success: true });
@@ -648,7 +650,6 @@ const entry = definePluginEntry({
 
     registerAdaFeedbackAdmin(api);
     registerAdaAnnouncementsAdmin(api);
-    registerAnnouncementRelease(api);
     registerAdaGranolaCallback(api);
 
     registerAdaHttpRoute(api, {

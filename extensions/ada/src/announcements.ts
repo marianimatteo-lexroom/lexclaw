@@ -41,6 +41,7 @@ import { ADA_WHATSAPP_CHANNEL } from "./whatsapp-number.js";
 export const ANNOUNCEMENT_LANGUAGES: readonly Language[] = ["it", "en", "es", "fr", "de"];
 export const ANNOUNCEMENT_MAX_TEXT_CHARS = 1500;
 const ID = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
+const MAX_EXCLUDED = 1000;
 
 type FeatureProbe = (api: DeliveryApi, owner: string) => Promise<boolean>;
 
@@ -57,7 +58,7 @@ const FEATURE_PROBES: Record<string, FeatureProbe> = {
 export const ANNOUNCEMENT_FEATURES = Object.keys(FEATURE_PROBES);
 
 export type AnnouncementInput =
-  | { ok: true; announcement: Announcement; dryRun: boolean }
+  | { ok: true; announcement: Announcement; dryRun: boolean; exclude: string[] }
   | { ok: false; error: string };
 
 /** The announcement an admin request body describes, or the reason it is refused. */
@@ -90,10 +91,29 @@ export function parseAnnouncementInput(body: unknown, nowMs: number): Announceme
   if (feature !== null && !ANNOUNCEMENT_FEATURES.includes(feature)) {
     return { ok: false, error: `feature must be one of ${ANNOUNCEMENT_FEATURES.join(", ")}` };
   }
+  const rawExclude = input.exclude ?? [];
+  if (!Array.isArray(rawExclude) || rawExclude.length > MAX_EXCLUDED) {
+    return { ok: false, error: `exclude must be a list of at most ${MAX_EXCLUDED} numbers` };
+  }
+  const exclude: string[] = [];
+  for (const value of rawExclude) {
+    const number =
+      typeof value === "string" || typeof value === "number" ? toOwner(String(value)) : null;
+    if (!number) {
+      return {
+        ok: false,
+        error: "exclude must hold numbers in E.164 digits, such as 393331234567",
+      };
+    }
+    if (!exclude.includes(number)) {
+      exclude.push(number);
+    }
+  }
   return {
     ok: true,
     announcement: { id, texts, feature, createdAtMs: nowMs },
     dryRun: input.dryRun === true,
+    exclude,
   };
 }
 
@@ -146,7 +166,7 @@ const recorded = (delivery: AnnouncementDelivery): AnnouncementOutcome => ({
 
 /**
  * What happens to one number for one announcement, in this order: an earlier delivery stands; a
- * number that opted out or already has the feature is skipped for good; a closed window leaves
+ * number the team excluded (already told by hand) is skipped for good; a number that opted out or already has the feature is skipped for good; a closed window leaves
  * it pending; otherwise it is sent. With `dryRun` nothing is sent or recorded.
  */
 export async function deliverAnnouncement(
@@ -154,7 +174,7 @@ export async function deliverAnnouncement(
   announcement: Announcement,
   recipient: AnnouncementRecipient,
   earlier: AnnouncementDelivery | undefined,
-  options: { dryRun?: boolean } = {},
+  options: { dryRun?: boolean; exclude?: ReadonlySet<string> } = {},
 ): Promise<AnnouncementOutcome> {
   if (earlier) {
     return recorded(earlier);
@@ -173,6 +193,9 @@ export async function deliverAnnouncement(
     }
     return { status: "skipped", reason, language: null, text: null };
   };
+  if (options.exclude?.has(owner)) {
+    return await skip("excluded");
+  }
   if (await deps.optedOut(owner)) {
     return await skip("announcements_off");
   }
@@ -239,17 +262,27 @@ export async function deliverToRecipients(
   deps: AnnouncementDeps,
   announcement: Announcement,
   recipients: readonly AnnouncementRecipient[],
-  options: { dryRun?: boolean } = {},
+  options: { dryRun?: boolean; exclude?: readonly string[] } = {},
 ) {
   const deliveryOf = indexDeliveries(await (await deps.registry()).listAnnouncementDeliveries());
+  const exclude = new Set(options.exclude ?? []);
+  // An excluded number with no conversation yet is marked too, or it would get the news later.
+  const known = new Set(recipients.map((recipient) => recipient.owner));
+  const everyone = [
+    ...recipients,
+    ...[...exclude]
+      .filter((owner) => !known.has(owner))
+      .toSorted()
+      .map((owner) => ({ owner, sessionKey: "", sessionId: "" })),
+  ];
   const results: Array<{ recipient: AnnouncementRecipient; outcome: AnnouncementOutcome }> = [];
-  for (const recipient of recipients) {
+  for (const recipient of everyone) {
     const outcome = await deliverAnnouncement(
       deps,
       announcement,
       recipient,
       deliveryOf(announcement.id, recipient.owner),
-      options,
+      { dryRun: options.dryRun, exclude },
     );
     results.push({ recipient, outcome });
   }
@@ -378,7 +411,8 @@ export const ANNOUNCEMENT_SETTLE_MS = 8_000;
 /**
  * After Ada's answer to a number has gone out (so the news never lands before the answer), sends
  * that number the announcement it is still owed. The number's window is open: it just wrote.
- * Every delivered message restarts that number's wait, so the release runs once, after the last.
+ * Every delivered message restarts that number's wait, so the release runs once, after the last;
+ * a message received from the number cancels the wait until Ada has answered it.
  */
 export function registerAnnouncementRelease(
   api: OpenClawPluginApi,
@@ -402,6 +436,18 @@ export function registerAnnouncementRelease(
       );
     }
   };
+  // A message from the number means Ada has another answer to give: the announcement waits for
+  // the last message of that one, so it never lands between two answers however long they take.
+  api.on("message_received", (event, ctx) => {
+    if (ctx.channelId !== undefined && ctx.channelId !== ADA_WHATSAPP_CHANNEL) {
+      return;
+    }
+    const owner = toOwner(event.from) ?? toOwner(ctx.senderId) ?? sessionKeyOwner(ctx.sessionKey);
+    if (owner) {
+      clearTimeout(waiting.get(owner));
+      waiting.delete(owner);
+    }
+  });
   api.on("message_sent", async (event, ctx) => {
     if (!event.success || !event.runId || ctx.channelId !== ADA_WHATSAPP_CHANNEL) {
       return;
