@@ -1,4 +1,6 @@
+import { listAgentIds } from "openclaw/plugin-sdk/agent-scope-runtime";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { resolveAgentIdFromSessionKey } from "openclaw/plugin-sdk/session-key-runtime";
 import { appendAssistantMirrorMessageByIdentity } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { whatsappWindowOpen } from "./collector.js";
 import { adminNumberView } from "./feedback.js";
@@ -273,13 +275,17 @@ export function outcomeView(owner: string, outcome: AnnouncementOutcome) {
  * the most recently used when a number has several.
  */
 export function listAnnouncementRecipients(
-  api: Pick<OpenClawPluginApi, "runtime">,
+  api: Pick<OpenClawPluginApi, "runtime" | "config">,
 ): AnnouncementRecipient[] {
   const latest = new Map<string, AnnouncementRecipient & { updatedAt: number }>();
-  const entries = api.runtime.agent.session.listSessionEntries({
-    readOnly: true,
-    includeParticipants: false,
-  });
+  // The session store is per agent and refuses a listing that names none.
+  const entries = listAgentIds(api.config).flatMap((agentId) =>
+    api.runtime.agent.session.listSessionEntries({
+      agentId,
+      readOnly: true,
+      includeParticipants: false,
+    }),
+  );
   for (const { sessionKey, entry } of entries) {
     const owner = sessionKeyOwner(sessionKey);
     if (!owner || !sessionKey.split(":").includes(ADA_WHATSAPP_CHANNEL) || !entry.sessionId) {
@@ -322,6 +328,7 @@ export function liveAnnouncementDeps(api: DeliveryApi): AnnouncementDeps {
     send: (owner, text) => sendAdaWhatsAppText({ api, to: `+${owner}`, text }),
     recordInHistory: async ({ sessionKey, sessionId }, announcementId, text) => {
       const result = await appendAssistantMirrorMessageByIdentity({
+        agentId: resolveAgentIdFromSessionKey(sessionKey),
         sessionKey,
         sessionId,
         text,
@@ -361,11 +368,40 @@ export async function releasePendingAnnouncement(
 }
 
 /**
+ * How long a number's conversation must stay quiet after Ada's last delivered message before the
+ * announcement follows. One answer can be several WhatsApp messages (an attachment and its text,
+ * a reply to each of two quick questions, a message-tool send before the final answer): the
+ * announcement waits for the last of them, so it never lands before or inside the answer.
+ */
+export const ANNOUNCEMENT_SETTLE_MS = 8_000;
+
+/**
  * After Ada's answer to a number has gone out (so the news never lands before the answer), sends
  * that number the announcement it is still owed. The number's window is open: it just wrote.
+ * Every delivered message restarts that number's wait, so the release runs once, after the last.
  */
-export function registerAnnouncementRelease(api: OpenClawPluginApi): void {
+export function registerAnnouncementRelease(
+  api: OpenClawPluginApi,
+  options: { settleMs?: number } = {},
+): void {
   const deps = liveAnnouncementDeps(api);
+  const settleMs = options.settleMs ?? ANNOUNCEMENT_SETTLE_MS;
+  const waiting = new Map<string, ReturnType<typeof setTimeout>>();
+  const release = async (owner: string, sessionKey: string) => {
+    try {
+      const { session } = api.runtime.agent;
+      const entry = await (
+        session.getSessionEntryAsync ?? ((params) => session.getSessionEntry(params))
+      )({ agentId: resolveAgentIdFromSessionKey(sessionKey), sessionKey });
+      if (entry?.sessionId) {
+        await releasePendingAnnouncement(deps, { owner, sessionKey, sessionId: entry.sessionId });
+      }
+    } catch (error) {
+      api.logger.error(
+        `ada announcement release failed owner=${maskNumber(owner)}: ${error instanceof Error ? error.message : "unknown"}`,
+      );
+    }
+  };
   api.on("message_sent", async (event, ctx) => {
     if (!event.success || !event.runId || ctx.channelId !== ADA_WHATSAPP_CHANNEL) {
       return;
@@ -375,18 +411,12 @@ export function registerAnnouncementRelease(api: OpenClawPluginApi): void {
     if (!sessionKey || !owner) {
       return;
     }
-    try {
-      const { session } = api.runtime.agent;
-      const entry = await (
-        session.getSessionEntryAsync ?? ((params) => session.getSessionEntry(params))
-      )({ sessionKey });
-      if (entry?.sessionId) {
-        await releasePendingAnnouncement(deps, { owner, sessionKey, sessionId: entry.sessionId });
-      }
-    } catch (error) {
-      api.logger.error(
-        `ada announcement release failed owner=${maskNumber(owner)}: ${error instanceof Error ? error.message : "unknown"}`,
-      );
-    }
+    clearTimeout(waiting.get(owner));
+    const timer = setTimeout(() => {
+      waiting.delete(owner);
+      void release(owner, sessionKey);
+    }, settleMs);
+    timer.unref?.();
+    waiting.set(owner, timer);
   });
 }

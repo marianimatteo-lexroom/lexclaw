@@ -34,8 +34,10 @@ vi.mock("./memory.js", async (importOriginal) => ({
 }));
 
 import {
+  ANNOUNCEMENT_SETTLE_MS,
   deliverAnnouncement,
   deliverToRecipients,
+  listAnnouncementRecipients,
   liveAnnouncementDeps,
   parseAnnouncementInput,
   registerAnnouncementRelease,
@@ -272,6 +274,7 @@ describe("conversation history", () => {
     const live = liveAnnouncementDeps({ logger } as never);
     expect(await live.recordInHistory(recipient(PAOLO), "granola", "Want the link?")).toBe(true);
     expect(mocks.append).toHaveBeenCalledWith({
+      agentId: "main",
       sessionKey: `agent:main:kapso-whatsapp:direct:${PAOLO}`,
       sessionId: `session-${PAOLO}`,
       text: "Want the link?",
@@ -415,13 +418,14 @@ describe("release after the answer", () => {
   }
 
   it("delivers a pending announcement once the number's answer went out, and writes it to history", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     try {
       vi.setSystemTime(NOW);
       recordSenderInbound(PAOLO, NOW - 1000);
       const { fire } = await setup();
       await fire();
       await fire();
+      await vi.advanceTimersByTimeAsync(ANNOUNCEMENT_SETTLE_MS);
       expect(mocks.send).toHaveBeenCalledTimes(1);
       expect(mocks.send).toHaveBeenCalledWith({
         api: expect.anything(),
@@ -436,8 +440,27 @@ describe("release after the answer", () => {
     }
   });
 
+  it("waits for the last message of an answer that is several WhatsApp messages", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      vi.setSystemTime(NOW);
+      recordSenderInbound(PAOLO, NOW - 1000);
+      const { fire } = await setup();
+      await fire({ content: "first part" });
+      await vi.advanceTimersByTimeAsync(ANNOUNCEMENT_SETTLE_MS - 1000);
+      expect(mocks.send).not.toHaveBeenCalled();
+      await fire({ content: "second part" });
+      await vi.advanceTimersByTimeAsync(ANNOUNCEMENT_SETTLE_MS - 1000);
+      expect(mocks.send).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(mocks.send).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does nothing for a failed send, a message with no run, or another channel", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     try {
       vi.setSystemTime(NOW);
       recordSenderInbound(PAOLO, NOW - 1000);
@@ -445,9 +468,44 @@ describe("release after the answer", () => {
       await fire({ success: false });
       await fire({ runId: undefined });
       await fire({}, { channelId: "telegram" });
+      await vi.advanceTimersByTimeAsync(ANNOUNCEMENT_SETTLE_MS);
       expect(mocks.send).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("listAnnouncementRecipients", () => {
+  it("lists each agent's sessions, one per WhatsApp number, the most recent first", () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const runtime = {
+      agent: {
+        session: {
+          listSessionEntries: (params: Record<string, unknown>) => {
+            calls.push(params);
+            if (!params.agentId) {
+              throw new Error("Cannot resolve SQLite session scope without an agent id");
+            }
+            return [
+              {
+                sessionKey: `agent:main:kapso-whatsapp:direct:${PAOLO}`,
+                entry: { sessionId: "old", updatedAt: 1 },
+              },
+              {
+                sessionKey: `agent:main:kapso-whatsapp:direct:${PAOLO}`,
+                entry: { sessionId: "new", updatedAt: 2 },
+              },
+              { sessionKey: "agent:main:telegram:direct:393330000000", entry: { sessionId: "t" } },
+            ];
+          },
+        },
+      },
+    };
+    const recipients = listAnnouncementRecipients({ runtime, config: {} } as never);
+    expect(calls).toEqual([{ agentId: "main", readOnly: true, includeParticipants: false }]);
+    expect(recipients).toEqual([
+      { owner: PAOLO, sessionKey: `agent:main:kapso-whatsapp:direct:${PAOLO}`, sessionId: "new" },
+    ]);
   });
 });
