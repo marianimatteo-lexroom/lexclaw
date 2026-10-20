@@ -1,5 +1,6 @@
 import { listAgentIds } from "openclaw/plugin-sdk/agent-scope-runtime";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { resolveAgentIdFromSessionKey } from "openclaw/plugin-sdk/session-key-runtime";
 import { appendAssistantMirrorMessageByIdentity } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { whatsappWindowOpen } from "./collector.js";
 import { adminNumberView } from "./feedback.js";
@@ -327,6 +328,7 @@ export function liveAnnouncementDeps(api: DeliveryApi): AnnouncementDeps {
     send: (owner, text) => sendAdaWhatsAppText({ api, to: `+${owner}`, text }),
     recordInHistory: async ({ sessionKey, sessionId }, announcementId, text) => {
       const result = await appendAssistantMirrorMessageByIdentity({
+        agentId: resolveAgentIdFromSessionKey(sessionKey),
         sessionKey,
         sessionId,
         text,
@@ -390,7 +392,7 @@ export function registerAnnouncementRelease(
       const { session } = api.runtime.agent;
       const entry = await (
         session.getSessionEntryAsync ?? ((params) => session.getSessionEntry(params))
-      )({ sessionKey });
+      )({ agentId: resolveAgentIdFromSessionKey(sessionKey), sessionKey });
       if (entry?.sessionId) {
         await releasePendingAnnouncement(deps, { owner, sessionKey, sessionId: entry.sessionId });
       }

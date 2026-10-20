@@ -274,6 +274,7 @@ describe("conversation history", () => {
     const live = liveAnnouncementDeps({ logger } as never);
     expect(await live.recordInHistory(recipient(PAOLO), "granola", "Want the link?")).toBe(true);
     expect(mocks.append).toHaveBeenCalledWith({
+      agentId: "main",
       sessionKey: `agent:main:kapso-whatsapp:direct:${PAOLO}`,
       sessionId: `session-${PAOLO}`,
       text: "Want the link?",
