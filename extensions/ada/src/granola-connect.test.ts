@@ -343,12 +343,33 @@ describe("Granola scope without mcp", () => {
     expect(done.statusCode).toBe(200);
     expect(ctx.mock.userOf((await ctx.store.db.readAccount(ANNA))?.accessToken ?? "")).toBe("anna");
 
-    // The next number goes straight to the scope that works.
-    await ctx.link(BRUNO);
-    expect(ctx.mock.scopesSeen.filter((entry) => entry.startsWith("authorize:"))).toHaveLength(2);
+    // Another number's link still asks for mcp: one person's refusal decides nothing for anyone else.
     const next = await ctx.link(BRUNO);
     const location = new URL(open(next.url, NOW).headers.get("location") ?? "");
-    expect(location.searchParams.get("scope")).toBe(WITHOUT_MCP);
+    expect(location.searchParams.get("scope")).toBe(`${WITHOUT_MCP} mcp`);
+  });
+
+  it("does not let one person's invalid_scope change another person's link", async () => {
+    const ctx = setupConnect();
+    const anna = await ctx.link(ANNA);
+    const bruno = await ctx.link(BRUNO);
+    const scopeOf = (url: string) =>
+      new URL(open(url, NOW).headers.get("location") ?? "").searchParams.get("scope");
+    expect(scopeOf(anna.url)).toBe(`${WITHOUT_MCP} mcp`);
+
+    // Anna opens the callback of her own valid link with error=invalid_scope, and does it again.
+    const state = new URL(open(anna.url, NOW).headers.get("location") ?? "").searchParams.get(
+      "state",
+    );
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const res = await ctx.callback(`/ada/granola/callback?error=invalid_scope&state=${state}`);
+      expect([200, 302]).toContain(res.statusCode);
+    }
+    expect(scopeOf(bruno.url)).toBe(`${WITHOUT_MCP} mcp`);
+    const carla = await ctx.link("393334444444");
+    expect(scopeOf(carla.url)).toBe(`${WITHOUT_MCP} mcp`);
+    const newBruno = await ctx.link(BRUNO, NOW, true);
+    expect(scopeOf(newBruno.url)).toBe(`${WITHOUT_MCP} mcp`);
   });
 
   it("asks again without mcp when the token step answers invalid_scope", async () => {
@@ -374,6 +395,27 @@ describe("Granola scope without mcp", () => {
     expect(ctx.mock.registrations).toBe(1);
     const location = new URL(open(ask.url, NOW).headers.get("location") ?? "");
     expect(location.searchParams.get("scope")).toBe(WITHOUT_MCP);
+  });
+
+  it("leaves the registration state alone when the registration without mcp fails too", async () => {
+    const ctx = setupConnect();
+    ctx.mock.rejectRegistration = true;
+    const failed = await prepareGranolaConnect({
+      owner: ANNA,
+      config: CONFIG,
+      db: ctx.store.db,
+      now: NOW,
+      fetchImpl: ctx.mock.fetch,
+    });
+    expect(failed.ok).toBe(false);
+    expect(ctx.mock.scopesSeen).toEqual([`register:${WITHOUT_MCP} mcp`, `register:${WITHOUT_MCP}`]);
+
+    // Registration works again: nothing was remembered, so mcp is asked for first.
+    ctx.mock.rejectRegistration = false;
+    const ask = await ctx.link(ANNA);
+    expect(ctx.mock.scopesSeen.slice(2)).toEqual([`register:${WITHOUT_MCP} mcp`]);
+    const location = new URL(open(ask.url, NOW).headers.get("location") ?? "");
+    expect(location.searchParams.get("scope")).toBe(`${WITHOUT_MCP} mcp`);
   });
 
   it("does not loop: a refusal of a scope that already left mcp out is final", async () => {

@@ -93,6 +93,8 @@ export class MockGranola {
   transcriptError: string | null = null;
   /** Where Granola's authorization server refuses `mcp` as a scope, as the real one would not list it. */
   rejectMcp: "register" | "authorize" | "token" | null = null;
+  /** Registration fails whatever the scope, as it would for a bad redirect URI. */
+  rejectRegistration = false;
   /** The scope of every authorize request and registration it has seen. */
   readonly scopesSeen: string[] = [];
 
@@ -151,6 +153,9 @@ export class MockGranola {
     scope?: string;
   }): Response {
     this.scopesSeen.push(`register:${request.scope ?? ""}`);
+    if (this.rejectRegistration) {
+      return json({ error: "invalid_client_metadata", error_description: "bad redirect_uri" }, 400);
+    }
     if (this.rejectMcp === "register" && request.scope?.split(" ").includes("mcp")) {
       return json(
         { error: "invalid_client_metadata", error_description: "unknown scope mcp" },

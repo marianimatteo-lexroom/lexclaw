@@ -14,11 +14,17 @@ export const GRANOLA_MCP_URL = "https://mcp.granola.ai/mcp";
 export const GRANOLA_SCOPE = "openid email profile offline_access mcp";
 /**
  * Granola's resource metadata advertises `mcp`, but its authorization server lists only the OpenID
- * scopes. Ada asks for `mcp` first and, when the server answers `invalid_scope`, asks again
- * without it.
+ * scopes. Ada asks for `mcp` first. A link whose sign-in or token step answers `invalid_scope` is
+ * replaced by one that leaves `mcp` out; that decision belongs to that link alone, because the
+ * answer comes from a request anyone can make for their own link.
  */
 export const GRANOLA_SCOPE_WITHOUT_MCP = "openid email profile offline_access";
 
+/**
+ * Set only by Ada's own registration: registering with `mcp` was refused and registering again
+ * without it was accepted. Callers cannot reach it, and a failed second registration leaves it
+ * alone, since `invalid_client_metadata` can be about the redirect URI instead.
+ */
 let mcpScopeRejected = false;
 
 /** The scope new registrations and links ask for. */
@@ -28,11 +34,6 @@ export function granolaScope(): string {
 
 export function includesMcpScope(scope: string): boolean {
   return scope.split(/\s+/u).includes("mcp");
-}
-
-/** Remembers, until the process restarts, that Granola does not grant `mcp`. */
-export function rejectGranolaMcpScope(): void {
-  mcpScopeRejected = true;
 }
 
 export function resetGranolaScope(): void {
@@ -242,8 +243,11 @@ export function ensureGranolaClient(params: {
       // RFC 7591 reports a scope the server does not know as invalid_client_metadata; some say invalid_scope.
       const failure = (await response.json().catch(() => null)) as { error?: unknown } | null;
       if (failure?.error === "invalid_scope" || failure?.error === "invalid_client_metadata") {
-        rejectGranolaMcpScope();
-        response = await register(granolaScope());
+        const retried = await register(GRANOLA_SCOPE_WITHOUT_MCP);
+        if (retried?.ok) {
+          mcpScopeRejected = true;
+        }
+        response = retried;
       }
     }
     if (!response?.ok) {
