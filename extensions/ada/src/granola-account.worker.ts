@@ -17,6 +17,7 @@ import type {
 } from "openclaw/plugin-sdk/sqlite-worker-runtime";
 import {
   GRANOLA_REMINDER_INTERVAL_MS,
+  GRANOLA_REMINDER_OWED_MS,
   type AdaGranolaOperations,
   type GranolaAccountRecord,
   type GranolaAccountStamp,
@@ -120,17 +121,18 @@ CREATE TABLE IF NOT EXISTS ada_granola_account (
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS ada_granola_client (
-  id TEXT PRIMARY KEY,
-  client_id TEXT NOT NULL,
+  client_id TEXT PRIMARY KEY,
   client_secret TEXT,
   redirect_uri TEXT NOT NULL,
   registered_at_ms INTEGER NOT NULL,
-  secret_expires_at_ms INTEGER
+  secret_expires_at_ms INTEGER,
+  is_current INTEGER NOT NULL
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS ada_granola_reminder (
   id TEXT PRIMARY KEY,
-  last_reminded_at_ms INTEGER NOT NULL
+  last_reminded_at_ms INTEGER NOT NULL,
+  owed INTEGER NOT NULL
 ) STRICT;
 `;
 
@@ -152,14 +154,14 @@ type AdaGranolaDatabase = {
     connected_at_ms: number;
   };
   ada_granola_client: {
-    id: string;
     client_id: string;
     client_secret: string | null;
     redirect_uri: string;
     registered_at_ms: number;
     secret_expires_at_ms: number | null;
+    is_current: number;
   };
-  ada_granola_reminder: { id: string; last_reminded_at_ms: number };
+  ada_granola_reminder: { id: string; last_reminded_at_ms: number; owed: number };
 };
 
 const ACCESS_TOKEN_CONTEXT = "ada_granola_account.access_token";
@@ -169,7 +171,6 @@ const CODE_VERIFIER_CONTEXT = "ada_granola_pending.code_verifier";
 
 const OWNER = /^\d{7,15}$/u;
 const NONCE = /^[A-Za-z0-9_-]{16,128}$/u;
-const CLIENT_ROW_ID = "registration";
 const DB_LABEL = "ada granola account";
 
 function chmodIfExists(file: string): void {
@@ -315,6 +316,10 @@ class AdaGranolaDatabaseStore {
           connected_at_ms: account.connectedAtMs,
         }),
       );
+      executeSqliteQuerySync(
+        this.db,
+        this.query.updateTable("ada_granola_reminder").set({ owed: 0 }).where("id", "=", owner),
+      );
     });
     return undefined;
   }
@@ -440,39 +445,64 @@ class AdaGranolaDatabaseStore {
         this.db,
         this.query
           .insertInto("ada_granola_reminder")
-          .values({ id: owner, last_reminded_at_ms: nowMs }),
+          .values({ id: owner, last_reminded_at_ms: nowMs, owed: 1 }),
       );
       return true;
     });
   }
 
-  readClient(): GranolaClientRecord | null {
+  reminderOwed(owner: string, nowMs: number): boolean {
+    assertOwner(owner);
     const row = executeSqliteQueryTakeFirstSync(
       this.db,
       this.query
-        .selectFrom("ada_granola_client")
-        .select([
-          "client_id",
-          "client_secret",
-          "redirect_uri",
-          "registered_at_ms",
-          "secret_expires_at_ms",
-        ])
-        .where("id", "=", CLIENT_ROW_ID),
+        .selectFrom("ada_granola_reminder")
+        .select(["last_reminded_at_ms", "owed"])
+        .where("id", "=", owner),
     );
-    if (!row) {
-      return null;
-    }
-    return {
-      clientId: row.client_id,
-      clientSecret:
-        row.client_secret === null
-          ? null
-          : this.cipher.open(row.client_secret, CLIENT_SECRET_CONTEXT).value,
-      redirectUri: row.redirect_uri,
-      registeredAtMs: row.registered_at_ms,
-      secretExpiresAtMs: row.secret_expires_at_ms,
-    };
+    return row?.owed === 1 && nowMs - row.last_reminded_at_ms <= GRANOLA_REMINDER_OWED_MS;
+  }
+
+  settleReminder(owner: string) {
+    assertOwner(owner);
+    executeSqliteQuerySync(
+      this.db,
+      this.query.updateTable("ada_granola_reminder").set({ owed: 0 }).where("id", "=", owner),
+    );
+    return undefined;
+  }
+
+  private clientFrom(row: AdaGranolaDatabase["ada_granola_client"] | undefined) {
+    return row
+      ? {
+          clientId: row.client_id,
+          clientSecret:
+            row.client_secret === null
+              ? null
+              : this.cipher.open(row.client_secret, CLIENT_SECRET_CONTEXT).value,
+          redirectUri: row.redirect_uri,
+          registeredAtMs: row.registered_at_ms,
+          secretExpiresAtMs: row.secret_expires_at_ms,
+        }
+      : null;
+  }
+
+  readClient(): GranolaClientRecord | null {
+    return this.clientFrom(
+      executeSqliteQueryTakeFirstSync(
+        this.db,
+        this.query.selectFrom("ada_granola_client").selectAll().where("is_current", "=", 1),
+      ),
+    );
+  }
+
+  readClientById(clientId: string): GranolaClientRecord | null {
+    return this.clientFrom(
+      executeSqliteQueryTakeFirstSync(
+        this.db,
+        this.query.selectFrom("ada_granola_client").selectAll().where("client_id", "=", clientId),
+      ),
+    );
   }
 
   saveClient(client: GranolaClientRecord) {
@@ -482,12 +512,15 @@ class AdaGranolaDatabaseStore {
     this.transaction("ada.granola.client.save", () => {
       executeSqliteQuerySync(
         this.db,
-        this.query.deleteFrom("ada_granola_client").where("id", "=", CLIENT_ROW_ID),
+        this.query.updateTable("ada_granola_client").set({ is_current: 0 }),
+      );
+      executeSqliteQuerySync(
+        this.db,
+        this.query.deleteFrom("ada_granola_client").where("client_id", "=", client.clientId),
       );
       executeSqliteQuerySync(
         this.db,
         this.query.insertInto("ada_granola_client").values({
-          id: CLIENT_ROW_ID,
           client_id: client.clientId,
           client_secret:
             client.clientSecret === null
@@ -496,19 +529,17 @@ class AdaGranolaDatabaseStore {
           redirect_uri: client.redirectUri,
           registered_at_ms: client.registeredAtMs,
           secret_expires_at_ms: client.secretExpiresAtMs,
+          is_current: 1,
         }),
       );
     });
     return undefined;
   }
 
-  clearClientIfStill(clientId: string) {
+  clearClient(clientId: string) {
     executeSqliteQuerySync(
       this.db,
-      this.query
-        .deleteFrom("ada_granola_client")
-        .where("id", "=", CLIENT_ROW_ID)
-        .where("client_id", "=", clientId),
+      this.query.deleteFrom("ada_granola_client").where("client_id", "=", clientId),
     );
     return undefined;
   }
@@ -595,12 +626,18 @@ export function createSqliteWorkerBackend(
           return database.claimReconnectReminder(command.input.owner, command.input.nowMs);
         case "listOwners":
           return database.listOwners();
+        case "reminderOwed":
+          return database.reminderOwed(command.input.owner, command.input.nowMs);
+        case "settleReminder":
+          return database.settleReminder(command.input.owner);
         case "readClient":
           return database.readClient();
+        case "readClientById":
+          return database.readClientById(command.input.clientId);
         case "saveClient":
           return database.saveClient(command.input.client);
-        case "clearClientIfStill":
-          return database.clearClientIfStill(command.input.clientId);
+        case "clearClient":
+          return database.clearClient(command.input.clientId);
       }
       throw new Error("Unexpected Ada Granola command");
     },

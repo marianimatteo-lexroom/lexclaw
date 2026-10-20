@@ -18,28 +18,6 @@ type ReminderApi = Pick<
 
 /** The keep-alive renews a token that would expire before the next 15-minute poll. */
 const KEEP_ALIVE_RENEW_WITHIN_MS = 20 * 60 * 1000;
-const HELD_TTL_MS = 72 * 60 * 60 * 1000;
-const MAX_HELD = 1000;
-
-/** Numbers whose reconnect reminder is owed but could not go out yet; sent when they next write. */
-const held = new Map<string, number>();
-
-function hold(owner: string, nowMs: number): void {
-  held.delete(owner);
-  held.set(owner, nowMs);
-  if (held.size > MAX_HELD) {
-    held.delete(held.keys().next().value ?? owner);
-  }
-}
-
-export function clearHeldGranolaReminders(): void {
-  held.clear();
-}
-
-/** A disconnected number is owed no reminder. */
-export function forgetHeldGranolaReminder(owner: string): void {
-  held.delete(owner);
-}
 
 /** The owner's WhatsApp window: false only when this process or the wake row knows it closed. */
 async function windowMayBeOpen(api: ReminderApi, owner: string, nowMs: number): Promise<boolean> {
@@ -79,8 +57,8 @@ async function sendReminder(
 
 /**
  * A number's Granola sign-in failed for good. The number is told at most once a day, with a fresh
- * link; a reminder that cannot go out now (closed WhatsApp window, failed
- * send) waits for that number's next message. Nothing is asked of the model.
+ * link; a reminder that cannot go out now (closed WhatsApp window, failed send) stays owed in the
+ * store and goes out when that number next writes. Nothing is asked of the model.
  */
 export async function remindGranolaReconnect(
   api: ReminderApi,
@@ -98,26 +76,29 @@ export async function remindGranolaReconnect(
     (await windowMayBeOpen(api, owner, nowMs)) &&
     (await sendReminder(api, owner, now, { ...deps, db }))
   ) {
+    await store.settleReminder();
     return "sent";
   }
-  hold(owner, nowMs);
   return "held";
 }
 
-/** The number just wrote, so its window is open: sends a reminder that was waiting for it. */
+/**
+ * The number just wrote, so its window is open: sends the reminder that could not go out before.
+ * The debt is kept in the account store, so a restart does not forget it.
+ */
 export async function releaseHeldGranolaReminder(
   api: ReminderApi,
   owner: string,
   nowMs: number,
   deps: ReminderDeps = {},
 ): Promise<void> {
-  const heldAtMs = held.get(owner);
-  held.delete(owner);
-  if (heldAtMs === undefined || nowMs - heldAtMs > HELD_TTL_MS) {
+  const db = deps.db ?? (await openAdaGranolaAccountDbFromApi(api));
+  const store = bindGranolaOwner(db, owner);
+  if (!(await store.reminderOwed(nowMs))) {
     return;
   }
-  if (!(await sendReminder(api, owner, new Date(nowMs), deps))) {
-    hold(owner, heldAtMs);
+  if (await sendReminder(api, owner, new Date(nowMs), { ...deps, db })) {
+    await store.settleReminder();
   }
 }
 

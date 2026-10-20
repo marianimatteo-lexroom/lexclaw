@@ -80,8 +80,8 @@ export async function handleAdaGranolaCallback(
   const store = bindGranolaOwner(db, parsed.owner);
   const pending = await store.consumePending(parsed.nonce, now.getTime());
   revokeShortLinksForNonce(parsed.nonce);
-  const client = pending ? await db.readClient() : null;
-  if (!pending || !client || client.clientId !== pending.clientId) {
+  const client = pending ? await db.readClientById(pending.clientId) : null;
+  if (!pending || !client) {
     writeAdaConnectPage(res, 400, EXPIRED);
     return true;
   }
@@ -104,7 +104,7 @@ export async function handleAdaGranolaCallback(
     deps.log.error(`ada granola token exchange failed: ${reason}`);
     if (reason === "invalid_client") {
       // Granola forgot Ada's registration: the next link registers it again.
-      await db.clearClientIfStill(client.clientId);
+      await db.clearClient(client.clientId);
     }
     writeAdaConnectPage(res, 400, {
       kind: reason === "unreachable" || reason === "transient" ? "blocked" : "retry",

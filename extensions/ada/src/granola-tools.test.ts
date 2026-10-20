@@ -262,6 +262,125 @@ describe("Granola tool proxy", () => {
   });
 });
 
+describe("Granola tool safety", () => {
+  it("lets through only tools that are read-only by annotation or by a read verb", async () => {
+    const { mock, api, deps } = await setup();
+    mock.extraTools = [
+      { name: "note_update", description: "x", inputSchema: { type: "object" } },
+      { name: "delete", description: "x", inputSchema: { type: "object" } },
+      { name: "export_all", description: "x", inputSchema: { type: "object" } },
+      {
+        name: "weird_name",
+        description: "x",
+        inputSchema: { type: "object" },
+        annotations: { readOnlyHint: true },
+      },
+      {
+        name: "get_and_rewrite",
+        description: "x",
+        inputSchema: { type: "object" },
+        annotations: { readOnlyHint: false },
+      },
+    ];
+    const listed = (await executeAdaGranolaTools(ANNA, api, undefined, deps)) as {
+      tools: Array<{ name: string }>;
+    };
+    const names = listed.tools.map((tool) => tool.name);
+    expect(names).toContain("weird_name");
+    for (const refused of ["note_update", "delete", "export_all", "get_and_rewrite"]) {
+      expect(names).not.toContain(refused);
+      expect(
+        await executeAdaGranolaCall(ANNA, api, { tool: refused }, undefined, deps),
+      ).toMatchObject({ ok: false, reason: "invalid_request" });
+    }
+    expect(
+      await executeAdaGranolaCall(ANNA, api, { tool: "weird_name" }, undefined, deps),
+    ).toMatchObject({
+      ok: true,
+      text: "ok",
+    });
+  });
+
+  it("reads the answer to its own request, not a server request in the same event stream", async () => {
+    const { mock, api, deps } = await setup();
+    mock.sseNoise = true;
+    const result = await executeAdaGranolaCall(
+      ANNA,
+      api,
+      { tool: "list_meetings" },
+      undefined,
+      deps,
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      text: expect.stringContaining("Rossi settlement call"),
+    });
+  });
+
+  it("reads the plan before the size, and a refusal that is not about the plan is not a plan limit", async () => {
+    const { mock, api, deps } = await setup();
+    const call = () =>
+      executeAdaGranolaCall(
+        ANNA,
+        api,
+        { tool: "get_meeting_transcript", arguments: { meeting_id: "m-anna-1" } },
+        undefined,
+        deps,
+      );
+    mock.transcriptError = "You have exceeded the free plan limit for transcripts.";
+    expect(await call()).toMatchObject({ reason: "plan_limit" });
+    mock.transcriptError = "Rate limit exceeded, try again later.";
+    expect(await call()).toMatchObject({ reason: "unavailable" });
+    mock.transcriptError = null;
+    mock.mcpStatusOverride = { status: 403, body: "Forbidden" };
+    expect(await call()).toMatchObject({ reason: "unavailable" });
+  });
+
+  it("serves a cached result only to the sign-in that fetched it", async () => {
+    const { mock, api, deps, store } = await setup();
+    const first = await executeAdaGranolaCall(
+      ANNA,
+      api,
+      { tool: "list_meetings" },
+      undefined,
+      deps,
+    );
+    expect((first as { text: string }).text).toContain("Rossi");
+    mock.meetings.set("anna-two", [
+      {
+        id: "x1",
+        title: "Another account's call",
+        date: "2026-10-16",
+        notes: "n",
+        transcript: "t",
+      },
+    ]);
+    await signInThroughFlow({
+      mock,
+      db: store.db,
+      owner: ANNA,
+      user: "anna-two",
+      now: new Date(NOW.getTime() + 1000),
+    });
+    const second = await executeAdaGranolaCall(ANNA, api, { tool: "list_meetings" }, undefined, {
+      ...deps,
+      now: new Date(NOW.getTime() + 2000),
+    });
+    expect((second as { text: string }).text).toContain("Another account's call");
+    expect((second as { text: string }).text).not.toContain("Rossi");
+  });
+
+  it("keeps a sign-in made while Granola was refusing the old one", async () => {
+    const { mock, api, deps, store } = await setup();
+    mock.expireAccessTokens("anna");
+    mock.refreshFailure = "server_error";
+    expect(
+      await executeAdaGranolaCall(ANNA, api, { tool: "list_meetings" }, undefined, deps),
+    ).toMatchObject({ ok: false, reason: "unavailable" });
+    expect(await store.db.readAccount(ANNA)).not.toBeNull();
+  });
+});
+
 describe("Granola disconnect", () => {
   it("revokes and deletes one number's sign-in and leaves every other number alone", async () => {
     const { mock, api, deps, store } = await setup();

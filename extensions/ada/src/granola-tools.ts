@@ -1,5 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import type { GranolaAccountDb } from "./granola-account-contract.js";
+import type { GranolaAccountDb, GranolaAccountRecord } from "./granola-account-contract.js";
 import { bindGranolaOwner, openAdaGranolaAccountDbFromApi } from "./granola-account.js";
 import { prepareGranolaConnect, type GranolaConnectConfig } from "./granola-connect.js";
 import {
@@ -10,7 +10,6 @@ import {
   type GranolaToolInfo,
 } from "./granola-mcp.js";
 import { discoverGranolaEndpoints, revokeGranolaToken } from "./granola-oauth.js";
-import { forgetHeldGranolaReminder } from "./granola-reminder.js";
 import { loadGranolaAccess } from "./granola-session.js";
 import { maskNumber } from "./inbound-log.js";
 
@@ -54,7 +53,7 @@ function dbFor(api: ToolApi, deps: GranolaToolDeps): Promise<GranolaAccountDb> {
   return deps.db ? Promise.resolve(deps.db) : openAdaGranolaAccountDbFromApi(api);
 }
 
-type Cached = { owner: string; text: string; atMs: number };
+type Cached = { owner: string; connectedAtMs: number; text: string; atMs: number };
 
 /** Recent full results, so reading a long transcript in pages does not fetch it again each time. */
 const cache = new Map<string, Cached>();
@@ -139,11 +138,10 @@ export async function executeAdaGranolaDisconnect(
     const account = await store.readAccount();
     let revoked = false;
     if (account) {
-      const client = await db.readClient();
-      const endpoints =
-        client?.clientId === account.clientId
-          ? await discoverGranolaEndpoints({ fetchImpl: deps.fetchImpl, signal })
-          : null;
+      const client = await db.readClientById(account.clientId);
+      const endpoints = client
+        ? await discoverGranolaEndpoints({ fetchImpl: deps.fetchImpl, signal })
+        : null;
       if (client && endpoints) {
         revoked = await revokeGranolaToken({
           endpoints,
@@ -155,8 +153,8 @@ export async function executeAdaGranolaDisconnect(
       }
     }
     await store.clearAccount();
+    await store.settleReminder();
     clearGranolaResults(owner);
-    forgetHeldGranolaReminder(owner);
     return { ok: true as const, disconnected: account !== null, revoked };
   } catch (error) {
     api.logger.error(
@@ -231,8 +229,12 @@ type Via = {
  */
 async function viaGranola<V>(
   via: Via,
-  run: (accessToken: string) => Promise<GranolaMcpResult<V>>,
+  run: (access: {
+    accessToken: string;
+    account: GranolaAccountRecord;
+  }) => Promise<GranolaMcpResult<V>>,
 ): Promise<GranolaMcpResult<V> | Failure> {
+  let last: GranolaAccountRecord | undefined;
   for (const force of [false, true]) {
     const access = await loadGranolaAccess({
       db: via.db,
@@ -249,12 +251,17 @@ async function viaGranola<V>(
           ? RECONNECT
           : NOT_CONNECTED;
     }
-    const result = await run(access.accessToken);
+    last = access.account;
+    const result = await run(access);
     if (result.ok || result.kind !== "unauthorized") {
       return result;
     }
   }
-  await bindGranolaOwner(via.db, via.owner).clearAccount();
+  // Refused twice, the second time with a freshly renewed token. A number that reconnected
+  // meanwhile has a different sign-in on file and keeps it.
+  if (last) {
+    await bindGranolaOwner(via.db, via.owner).clearAccountIfStill(last);
+  }
   clearGranolaResults(via.owner);
   return RECONNECT;
 }
@@ -274,8 +281,8 @@ export async function executeAdaGranolaTools(
       deps,
       signal,
     };
-    const listed = await viaGranola(via, (accessToken) =>
-      listGranolaTools({ accessToken, fetchImpl: deps.fetchImpl, signal }),
+    const listed = await viaGranola(via, (access) =>
+      listGranolaTools({ accessToken: access.accessToken, fetchImpl: deps.fetchImpl, signal }),
     );
     if (listed.ok) {
       return { ok: true as const, tools: describeTools(listed.value) };
@@ -319,9 +326,14 @@ export async function executeAdaGranolaCall(
       deps,
       signal,
     };
-    const result = await viaGranola(via, async (accessToken) => {
+    const result = await viaGranola(via, async ({ accessToken, account }) => {
       const known = cache.get(key);
-      if (known && via.nowMs - known.atMs <= CACHE_TTL_MS) {
+      // A result is only served to the sign-in that fetched it: a reconnect may be another account.
+      if (
+        known &&
+        known.connectedAtMs === account.connectedAtMs &&
+        via.nowMs - known.atMs <= CACHE_TTL_MS
+      ) {
         return { ok: true as const, value: known.text };
       }
       const called = await callGranolaTool({
@@ -332,7 +344,12 @@ export async function executeAdaGranolaCall(
         signal,
       });
       if (called.ok) {
-        remember(key, { owner, text: called.value.text, atMs: via.nowMs });
+        remember(key, {
+          owner,
+          connectedAtMs: account.connectedAtMs,
+          text: called.value.text,
+          atMs: via.nowMs,
+        });
       }
       return called.ok ? { ok: true as const, value: called.value.text } : called;
     });

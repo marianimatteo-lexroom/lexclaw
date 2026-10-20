@@ -78,11 +78,17 @@ export class MockGranola {
   readonly meetings = new Map<string, MockMeeting[]>();
   plan: "paid" | "free" = "paid";
   /** What the next refresh answers instead of success. */
-  refreshFailure: "invalid_grant" | "server_error" | null = null;
+  refreshFailure: "invalid_grant" | "server_error" | "gateway_page" | null = null;
   refreshes = 0;
   /** Access tokens last this long; tests move the clock past it. */
   accessTtlSeconds = 3600;
   mcpStatusOverride: { status: number; body: string } | null = null;
+  /** More tools in the list, as Granola may add; they answer "ok". */
+  extraTools: Array<Record<string, unknown>> = [];
+  /** A server request with the same id comes first in the event stream. */
+  sseNoise = false;
+  /** `expires_in` as a string, as some servers send it. */
+  expiresInAsString = false;
   transcriptError: string | null = null;
 
   readonly fetch: typeof fetch = async (input, init) => {
@@ -176,7 +182,7 @@ export class MockGranola {
     return json({
       access_token: accessToken,
       refresh_token: refreshToken,
-      expires_in: this.accessTtlSeconds,
+      expires_in: this.expiresInAsString ? String(this.accessTtlSeconds) : this.accessTtlSeconds,
       token_type: "Bearer",
       scope: "openid email profile offline_access mcp",
     });
@@ -204,6 +210,12 @@ export class MockGranola {
       return this.issue(grant.user, clientId);
     }
     this.refreshes += 1;
+    if (this.refreshFailure === "gateway_page") {
+      return new Response("<html>Forbidden</html>", {
+        status: 403,
+        headers: { "content-type": "text/html" },
+      });
+    }
     if (this.refreshFailure === "server_error") {
       return json({ error: "server_error" }, 503);
     }
@@ -266,9 +278,9 @@ export class MockGranola {
         annotations: { destructiveHint: true },
       },
     ];
-    return this.plan === "free"
-      ? base.filter((tool) => tool.name !== "get_meeting_transcript")
-      : base;
+    const offered =
+      this.plan === "free" ? base.filter((tool) => tool.name !== "get_meeting_transcript") : base;
+    return [...offered, ...this.extraTools];
   }
 
   private mcp(headers: Headers, body: string): Response {
@@ -289,9 +301,9 @@ export class MockGranola {
       return new Response(null, { status: 202 });
     }
     const reply = (result: unknown, event = false) =>
-      event
+      event || this.sseNoise
         ? new Response(
-            `event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: message.id, result })}\n\n`,
+            `${this.sseNoise ? `event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: message.id, method: "ping" })}\n\n` : ""}event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: message.id, result })}\n\n`,
             {
               headers: { "content-type": "text/event-stream", "mcp-session-id": `session-${user}` },
             },
@@ -325,6 +337,9 @@ export class MockGranola {
       }
       const meeting = own.find((item) => item.id === args.meeting_id);
       return meeting ? text(meeting.transcript) : text("Meeting not found.", true);
+    }
+    if (this.extraTools.some((tool) => tool.name === name)) {
+      return text("ok");
     }
     return json({
       jsonrpc: "2.0",

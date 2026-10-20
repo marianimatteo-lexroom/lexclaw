@@ -37,11 +37,14 @@ export function wrapGranolaWorker(
       worker.execute({ type: "clearAccountIfStill", input: { owner, expected } }),
     claimReconnectReminder: (owner, nowMs) =>
       worker.execute({ type: "claimReconnectReminder", input: { owner, nowMs } }),
+    reminderOwed: (owner, nowMs) =>
+      worker.execute({ type: "reminderOwed", input: { owner, nowMs } }),
+    settleReminder: (owner) => worker.execute({ type: "settleReminder", input: { owner } }),
     listOwners: () => worker.execute({ type: "listOwners", input: undefined }),
     readClient: () => worker.execute({ type: "readClient", input: undefined }),
     saveClient: (client) => worker.execute({ type: "saveClient", input: { client } }),
-    clearClientIfStill: (clientId) =>
-      worker.execute({ type: "clearClientIfStill", input: { clientId } }),
+    readClientById: (clientId) => worker.execute({ type: "readClientById", input: { clientId } }),
+    clearClient: (clientId) => worker.execute({ type: "clearClient", input: { clientId } }),
   };
 }
 
@@ -57,6 +60,8 @@ export function bindGranolaOwner(db: GranolaAccountDb, owner: string): GranolaAc
     updateTokensIfStill: (expected, tokens) => db.updateTokensIfStill(owner, expected, tokens),
     clearAccountIfStill: (expected) => db.clearAccountIfStill(owner, expected),
     claimReconnectReminder: (nowMs) => db.claimReconnectReminder(owner, nowMs),
+    reminderOwed: (nowMs) => db.reminderOwed(owner, nowMs),
+    settleReminder: () => db.settleReminder(owner),
   };
 }
 

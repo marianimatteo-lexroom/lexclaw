@@ -161,9 +161,10 @@ function clientExpired(client: GranolaClientRecord, nowMs: number): boolean {
 let registering: Promise<GranolaClientRecord | null> | null = null;
 
 /**
- * The one OAuth client Ada uses for every person. It is registered with Granola once, kept on the
+ * The one OAuth client Ada uses for new links. It is registered with Granola once, kept on the
  * volume, and registered again only when none is saved, it was made for another redirect URI, or
- * its secret expired. A registration Granola rejected is dropped by `invalidateGranolaClient`.
+ * its secret expired. Earlier registrations are kept, because the tokens issued to them are
+ * renewed with them; a registration Granola rejects is dropped with `db.clearClient`.
  */
 export function ensureGranolaClient(params: {
   db: GranolaAccountDb;
@@ -275,12 +276,14 @@ async function postToken(params: {
     if (oauthError === "invalid_client") {
       return { ok: false, reason: "invalid_client", oauthError };
     }
+    // Only Granola saying the consent is void ends a connection. Anything else, such as a
+    // gateway page or an unexpected status, is treated as a failure of the moment.
     return {
       ok: false,
       reason:
-        oauthError === "temporarily_unavailable" || oauthError === "server_error"
-          ? "transient"
-          : "invalid_grant",
+        oauthError === "invalid_grant" || oauthError === "unauthorized_client"
+          ? "invalid_grant"
+          : "transient",
       oauthError,
     };
   }
@@ -288,14 +291,14 @@ async function postToken(params: {
   if (!accessToken) {
     return { ok: false, reason: "transient" };
   }
-  const expiresIn = typeof payload?.expires_in === "number" ? payload.expires_in : null;
+  const expiresIn = Number(payload?.expires_in);
   return {
     ok: true,
     tokens: {
       accessToken,
       refreshToken: text(payload?.refresh_token),
       accessExpiresAtMs:
-        expiresIn !== null && expiresIn > 0 ? params.nowMs + expiresIn * 1000 : null,
+        Number.isFinite(expiresIn) && expiresIn > 0 ? params.nowMs + expiresIn * 1000 : null,
       scope: text(payload?.scope) ?? null,
     },
   };

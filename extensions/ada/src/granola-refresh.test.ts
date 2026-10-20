@@ -1,5 +1,6 @@
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it } from "vitest";
+import { granolaConnectConfigFrom, prepareGranolaConnect } from "./granola-connect.js";
 import { loadGranolaAccess } from "./granola-session.js";
 import {
   ANNA,
@@ -133,5 +134,67 @@ describe("Granola token refresh", () => {
     expect(result).toMatchObject({ ok: false, reason: "not_connected" });
     expect((result as { error: string }).error).toContain("ada_granola_connect");
     expect((result as { error: string }).error).toContain("only after they agree");
+  });
+
+  it("does not end a connection over a failure that is not Granola voiding the consent", async () => {
+    const { mock, store, load } = await setup();
+    mock.refreshFailure = "gateway_page";
+    expect(await load(ANNA, at(3_600_001))).toEqual({ ok: false, reason: "unavailable" });
+    expect(await store.db.readAccount(ANNA)).not.toBeNull();
+  });
+
+  it("reads the sign-in again inside the renewal, so a spent refresh token is never presented twice", async () => {
+    const { mock, store, load } = await setup();
+    const stale = await store.db.readAccount(ANNA);
+    expect(await load(ANNA, at(3_600_001))).toMatchObject({ ok: true });
+    expect(mock.refreshes).toBe(1);
+
+    // This caller read the row before the renewal above finished.
+    let reads = 0;
+    const lagging = {
+      ...store.db,
+      readAccount: async (owner: string) => (reads++ === 0 ? stale : store.db.readAccount(owner)),
+    };
+    const result = await loadGranolaAccess({
+      db: lagging,
+      owner: ANNA,
+      nowMs: at(3_600_002),
+      fetchImpl: mock.fetch,
+    });
+    expect(result).toMatchObject({ ok: true });
+    expect(mock.refreshes).toBe(1);
+  });
+
+  it("keeps renewing tokens issued to an earlier registration after the redirect URI changes", async () => {
+    const { mock, store, load } = await setup();
+    const first = await store.db.readClient();
+    const moved = granolaConnectConfigFrom({
+      googleRedirectUri: "https://ada.example.org/ada/google/callback",
+      googleStateSecret: "state-secret-test-value",
+    });
+    await prepareGranolaConnect({
+      owner: "393334444444",
+      config: moved,
+      db: store.db,
+      now: NOW,
+      fetchImpl: mock.fetch,
+    });
+    expect(mock.registrations).toBe(2);
+    const second = await store.db.readClient();
+    expect(second?.clientId).not.toBe(first?.clientId);
+    expect(await store.db.readClientById(first?.clientId ?? "")).toMatchObject({
+      redirectUri: "https://vera.example/ada/granola/callback",
+    });
+
+    expect(await load(ANNA, at(3_600_001))).toMatchObject({ ok: true });
+    expect((await store.db.readAccount(ANNA))?.clientId).toBe(first?.clientId);
+  });
+
+  it("reads expires_in sent as a string", async () => {
+    const mock = newMockGranola();
+    mock.expiresInAsString = true;
+    const store = openGranolaTestDb(tempDirs.make("ada-granola-string-"));
+    await signInThroughFlow({ mock, db: store.db, owner: ANNA, user: "anna", now: NOW });
+    expect((await store.db.readAccount(ANNA))?.accessExpiresAtMs).toBe(at(3_600_000));
   });
 });

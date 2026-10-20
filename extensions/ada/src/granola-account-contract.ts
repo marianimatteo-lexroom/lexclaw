@@ -45,8 +45,12 @@ export type GranolaAccountStore = {
     tokens: GranolaRefreshedTokens,
   ): Promise<boolean>;
   clearAccountIfStill(expected: GranolaAccountStamp): Promise<boolean>;
-  /** True at most once in 24 hours: the caller then sends the reconnect reminder. */
+  /** True at most once in 24 hours: the reminder is then owed until `settleReminder`. */
   claimReconnectReminder(nowMs: number): Promise<boolean>;
+  /** True while a claimed reminder has not been delivered, for 72 hours from the claim. */
+  reminderOwed(nowMs: number): Promise<boolean>;
+  /** The reminder went out (or is no longer wanted). */
+  settleReminder(): Promise<void>;
 };
 
 /** The whole store; every operation names the owner it acts for. */
@@ -68,12 +72,18 @@ export type GranolaAccountDb = {
   ): Promise<boolean>;
   clearAccountIfStill(owner: string, expected: GranolaAccountStamp): Promise<boolean>;
   claimReconnectReminder(owner: string, nowMs: number): Promise<boolean>;
+  reminderOwed(owner: string, nowMs: number): Promise<boolean>;
+  settleReminder(owner: string): Promise<void>;
   /** Owners with a saved sign-in, for the background keep-alive. */
   listOwners(): Promise<string[]>;
+  /** The registration new links use. */
   readClient(): Promise<GranolaClientRecord | null>;
+  /** Any registration still held, so tokens issued to an older one can be renewed. */
+  readClientById(clientId: string): Promise<GranolaClientRecord | null>;
+  /** Makes `client` the one new links use and keeps the earlier registrations. */
   saveClient(client: GranolaClientRecord): Promise<void>;
-  /** Drops the registration only while it is still `clientId`, so a fresh one is never removed. */
-  clearClientIfStill(clientId: string): Promise<void>;
+  /** Drops one registration, for when Granola no longer knows it. */
+  clearClient(clientId: string): Promise<void>;
 };
 
 type Operation<Input, Output> = { input: Input; output: Output };
@@ -94,10 +104,15 @@ export type AdaGranolaOperations = {
   clearAccountIfStill: Operation<{ owner: string; expected: GranolaAccountStamp }, boolean>;
   claimReconnectReminder: Operation<{ owner: string; nowMs: number }, boolean>;
   listOwners: Operation<undefined, string[]>;
+  reminderOwed: Operation<{ owner: string; nowMs: number }, boolean>;
+  settleReminder: Operation<{ owner: string }, undefined>;
   readClient: Operation<undefined, GranolaClientRecord | null>;
+  readClientById: Operation<{ clientId: string }, GranolaClientRecord | null>;
   saveClient: Operation<{ client: GranolaClientRecord }, undefined>;
-  clearClientIfStill: Operation<{ clientId: string }, undefined>;
+  clearClient: Operation<{ clientId: string }, undefined>;
 };
 
 /** A number is reminded to reconnect at most once in this long. */
 export const GRANOLA_REMINDER_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** A reminder that could not go out waits this long for the number's next message. */
+export const GRANOLA_REMINDER_OWED_MS = 72 * 60 * 60 * 1000;

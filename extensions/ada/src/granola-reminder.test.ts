@@ -9,7 +9,6 @@ vi.mock("./memory.js", () => ({
 }));
 
 import {
-  clearHeldGranolaReminders,
   releaseHeldGranolaReminder,
   remindGranolaReconnect,
   runGranolaKeepAlive,
@@ -57,7 +56,6 @@ async function setup() {
 }
 
 beforeEach(() => {
-  clearHeldGranolaReminders();
   clearInboundLanguages();
 });
 
@@ -176,5 +174,52 @@ describe("Granola keep-alive and reconnect reminder", () => {
       fetchImpl: mock.fetch,
     });
     expect(sent).toHaveLength(1);
+  });
+
+  it("still owes a reminder that could not go out after a restart, and spends it only once", async () => {
+    const { mock, store, api, sent } = await setup();
+    recordSenderInbound(ANNA, NOW.getTime() - 30 * HOUR);
+    expect(await remindGranolaReconnect(api, store.db, ANNA, NOW, { fetchImpl: mock.fetch })).toBe(
+      "held",
+    );
+    store.close();
+    const restarted = openGranolaTestDb(store.dir);
+    await releaseHeldGranolaReminder(api, ANNA, at(HOUR).getTime(), {
+      db: restarted.db,
+      fetchImpl: mock.fetch,
+    });
+    expect(sent).toHaveLength(1);
+    await releaseHeldGranolaReminder(api, ANNA, at(2 * HOUR).getTime(), {
+      db: restarted.db,
+      fetchImpl: mock.fetch,
+    });
+    expect(sent).toHaveLength(1);
+    restarted.close();
+  });
+
+  it("forgets a reminder owed for longer than three days, and one owed to a number that reconnected", async () => {
+    const { mock, store, api, sent } = await setup();
+    recordSenderInbound(ANNA, NOW.getTime() - 30 * HOUR);
+    await remindGranolaReconnect(api, store.db, ANNA, NOW, { fetchImpl: mock.fetch });
+    await releaseHeldGranolaReminder(api, ANNA, at(73 * HOUR).getTime(), {
+      db: store.db,
+      fetchImpl: mock.fetch,
+    });
+    expect(sent).toEqual([]);
+
+    await remindGranolaReconnect(api, store.db, BRUNO, at(100 * HOUR), { fetchImpl: mock.fetch });
+    recordSenderInbound(BRUNO, at(100 * HOUR).getTime() - 30 * HOUR);
+    await signInThroughFlow({
+      mock,
+      db: store.db,
+      owner: BRUNO,
+      user: "bruno",
+      now: at(101 * HOUR),
+    });
+    await releaseHeldGranolaReminder(api, BRUNO, at(102 * HOUR).getTime(), {
+      db: store.db,
+      fetchImpl: mock.fetch,
+    });
+    expect(sent.filter((message) => message.to === `+${BRUNO}`)).toHaveLength(1);
   });
 });

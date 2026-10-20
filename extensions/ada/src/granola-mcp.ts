@@ -36,17 +36,18 @@ export type GranolaMcpResult<T> = { ok: true; value: T } | GranolaMcpFailure;
 const PLAN_PATTERN =
   /\b(free plan|free tier|basic plan|upgrade|paid plan|paid feature|subscription|premium|business plan|enterprise|plan limit|not included in your plan|last 30 days|30[- ]day)\b/iu;
 const SIZE_PATTERN =
-  /\b(too (?:large|long|big)|exceeds?|exceeded|size limit|token limit|length limit|context (?:window|length)|payload)\b/iu;
+  /\b(too (?:large|long|big)|size limit|token limit|length limit|maximum (?:size|length)|exceeds? the (?:maximum|max|size|length|limit)|context (?:window|length))\b/iu;
+const RATE_PATTERN = /\b(rate limit|too many requests|try again later)\b/iu;
 
-/** What an error message says is wrong, from the words Granola uses. */
+/** What an error message says is wrong, from the words Granola uses. The plan is read first. */
 export function classifyGranolaError(message: string): GranolaMcpFailure["kind"] {
-  if (SIZE_PATTERN.test(message)) {
-    return "too_large";
-  }
   if (PLAN_PATTERN.test(message)) {
     return "plan";
   }
-  return "bad_request";
+  if (SIZE_PATTERN.test(message)) {
+    return "too_large";
+  }
+  return RATE_PATTERN.test(message) ? "unavailable" : "bad_request";
 }
 
 function clip(value: string, max = 400): string {
@@ -114,7 +115,12 @@ function messageFor(body: string, contentType: string, id: number): JsonRpcMessa
   }
   return (
     (candidates.find(
-      (item) => item && typeof item === "object" && (item as JsonRpcMessage).id === id,
+      (item) =>
+        item !== null &&
+        typeof item === "object" &&
+        (item as JsonRpcMessage).id === id &&
+        !("method" in item) &&
+        ("result" in item || "error" in item),
     ) as JsonRpcMessage | undefined) ?? null
   );
 }
@@ -170,8 +176,15 @@ export async function withGranolaSession<T>(params: {
       if (response.status === 413) {
         return failure("too_large", detail || "The answer is too large.");
       }
-      if (response.status === 402 || response.status === 403) {
+      if (response.status === 402) {
         return failure("plan", detail || "Granola says this is not available on the plan.");
+      }
+      if (response.status === 403) {
+        const kind = classifyGranolaError(detail);
+        return failure(
+          kind === "bad_request" ? "unavailable" : kind,
+          detail || "Granola refused the request.",
+        );
       }
       if (response.status === 429 || response.status >= 500) {
         return failure("unavailable", `Granola answered ${response.status}.`);
@@ -217,6 +230,9 @@ export async function withGranolaSession<T>(params: {
   return await params.work(rpc);
 }
 
+const READ_VERB =
+  /^(get|list|search|query|find|read|fetch|view|show|lookup|describe|count|retrieve|browse|ask)(?:[_.-]|$)/iu;
+
 function toolInfo(value: unknown): GranolaToolInfo | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -230,17 +246,16 @@ function toolInfo(value: unknown): GranolaToolInfo | null {
   if (typeof tool.name !== "string" || !/^[\w.-]{1,128}$/u.test(tool.name)) {
     return null;
   }
-  const writes =
-    tool.annotations?.readOnlyHint === false ||
-    tool.annotations?.destructiveHint === true ||
-    /^(create|update|delete|remove|write|edit|set|add|share|send|move|rename|upload)[_-]/iu.test(
-      tool.name,
-    );
+  // Fail closed: a tool is read-only only when Granola says so, or its name is a read verb.
+  const readOnly =
+    tool.annotations?.readOnlyHint !== false &&
+    tool.annotations?.destructiveHint !== true &&
+    (tool.annotations?.readOnlyHint === true || READ_VERB.test(tool.name));
   return {
     name: tool.name,
     description: typeof tool.description === "string" ? tool.description : "",
     inputSchema: tool.inputSchema ?? { type: "object" },
-    readOnly: !writes,
+    readOnly,
   };
 }
 

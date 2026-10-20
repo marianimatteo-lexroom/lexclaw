@@ -64,8 +64,8 @@ async function renew(options: Options, account: GranolaAccountRecord): Promise<G
   if (!endpoints) {
     return stillUsable();
   }
-  const client = await options.db.readClient();
-  if (!client || client.clientId !== account.clientId) {
+  const client = await options.db.readClientById(account.clientId);
+  if (!client) {
     // The tokens belong to a registration Ada no longer holds, so they can never be renewed.
     return forget();
   }
@@ -82,7 +82,7 @@ async function renew(options: Options, account: GranolaAccountRecord): Promise<G
       `ada granola refresh failed reason=${refreshed.reason} error=${refreshed.oauthError ?? "none"}`,
     );
     if (refreshed.reason === "invalid_client") {
-      await options.db.clearClientIfStill(client.clientId);
+      await options.db.clearClient(client.clientId);
       return forget();
     }
     return refreshed.reason === "invalid_grant" ? forget() : stillUsable();
@@ -113,21 +113,31 @@ async function renew(options: Options, account: GranolaAccountRecord): Promise<G
 
 /** A usable access token for one number, renewed with its refresh token when it is expiring. */
 export async function loadGranolaAccess(options: Options): Promise<GranolaAccess> {
-  const account = await bindGranolaOwner(options.db, options.owner).readAccount();
-  if (!account) {
-    return { ok: false, reason: "not_connected" };
-  }
-  if (
-    options.force !== true &&
-    live(account, options.nowMs, options.renewWithinMs ?? ACCESS_SKEW_MS)
-  ) {
-    return { ok: true, accessToken: account.accessToken, account };
+  const store = bindGranolaOwner(options.db, options.owner);
+  const usable = async (): Promise<GranolaAccess | GranolaAccountRecord> => {
+    const account = await store.readAccount();
+    if (!account) {
+      return { ok: false, reason: "not_connected" };
+    }
+    return options.force !== true &&
+      live(account, options.nowMs, options.renewWithinMs ?? ACCESS_SKEW_MS)
+      ? { ok: true, accessToken: account.accessToken, account }
+      : account;
+  };
+  const first = await usable();
+  if ("ok" in first) {
+    return first;
   }
   const running = renewing.get(options.owner);
   if (running) {
     return running;
   }
-  const started = renew(options, account).finally(() => {
+  const started = (async (): Promise<GranolaAccess> => {
+    // Read again inside the one renewal: a renewal that finished while this call was starting
+    // has already rotated the refresh token, and the one read above is spent.
+    const current = await usable();
+    return "ok" in current ? current : renew(options, current);
+  })().finally(() => {
     renewing.delete(options.owner);
   });
   renewing.set(options.owner, started);
