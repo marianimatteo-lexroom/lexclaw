@@ -3,7 +3,7 @@ import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WakeState } from "./memory-contract.js";
 import type { MemoryStore } from "./memory.js";
-import { listCollectOwners, registerAdaService } from "./service.js";
+import { listCollectOwners, recordSenderInbound, registerAdaService } from "./service.js";
 
 const google = vi.hoisted(() => ({
   loadAccessToken: vi.fn(),
@@ -15,6 +15,12 @@ vi.mock("./google-api.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./google-api.js")>()),
   ...google,
 }));
+
+const granola = vi.hoisted(() => ({
+  runGranolaKeepAlive: vi.fn(async () => {}),
+  releaseHeldGranolaReminder: vi.fn(async () => {}),
+}));
+vi.mock("./granola-reminder.js", () => granola);
 
 const accounts = vi.hoisted(() => ({
   connected: new Map<string, { email: string }>(),
@@ -195,5 +201,20 @@ describe("the background service visits every connected number", () => {
     expect(dispatched.filter((entry) => entry.connectOnly)).toEqual([
       { owner: LAWYER, connectOnly: true, summaries: [] },
     ]);
+  });
+
+  it("keeps every Granola connection alive with the poll, and releases a reminder only to the number that wrote", async () => {
+    const { api, jobs } = await startService();
+    await jobs.find((job) => job.id === "ada-poll")?.run();
+    expect(granola.runGranolaKeepAlive).toHaveBeenCalledTimes(1);
+
+    await recordSenderInbound({
+      api,
+      atMs: NOW.getTime(),
+      channelId: "kapso-whatsapp",
+      senders: [`+${ANNA}`],
+    });
+    expect(granola.releaseHeldGranolaReminder).toHaveBeenCalledTimes(1);
+    expect(granola.releaseHeldGranolaReminder).toHaveBeenCalledWith(api, ANNA, NOW.getTime());
   });
 });

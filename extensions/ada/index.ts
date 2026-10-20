@@ -42,6 +42,7 @@ import {
   executeAdaReadInbox,
   executeAdaSendEmail,
 } from "./src/google-tools.js";
+import { adaGranolaTools, registerAdaGranolaCallback } from "./src/granola-plugin.js";
 import { registerAdaHttpRoute } from "./src/http-paths.js";
 import { logInboundSkip, maskNumber } from "./src/inbound-log.js";
 import { openAdaLexroomAccountFromApi } from "./src/lexroom-account.js";
@@ -419,6 +420,10 @@ const tools = defineToolPlugin({
         executeAdaTodoGet(api, owner, args),
       ),
     }),
+    tool(adaGranolaTools.connect),
+    tool(adaGranolaTools.disconnect),
+    tool(adaGranolaTools.tools),
+    tool(adaGranolaTools.call),
   ],
 });
 
@@ -617,7 +622,7 @@ const entry = definePluginEntry({
       },
     });
 
-    for (const kind of ["g", "l"] as const) {
+    for (const kind of ["g", "l", "gr"] as const) {
       const route = {
         path: `/${kind}`,
         auth: "plugin",
@@ -630,6 +635,7 @@ const entry = definePluginEntry({
     }
 
     registerAdaFeedbackAdmin(api);
+    registerAdaGranolaCallback(api);
 
     registerAdaHttpRoute(api, {
       path: "/google/notify",

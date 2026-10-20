@@ -36,6 +36,8 @@ type ConnectPage = {
   heading: string;
   message: string;
   email?: string;
+  /** The ready page lists Gmail and Calendar unless the connection is something else. */
+  access?: "none";
 };
 
 const PAGE_STYLE = `
@@ -237,9 +239,11 @@ function renderConnectPage(content: ConnectPage): string {
     ? `<div class="account"><span class="avatar" aria-hidden="true">${initial}</span><b>${escapeHtml(email)}</b></div>`
     : "";
   const access =
-    content.kind === "ready"
-      ? `<ul class="products"><li><span>Gmail</span><span>Read and send</span></li><li><span>Google Calendar</span><span>Read and edit</span></li></ul><p class="foot">You can close this page and return to WhatsApp.</p>`
-      : "";
+    content.kind === "ready" && content.access === "none"
+      ? `<p class="foot">You can close this page and return to WhatsApp.</p>`
+      : content.kind === "ready"
+        ? `<ul class="products"><li><span>Gmail</span><span>Read and send</span></li><li><span>Google Calendar</span><span>Read and edit</span></li></ul><p class="foot">You can close this page and return to WhatsApp.</p>`
+        : "";
   return `<!doctype html><html lang="${escapeHtml(content.lang ?? "en")}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Ada</title><style>${PAGE_STYLE}</style></head><body><main class="card"><p class="brand"><i></i>Ada</p><div class="badge ${content.kind}">${mark(content.kind)}</div><h1>${escapeHtml(content.heading)}</h1><p class="lead">${escapeHtml(content.message)}</p>${account}${access}</main></body></html>`;
 }
 

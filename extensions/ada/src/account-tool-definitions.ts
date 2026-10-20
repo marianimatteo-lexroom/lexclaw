@@ -284,3 +284,51 @@ export const adaTodoGetDefinition = {
   description: "Read detail for one open loop.",
   parameters: Type.Object({ id: Type.String({ minLength: 1 }) }, { additionalProperties: false }),
 };
+
+export const adaGranolaConnectDefinition = {
+  name: "ada_granola_connect",
+  label: "Connect Granola",
+  description:
+    "Check whether the person asking has connected their own Granola account (meeting notes and transcripts, read only), and give them the link to connect it. Call it when they want to connect (they said yes to your question, or asked themselves), not before asking. When it is not connected, it returns one WhatsApp ask with a single short Ada-hosted link that opens Granola's own sign-in for this person's account and no one else's. Set force true only to get a new link for someone who is already connected. Does not send the message.",
+  parameters: Type.Object(
+    { force: Type.Optional(Type.Boolean()) },
+    { additionalProperties: false },
+  ),
+};
+
+export const adaGranolaDisconnectDefinition = {
+  name: "ada_granola_disconnect",
+  label: "Disconnect Granola",
+  description:
+    "Disconnect the person asking from Granola: Ada asks Granola to revoke the access and deletes the saved sign-in. Call it when they say, in any words, that they want Ada to stop using or forget their Granola. Nothing in Granola itself is changed or deleted. They can connect again whenever they want.",
+  parameters: Type.Object({}, { additionalProperties: false }),
+};
+
+export const adaGranolaToolsDefinition = {
+  name: "ada_granola_tools",
+  label: "List Granola tools",
+  description:
+    "List the Granola tools this person's plan offers right now (search and list meetings, read notes and transcripts, folders, questions about meetings), with each one's real argument schema. Call it before ada_granola_call when you do not know the exact tool or arguments. Read only.",
+  parameters: Type.Object({}, { additionalProperties: false }),
+};
+
+export const adaGranolaCallDefinition = {
+  name: "ada_granola_call",
+  label: "Read Granola meetings",
+  description:
+    "Call one read-only Granola tool with the Granola account of the person asking, to answer questions about their past meetings, read a note or transcript, or pull out action items, decisions and deadlines. Tool names and arguments are Granola's own, from ada_granola_tools. The result is text of at most 14000 characters; when truncated is true, summarize it, and use offset with nextOffset only if the person needs more. A free Granola plan only reaches the last 30 days and some tools are paid only: an error then names the reason, which you explain naturally. Never changes anything in Granola.",
+  parameters: Type.Object(
+    {
+      tool: Type.String({ minLength: 1, description: "A tool name from ada_granola_tools." }),
+      arguments: Type.Optional(
+        Type.Record(Type.String(), Type.Unknown(), {
+          description: "The tool's own arguments, as its inputSchema describes.",
+        }),
+      ),
+      offset: Type.Optional(
+        Type.Integer({ minimum: 0, description: "Start of the next part of a long result." }),
+      ),
+    },
+    { additionalProperties: false },
+  ),
+};
