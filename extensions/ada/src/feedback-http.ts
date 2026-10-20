@@ -14,17 +14,39 @@ export function readAdminToken(env: NodeJS.ProcessEnv): string | null {
   return readBearerSecret({ token: env.ADA_ADMIN_TOKEN }, "token");
 }
 
-function writeJson(res: ServerResponse, status: number, body: unknown): void {
+export function writeJson(res: ServerResponse, status: number, body: unknown): void {
   res.statusCode = status;
   res.setHeader("content-type", "application/json; charset=utf-8");
   res.setHeader("cache-control", "no-store");
   res.end(JSON.stringify(body));
 }
 
-function writeText(res: ServerResponse, status: number, body: string): void {
+export function writeText(res: ServerResponse, status: number, body: string): void {
   res.statusCode = status;
   res.setHeader("content-type", "text/plain; charset=utf-8");
   res.end(body);
+}
+
+/**
+ * The gate every admin endpoint shares: 404 while `ADA_ADMIN_TOKEN` is unset (the endpoint does
+ * not exist), 401 without the matching bearer token. True when it answered and the caller stops.
+ */
+export function denyAdminAccess(
+  req: IncomingMessage,
+  res: ServerResponse,
+  env: NodeJS.ProcessEnv,
+): boolean {
+  const expected = readAdminToken(env);
+  if (!expected) {
+    writeText(res, 404, "not found");
+    return true;
+  }
+  if (!bearerMatches(req, expected)) {
+    res.setHeader("www-authenticate", "Bearer");
+    writeText(res, 401, "unauthorized");
+    return true;
+  }
+  return false;
 }
 
 async function readStatusBody(req: IncomingMessage): Promise<FeedbackStatus | null> {
@@ -64,14 +86,11 @@ export async function handleAdaFeedbackAdmin(
 ): Promise<boolean> {
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const route = FEEDBACK_PATH.exec(url.pathname);
-  const expected = readAdminToken(deps.env);
-  if (!route || !expected) {
+  if (!route) {
     writeText(res, 404, "not found");
     return true;
   }
-  if (!bearerMatches(req, expected)) {
-    res.setHeader("www-authenticate", "Bearer");
-    writeText(res, 401, "unauthorized");
+  if (denyAdminAccess(req, res, deps.env)) {
     return true;
   }
   const rawId = route[1];
