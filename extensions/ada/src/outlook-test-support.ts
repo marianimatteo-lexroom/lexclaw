@@ -1,8 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
+import type { SqliteWorkerCommand } from "openclaw/plugin-sdk/sqlite-worker-runtime";
 import { vi } from "vitest";
-import type { OutlookAccountDb } from "./outlook-account-contract.js";
+import type { AdaOutlookOperations, OutlookAccountDb } from "./outlook-account-contract.js";
 import { wrapOutlookWorker } from "./outlook-account.js";
 import { createSqliteWorkerBackend } from "./outlook-account.worker.js";
 import { handleAdaOutlookCallback } from "./outlook-callback.js";
@@ -40,7 +41,8 @@ export function openOutlookTestDb(dir: string): {
   });
   return {
     db: wrapOutlookWorker({
-      execute: async (command) => backend.execute(command as never),
+      execute: async (command: SqliteWorkerCommand<AdaOutlookOperations>) =>
+        backend.execute(command),
     } as never),
     dir,
     close: () => void backend.close(),

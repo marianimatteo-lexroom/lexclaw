@@ -89,6 +89,17 @@ export async function handleAdaOutlookCallback(
     return true;
   };
 
+  // An administrator who followed the admin-consent link comes back here with no code or state.
+  if (params.get("admin_consent")?.toLowerCase() === "true" && !code) {
+    writeAdaConnectPage(res, 200, {
+      kind: "ready",
+      heading: "App approved",
+      message:
+        "The Ada app is approved for your organization. Return to WhatsApp and ask Ada to connect Outlook.",
+      access: "none",
+    });
+    return true;
+  }
   if (params.get("error")) {
     if (isAdminConsentError(params.get("error"), params.get("error_description"))) {
       if (parsed) {

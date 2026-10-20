@@ -290,6 +290,15 @@ describe("the Outlook callback", () => {
     ).toMatchObject({ ok: true, connected: false });
   });
 
+  it("welcomes an administrator back from the admin-consent link without needing a state", async () => {
+    const page = await visitCallback(
+      new URL("https://vera.example/ada/outlook/callback?admin_consent=True&tenant=contoso"),
+      callbackDeps({ db: store.db, mock, now: NOW }),
+    );
+    expect(page.statusCode).toBe(200);
+    expect(page.body).toContain("App approved");
+  });
+
   it("shows a plain retry page when the person declines", async () => {
     mock.authorizeError = {
       error: "access_denied",
