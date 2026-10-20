@@ -77,7 +77,14 @@ it("registers digest tools, memory tools, wake service, and Google routes", () =
   expect(registerHttpRoute).toHaveBeenCalledWith(
     expect.objectContaining({ path: "/ada/admin/feedback", auth: "plugin", match: "prefix" }),
   );
+  expect(registerHttpRoute).toHaveBeenCalledWith(
+    expect.objectContaining({ path: "/admin/announcements", auth: "plugin", match: "prefix" }),
+  );
+  expect(registerHttpRoute).toHaveBeenCalledWith(
+    expect.objectContaining({ path: "/ada/admin/announcements", auth: "plugin", match: "prefix" }),
+  );
   for (const legacy of [
+    "/vera/admin/announcements",
     "/vera/admin/feedback",
     "/vera/google/callback",
     "/vera/google/notify",
@@ -88,6 +95,7 @@ it("registers digest tools, memory tools, wake service, and Google routes", () =
     expect(registerHttpRoute).toHaveBeenCalledWith(expect.objectContaining({ path: legacy }));
   }
   expect(on).toHaveBeenCalledWith("message_received", expect.any(Function));
+  expect(on).toHaveBeenCalledWith("message_sent", expect.any(Function));
   expect(on).toHaveBeenCalledWith(
     "before_prompt_build",
     expect.any(Function),

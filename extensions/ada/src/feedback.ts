@@ -48,18 +48,22 @@ export async function executeAdaReportFeedback(
 }
 
 /**
- * What the admin endpoint shows of a report: the last four digits and a stable pseudonym to
- * group one person's reports. The hash is not a secret (phone numbers are a small space); it
- * only keeps the full number out of what the endpoint returns.
+ * What the admin endpoints show of a number: the last four digits and a stable pseudonym to
+ * group one person's rows across them. The hash is not a secret (phone numbers are a small
+ * space); it only keeps the full number out of what an endpoint returns.
  */
+export function adminNumberView(number: string) {
+  return {
+    numberLast4: number.slice(-4),
+    numberHash: createHash("sha256").update(`ada-feedback:${number}`).digest("hex").slice(0, 12),
+  };
+}
+
+/** What the admin endpoint shows of a report. */
 export function feedbackView(entry: FeedbackEntry) {
   return {
     id: entry.id,
-    numberLast4: entry.number.slice(-4),
-    numberHash: createHash("sha256")
-      .update(`ada-feedback:${entry.number}`)
-      .digest("hex")
-      .slice(0, 12),
+    ...adminNumberView(entry.number),
     at: new Date(entry.atMs).toISOString(),
     atMs: entry.atMs,
     category: entry.category,

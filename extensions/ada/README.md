@@ -138,16 +138,16 @@ With `NODE_ENV=production` the account stores refuse to open without `ADA_TOKEN_
 
 ## Environment and config reference
 
-| Name                         | Where         | Purpose                                                                               |
-| ---------------------------- | ------------- | ------------------------------------------------------------------------------------- |
-| `ADA_TOKEN_KEY`              | environment   | AES-256 key for tokens at rest. Required in production. `VERA_TOKEN_KEY` still works. |
-| `ADA_WELCOME_ENABLED`        | environment   | `false` (also `0`, `off`, `no`) turns the first-message welcome off. Default on.      |
-| `ADA_ADMIN_TOKEN`            | environment   | Bearer token (16+ chars) for `/admin/feedback`. Unset: the endpoint returns 404.      |
-| `googleNotifyAudience`       | plugin config | Audience of the Pub/Sub push OIDC token. Enables JWT verification.                    |
-| `googleNotifyIssuer`         | plugin config | Expected issuer. Defaults to `https://accounts.google.com` or `accounts.google.com`.  |
-| `googleNotifyServiceAccount` | plugin config | Required `email` claim (verified) of the push subscription service account.           |
-| `googleNotifyToken`          | plugin config | Static Bearer fallback, 16+ chars.                                                    |
-| `statusToken`                | plugin config | Bearer token (16+ chars) for `GET /ada/status`.                                       |
+| Name                         | Where         | Purpose                                                                                            |
+| ---------------------------- | ------------- | -------------------------------------------------------------------------------------------------- |
+| `ADA_TOKEN_KEY`              | environment   | AES-256 key for tokens at rest. Required in production. `VERA_TOKEN_KEY` still works.              |
+| `ADA_WELCOME_ENABLED`        | environment   | `false` (also `0`, `off`, `no`) turns the first-message welcome off. Default on.                   |
+| `ADA_ADMIN_TOKEN`            | environment   | Bearer token (16+ chars) for `/admin/feedback` and `/admin/announcements`. Unset: both return 404. |
+| `googleNotifyAudience`       | plugin config | Audience of the Pub/Sub push OIDC token. Enables JWT verification.                                 |
+| `googleNotifyIssuer`         | plugin config | Expected issuer. Defaults to `https://accounts.google.com` or `accounts.google.com`.               |
+| `googleNotifyServiceAccount` | plugin config | Required `email` claim (verified) of the push subscription service account.                        |
+| `googleNotifyToken`          | plugin config | Static Bearer fallback, 16+ chars.                                                                 |
+| `statusToken`                | plugin config | Bearer token (16+ chars) for `GET /ada/status`.                                                    |
 
 Plugin config values can reference environment variables, for example `googleNotifyAudience: "${ADA_GOOGLE_NOTIFY_AUDIENCE}"`.
 
@@ -178,6 +178,34 @@ curl -sS -X POST -H "Authorization: Bearer $ADA_ADMIN_TOKEN" -d '{"status":"tria
 ```
 
 `GET /admin/feedback` returns `{ "ok": true, "entries": [...] }`, oldest first, with the reports at or after `since` (milliseconds since the epoch, default 0; a bad value is a 400). Poll with the largest `atMs` you have seen and drop repeats by `id`. Each entry is `id`, `numberLast4`, `numberHash`, `at` (ISO time), `atMs`, `category`, `text`, `language` (or `null`) and `status` (`new` or `triaged`). The number is never returned in full: `numberLast4` is its last four digits and `numberHash` is the first 12 hex characters of a SHA-256 of it, the same for every report of one number, so reports can be grouped. The hash is a pseudonym, not a secret: phone numbers are a small space, so treat the token as the protection. `POST /admin/feedback/<id>` with `{"status":"new"|"triaged"}` sets the status and returns the entry (404 for an unknown id, 400 for a bad id or body). Responses are `no-store`.
+
+## Announcements ("what's new")
+
+Product news goes out through Ada herself, so it is part of the person's conversation. The team creates an announcement over HTTP; Ada then sends it once to every number she has a private WhatsApp conversation with (one per direct session of the channel) and writes the sent text into that number's session as an assistant message through the SDK's transcript runtime. A follow-up such as "sì" or "come funziona?" is therefore read in context. Nothing about the wording is hardcoded and no command is taught.
+
+- **Dedupe.** The registry file `memory.sqlite` holds `vera_announcements` (`id`, `texts_json`, `feature`, `created_at_ms`) and `vera_announcement_deliveries` (primary key `announcement_id` + `number`, `status` `sent` or `skipped`, `reason`, `at_ms`). A delivery row is claimed in one transaction before the send, so two passes cannot both send, and it is released when the send fails. Both tables are left out of the copy the configured lawyer adopts from the registry.
+- **24-hour window, free text only.** Text is sent only while the number's WhatsApp window is open (last inbound message under 24 hours ago, read from this process and the number's wake row; unknown counts as closed). Templates are never used. A number outside the window gets no row and stays pending.
+- **Later delivery: right after the next answered message.** Ada's `message_sent` hook fires when her reply to a person has gone out; if that number is owed an announcement it is sent then, one announcement per answer (oldest first), so the news never lands before the answer and a number that was away is not handed a stack. This was chosen over appending to the morning brief because the brief only exists for numbers with Google connected and only on days it is sent; the next inbound message is the one moment every known number has an open window.
+- **Language and signature.** The text is the number's latest-message language (the same `resolveLanguage` every code-sent message uses), the announcement's Italian text when it has none for that language, and a trailing "— Ada" is stripped.
+- **Already connected.** An announcement with a `feature` (`granola`, `google` or `lexroom`) is skipped, for good, for a number that already has that account connected, so nobody is offered a link they do not need.
+- **Opt-out.** The preference key `announcements_off` (set with `ada_set_preference` when the person says, in any words, that they do not want news; `ada_forget_preference` turns it back on) makes delivery skip that number for good.
+
+The endpoint is `POST|GET /admin/announcements`, also under `/ada` and `/vera`, gated exactly like the feedback endpoint (404 until `ADA_ADMIN_TOKEN` is set, 401 without the bearer token).
+
+```sh
+# Who would get what, with nothing sent or saved
+curl -sS -X POST -H "Authorization: Bearer $ADA_ADMIN_TOKEN" -H "content-type: application/json" \
+  -d '{"id":"granola-2026-10","feature":"granola","dryRun":true,"texts":{"it":"Novità: ora puoi collegare Granola. Vuoi il link?","en":"New: you can now connect Granola. Want the link?"}}' \
+  https://ada.example.com/admin/announcements
+
+# Save and deliver (the same body without dryRun)
+curl -sS -X POST -H "Authorization: Bearer $ADA_ADMIN_TOKEN" -H "content-type: application/json" -d @announcement.json https://ada.example.com/admin/announcements
+
+# Announcements with each number's delivery status
+curl -sS -H "Authorization: Bearer $ADA_ADMIN_TOKEN" https://ada.example.com/admin/announcements
+```
+
+The body is `id` (a slug), `texts` (`it` and `en` required; `es`, `fr`, `de` optional, each at most 1500 characters), optional `feature` and optional `dryRun`. A dry run returns `recipients` with `status` `would_send`, `pending` (`window_closed`) or `skipped` (`announcements_off`, `feature_connected`) and the resolved `language` and `text` per number. Without `dryRun` the announcement is saved (201; an existing `id` is a 409 and is never overwritten) and delivered to the numbers inside their window while the response lists each number's outcome (`sent`, `skipped`, `pending` with `window_closed` or `send_failed`, and `recordedInHistory`). `GET` returns every announcement with `counts` and one row per number (`status` `sent`, `skipped` or `pending`, `reason`, `at`). Numbers appear as `numberLast4` and `numberHash`, the same pseudonym as the feedback log.
 
 ## First-message welcome
 
