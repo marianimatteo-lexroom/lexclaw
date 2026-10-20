@@ -361,20 +361,26 @@ export async function releasePendingAnnouncement(
 }
 
 /**
+ * How long a number's conversation must stay quiet after Ada's last delivered message before the
+ * announcement follows. One answer can be several WhatsApp messages (an attachment and its text,
+ * a reply to each of two quick questions, a message-tool send before the final answer): the
+ * announcement waits for the last of them, so it never lands before or inside the answer.
+ */
+export const ANNOUNCEMENT_SETTLE_MS = 8_000;
+
+/**
  * After Ada's answer to a number has gone out (so the news never lands before the answer), sends
  * that number the announcement it is still owed. The number's window is open: it just wrote.
+ * Every delivered message restarts that number's wait, so the release runs once, after the last.
  */
-export function registerAnnouncementRelease(api: OpenClawPluginApi): void {
+export function registerAnnouncementRelease(
+  api: OpenClawPluginApi,
+  options: { settleMs?: number } = {},
+): void {
   const deps = liveAnnouncementDeps(api);
-  api.on("message_sent", async (event, ctx) => {
-    if (!event.success || !event.runId || ctx.channelId !== ADA_WHATSAPP_CHANNEL) {
-      return;
-    }
-    const sessionKey = event.sessionKey ?? ctx.sessionKey;
-    const owner = sessionKeyOwner(sessionKey) ?? toOwner(event.to);
-    if (!sessionKey || !owner) {
-      return;
-    }
+  const settleMs = options.settleMs ?? ANNOUNCEMENT_SETTLE_MS;
+  const waiting = new Map<string, ReturnType<typeof setTimeout>>();
+  const release = async (owner: string, sessionKey: string) => {
     try {
       const { session } = api.runtime.agent;
       const entry = await (
@@ -388,5 +394,22 @@ export function registerAnnouncementRelease(api: OpenClawPluginApi): void {
         `ada announcement release failed owner=${maskNumber(owner)}: ${error instanceof Error ? error.message : "unknown"}`,
       );
     }
+  };
+  api.on("message_sent", async (event, ctx) => {
+    if (!event.success || !event.runId || ctx.channelId !== ADA_WHATSAPP_CHANNEL) {
+      return;
+    }
+    const sessionKey = event.sessionKey ?? ctx.sessionKey;
+    const owner = sessionKeyOwner(sessionKey) ?? toOwner(event.to);
+    if (!sessionKey || !owner) {
+      return;
+    }
+    clearTimeout(waiting.get(owner));
+    const timer = setTimeout(() => {
+      waiting.delete(owner);
+      void release(owner, sessionKey);
+    }, settleMs);
+    timer.unref?.();
+    waiting.set(owner, timer);
   });
 }
