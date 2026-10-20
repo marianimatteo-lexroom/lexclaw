@@ -1,3 +1,4 @@
+import { listAgentIds } from "openclaw/plugin-sdk/agent-scope-runtime";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { appendAssistantMirrorMessageByIdentity } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { whatsappWindowOpen } from "./collector.js";
@@ -273,13 +274,17 @@ export function outcomeView(owner: string, outcome: AnnouncementOutcome) {
  * the most recently used when a number has several.
  */
 export function listAnnouncementRecipients(
-  api: Pick<OpenClawPluginApi, "runtime">,
+  api: Pick<OpenClawPluginApi, "runtime" | "config">,
 ): AnnouncementRecipient[] {
   const latest = new Map<string, AnnouncementRecipient & { updatedAt: number }>();
-  const entries = api.runtime.agent.session.listSessionEntries({
-    readOnly: true,
-    includeParticipants: false,
-  });
+  // The session store is per agent and refuses a listing that names none.
+  const entries = listAgentIds(api.config).flatMap((agentId) =>
+    api.runtime.agent.session.listSessionEntries({
+      agentId,
+      readOnly: true,
+      includeParticipants: false,
+    }),
+  );
   for (const { sessionKey, entry } of entries) {
     const owner = sessionKeyOwner(sessionKey);
     if (!owner || !sessionKey.split(":").includes(ADA_WHATSAPP_CHANNEL) || !entry.sessionId) {

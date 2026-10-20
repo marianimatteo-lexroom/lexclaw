@@ -37,6 +37,7 @@ import {
   ANNOUNCEMENT_SETTLE_MS,
   deliverAnnouncement,
   deliverToRecipients,
+  listAnnouncementRecipients,
   liveAnnouncementDeps,
   parseAnnouncementInput,
   registerAnnouncementRelease,
@@ -471,5 +472,39 @@ describe("release after the answer", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("listAnnouncementRecipients", () => {
+  it("lists each agent's sessions, one per WhatsApp number, the most recent first", () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const runtime = {
+      agent: {
+        session: {
+          listSessionEntries: (params: Record<string, unknown>) => {
+            calls.push(params);
+            if (!params.agentId) {
+              throw new Error("Cannot resolve SQLite session scope without an agent id");
+            }
+            return [
+              {
+                sessionKey: `agent:main:kapso-whatsapp:direct:${PAOLO}`,
+                entry: { sessionId: "old", updatedAt: 1 },
+              },
+              {
+                sessionKey: `agent:main:kapso-whatsapp:direct:${PAOLO}`,
+                entry: { sessionId: "new", updatedAt: 2 },
+              },
+              { sessionKey: "agent:main:telegram:direct:393330000000", entry: { sessionId: "t" } },
+            ];
+          },
+        },
+      },
+    };
+    const recipients = listAnnouncementRecipients({ runtime, config: {} } as never);
+    expect(calls).toEqual([{ agentId: "main", readOnly: true, includeParticipants: false }]);
+    expect(recipients).toEqual([
+      { owner: PAOLO, sessionKey: `agent:main:kapso-whatsapp:direct:${PAOLO}`, sessionId: "new" },
+    ]);
   });
 });
