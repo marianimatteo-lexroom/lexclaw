@@ -105,7 +105,7 @@ export function connectOfferNote(offers: readonly ConnectOffer[]): string | unde
           .filter(Boolean)
           .join("\n")
       : kind === "lexroom_nudge"
-        ? `- Your last answer may have ended with an offer to connect ${NAMES[kind].account}; ignore this if it did not. If their message says yes in any form, call ${NAMES[kind].call} and send the link. If it says no in any form, drop it and call ada_set_preference with key ${LEXROOM_OFFER_DECLINED_KEY} and one short sentence saying they declined connecting Lexroom, then do not bring it up again.`
+        ? `- Your last reply may have opened with an offer to connect ${NAMES[kind].account}, with its link or an offer to send it; ignore this if it did not. If their message says yes in any form and you did not send the link, call ${NAMES[kind].call} and send it. If it says no in any form, drop it and call ada_set_preference with key ${LEXROOM_OFFER_DECLINED_KEY} and one short sentence saying they declined connecting Lexroom, then do not bring it up again.`
         : `- You asked whether they want to connect ${NAMES[kind].account}. If their message says yes in any form, call ${NAMES[kind].call} and send the link. If it says no, drop it and do not ask again.`,
   );
   return [

@@ -12,6 +12,7 @@ import { connectOfferNote, takeConnectOffers } from "./connect-offers.js";
 import {
   LEXROOM_NUDGE_NOTE,
   LEXROOM_OFFER_COOLDOWN_MS,
+  LEXROOM_RESEARCH_FIRST_NOTE,
   lexroomNudgeDue,
   registerLexroomNudge,
 } from "./lexroom-nudge.js";
@@ -72,21 +73,68 @@ describe("when the Lexroom offer is due", () => {
 });
 
 describe("the offer note", () => {
-  it("tells the model to answer first, offer in the person's language and never use a phrase", () => {
-    expect(LEXROOM_NUDGE_NOTE).toMatch(/answer it as usual first/u);
+  it("opens the reply with the offer and the link, in the person's language, with no command phrase", () => {
+    expect(LEXROOM_NUDGE_NOTE).toMatch(/open your reply with one or two short, natural sentences/u);
     expect(LEXROOM_NUDGE_NOTE).toMatch(/case law and doctrine research, with the sources/u);
+    expect(LEXROOM_NUDGE_NOTE).toMatch(/Call ada_lexroom_connect first and put the short link/u);
+    expect(LEXROOM_NUDGE_NOTE).toMatch(/offer to send the link instead/u);
     expect(LEXROOM_NUDGE_NOTE).toMatch(/language of their latest message/u);
     expect(LEXROOM_NUDGE_NOTE).toMatch(/do not sign/u);
     expect(LEXROOM_NUDGE_NOTE).toMatch(/Never tell them to type a word or phrase/u);
-    expect(LEXROOM_NUDGE_NOTE).toMatch(/send the link only after they say yes/u);
-    expect(LEXROOM_NUDGE_NOTE).toMatch(/not a legal question[^.]*do not mention Lexroom/u);
+  });
+
+  it("gives the full answer in the same reply, never waiting on the offer", () => {
+    expect(LEXROOM_NUDGE_NOTE).toMatch(/in the same reply, give your full answer/u);
+    expect(LEXROOM_NUDGE_NOTE).toMatch(/never waits for them to connect or to reply/u);
+    expect(LEXROOM_NUDGE_NOTE.indexOf("open your reply")).toBeLessThan(
+      LEXROOM_NUDGE_NOTE.indexOf("give your full answer"),
+    );
+  });
+
+  it("says nothing about Lexroom, and calls no tool, for a message that is not a legal question", () => {
+    expect(LEXROOM_NUDGE_NOTE).toMatch(
+      /not a legal question[^.]*do not mention Lexroom at all and do not call the tool/u,
+    );
   });
 
   it("carries a yes to the connect tool and a no to the declined preference on the next turn", () => {
     const note = connectOfferNote([{ kind: "lexroom_nudge" }]) ?? "";
     expect(note).toContain("ada_lexroom_connect");
+    expect(note).toContain("opened with an offer");
+    expect(note).toContain("did not send the link");
     expect(note).toContain(`ada_set_preference with key ${LEXROOM_OFFER_DECLINED_KEY}`);
     expect(note).toContain("ignore this if it did not");
+  });
+});
+
+describe("the research-first note", () => {
+  it("tells the model to call ada_research before any answer, and not to answer from memory first", () => {
+    expect(LEXROOM_RESEARCH_FIRST_NOTE).toMatch(/Lexroom is always the preferred way/u);
+    expect(LEXROOM_RESEARCH_FIRST_NOTE).toMatch(/call ada_research before you write any answer/u);
+    expect(LEXROOM_RESEARCH_FIRST_NOTE).toMatch(/do not answer from your own knowledge first/u);
+    expect(LEXROOM_RESEARCH_FIRST_NOTE).toMatch(/otherwise "general"/u);
+    expect(LEXROOM_RESEARCH_FIRST_NOTE).toMatch(/end the turn with exactly NO_REPLY/u);
+  });
+
+  it("allows Ada's own knowledge only when Lexroom fails or times out, and says so briefly", () => {
+    expect(LEXROOM_RESEARCH_FIRST_NOTE).toMatch(
+      /Only if ada_research cannot start or returns an error, or reason timeout, answer from your own knowledge/u,
+    );
+    expect(LEXROOM_RESEARCH_FIRST_NOTE).toMatch(/say so in one short sentence/u);
+    expect(LEXROOM_RESEARCH_FIRST_NOTE).toMatch(/no invented sources/u);
+    expect(LEXROOM_RESEARCH_FIRST_NOTE).toMatch(/not_connected or forbidden/u);
+  });
+
+  it("leaves non-legal messages and follow-ups alone, in the person's language, unsigned", () => {
+    expect(LEXROOM_RESEARCH_FIRST_NOTE).toMatch(/needs no new research/u);
+    expect(LEXROOM_RESEARCH_FIRST_NOTE).toMatch(/not a legal question[^.]*do not call it/u);
+    expect(LEXROOM_RESEARCH_FIRST_NOTE).toMatch(/language of their latest message/u);
+    expect(LEXROOM_RESEARCH_FIRST_NOTE).toMatch(/do not sign/u);
+  });
+
+  it("is never mixed up with the offer note", () => {
+    expect(LEXROOM_RESEARCH_FIRST_NOTE).not.toContain("Offer to connect");
+    expect(LEXROOM_NUDGE_NOTE).not.toContain("Lexroom research first");
   });
 });
 
@@ -140,6 +188,7 @@ describe("the offer hook", () => {
     ...extra,
   });
   const offered = { prependContext: LEXROOM_NUDGE_NOTE };
+  const researchFirst = { prependContext: LEXROOM_RESEARCH_FIRST_NOTE };
 
   beforeEach(() => {
     preferences = [];
@@ -169,17 +218,69 @@ describe("the offer hook", () => {
     expect(taken).toEqual([{ kind: "lexroom_nudge", detail: undefined }]);
   });
 
-  it("does not offer when Lexroom is already connected", async () => {
+  it("does not offer when Lexroom is already connected, and asks for Lexroom research first instead", async () => {
     account = { email: "anna@example.com", accessToken: "token" };
-    await expect(hook()({}, ctxFor(freshNumber()))).resolves.toBeUndefined();
+    await expect(hook()({}, ctxFor(freshNumber()))).resolves.toEqual(researchFirst);
     expect(writeWake).not.toHaveBeenCalled();
   });
 
-  it("does not offer to the configured lawyer who uses the static token", async () => {
+  it("asks for Lexroom research first on every turn while connected, not once a day", async () => {
+    account = { email: "anna@example.com", accessToken: "token" };
+    const owner = freshNumber();
+    const ask = hook();
+    await expect(ask({}, ctxFor(owner, { runId: "a" }))).resolves.toEqual(researchFirst);
+    clock = NOON + 60 * 1000;
+    await expect(ask({}, ctxFor(owner, { runId: "b" }))).resolves.toEqual(researchFirst);
+    clock = NOON + 3 * DAY_MS;
+    await expect(ask({}, ctxFor(owner, { runId: "c" }))).resolves.toEqual(researchFirst);
+  });
+
+  it("asks for it even when the person once declined the offer or a link is still live", async () => {
+    account = { email: "anna@example.com", accessToken: "token" };
+    preferences = [{ key: LEXROOM_OFFER_DECLINED_KEY, text: "Declined.", updatedAtMs: NOON }];
+    await expect(hook()({}, ctxFor(freshNumber()))).resolves.toEqual(researchFirst);
+  });
+
+  it("asks for it for the configured lawyer who uses the static token", async () => {
     const lawyer = "390000000000";
     await expect(
       hook({ ...PLUGIN_CONFIG, accessToken: "static-lexroom-token" })({}, ctxFor(lawyer)),
+    ).resolves.toEqual(researchFirst);
+  });
+
+  it("never asks for research first of a number without Lexroom, and never offers to one with it", async () => {
+    const ask = hook();
+    const without = await ask({}, ctxFor(freshNumber()));
+    expect(without).toEqual(offered);
+    expect(JSON.stringify(without)).not.toContain("Lexroom research first");
+    account = { email: "anna@example.com", accessToken: "token" };
+    const withLexroom = await ask({}, ctxFor(freshNumber()));
+    expect(JSON.stringify(withLexroom)).not.toContain("Offer to connect Lexroom");
+  });
+
+  it("asks for research only when ada_research is available to the turn", async () => {
+    account = { email: "anna@example.com", accessToken: "token" };
+    const only = (name: string) => ({
+      toolAuthority: { allows: (tool: string) => tool === name, assertActive: () => {} },
+    });
+    await expect(
+      hook()({}, ctxFor(freshNumber(), only("ada_lexroom_connect"))),
     ).resolves.toBeUndefined();
+    await expect(hook()({}, ctxFor(freshNumber(), only("ada_research")))).resolves.toEqual(
+      researchFirst,
+    );
+  });
+
+  it("adds the research instruction to a person's own private turn only", async () => {
+    account = { email: "anna@example.com", accessToken: "token" };
+    const owner = freshNumber();
+    const ask = hook();
+    await expect(ask({}, ctxFor(owner, { channel: "telegram" }))).resolves.toBeUndefined();
+    await expect(
+      ask({}, ctxFor(owner, { sessionKey: `agent:main:kapso-whatsapp:group:${owner}` })),
+    ).resolves.toBeUndefined();
+    await expect(ask({}, ctxFor(owner, { trigger: "cron" }))).resolves.toBeUndefined();
+    await expect(ask({}, ctxFor(owner, { trigger: "heartbeat" }))).resolves.toBeUndefined();
   });
 
   it("does not offer while a connect link sent a moment ago is still usable", async () => {

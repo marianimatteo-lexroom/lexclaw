@@ -38,12 +38,23 @@ export function lexroomNudgeDue(facts: LexroomNudgeFacts): boolean {
   );
 }
 
-/** Handed to the model on the one turn of a day that may carry the offer. */
+/** Handed to the model on the one turn of a day that may carry the offer, which opens the reply. */
 export const LEXROOM_NUDGE_NOTE = [
   "# Offer to connect Lexroom (this turn only)",
-  "This person has not connected their Lexroom account. If their message is a legal question that you answer in this turn (about the law, a case, a statute, a contract or a procedure), answer it as usual first, then end the same message with a short, natural offer, one or two sentences: with Lexroom connected, your answers are grounded in Lexroom's case law and doctrine research, with the sources. Ask whether they would like to connect it.",
-  "Do not call ada_lexroom_connect and do not write a link yet: send the link only after they say yes. Never tell them to type a word or phrase; they answer in their own words. Write in the language of their latest message, do not sign the message, and do not press or repeat the offer.",
-  "If their message is not a legal question (a greeting, thanks, a scheduling, mail or calendar matter, small talk), do not mention Lexroom at all.",
+  "This person has not connected their Lexroom account. If their message is a legal question (about the law, a case, a statute, a contract or a procedure), open your reply with one or two short, natural sentences: with Lexroom connected, your answers are grounded in Lexroom's case law and doctrine research, with the sources. Call ada_lexroom_connect first and put the short link it returns in that opening; if the call fails, offer to send the link instead.",
+  "Then, in the same reply, give your full answer to the question as usual: the answer never waits for them to connect or to reply to the offer. Never tell them to type a word or phrase, and do not press or repeat the offer. Write in the language of their latest message and do not sign the message.",
+  "If their message is not a legal question (a greeting, thanks, a scheduling, mail or calendar matter, small talk), do not mention Lexroom at all and do not call the tool.",
+].join("\n");
+
+/**
+ * Handed to the model on every person's own turn while Lexroom is connected: Lexroom answers
+ * legal questions, and Ada's own knowledge is only the fallback when Lexroom cannot.
+ */
+export const LEXROOM_RESEARCH_FIRST_NOTE = [
+  "# Lexroom research first",
+  'This person has Lexroom connected, and Lexroom is always the preferred way to answer a legal question. If their message is a legal question (about the law, a case, a statute, a contract or a procedure), call ada_research before you write any answer, and do not answer from your own knowledge first. Put the question and the facts it needs in query, in the language they wrote it; use the matter id of the matter it concerns when your memory knows it, otherwise "general"; pass modules only when the question clearly belongs to one area. Ada sends the researched answer with its sources herself: follow the tool result, which tells you to end the turn with exactly NO_REPLY when the person was already told the research is running.',
+  "Only if ada_research cannot start or returns an error, or reason timeout, answer from your own knowledge, and say so in one short sentence in their language: that Lexroom did not answer and this comes from general knowledge, with no invented sources, case citations or quotations. A not_connected or forbidden result means the connection is the problem: follow the Lexroom connect rules instead.",
+  "A follow-up that only asks you to clarify, shorten, translate or reformat an answer already given needs no new research. For everything that is not a legal question (a greeting, thanks, scheduling, mail, calendar, small talk) do not call it. Write in the language of their latest message and do not sign the message.",
 ].join("\n");
 
 async function lexroomConnected(api: OpenClawPluginApi, owner: string): Promise<boolean> {
@@ -55,7 +66,8 @@ async function lexroomConnected(api: OpenClawPluginApi, owner: string): Promise<
 }
 
 /**
- * Adds the offer to the prompt of a person's own turn when it is due. The slot of the day is
+ * Adds to the prompt of a person's own turn: the Lexroom-first instruction while Lexroom is
+ * connected, otherwise, when it is due, the offer to connect. The slot of the day is
  * spent when the note is handed out, so a retry of the same run still gets it and no other run
  * does; the model decides whether the message was a legal question worth the offer.
  */
@@ -72,7 +84,7 @@ export function registerLexroomNudge(
           return undefined;
         }
         const authority = ctx.toolAuthority;
-        if (!authority?.allows("ada_lexroom_connect")) {
+        if (!authority) {
           return undefined;
         }
         const turn = resolveHookTurnOwner(ctx);
@@ -84,12 +96,18 @@ export function registerLexroomNudge(
           return { prependContext: LEXROOM_NUDGE_NOTE };
         }
         const clock = now();
-        if (!readLexroomConnectConfig(lexroomConnectConfigFrom(api.pluginConfig)).ok) {
-          return undefined;
+        const connected = await lexroomConnected(api, owner);
+        if (connected) {
+          return authority.allows("ada_research")
+            ? { prependContext: LEXROOM_RESEARCH_FIRST_NOTE }
+            : undefined;
         }
         const linkLive = hasLiveShortLink("l", owner, clock);
-        const connected = linkLive ? false : await lexroomConnected(api, owner);
-        if (linkLive || connected) {
+        if (
+          linkLive ||
+          !authority.allows("ada_lexroom_connect") ||
+          !readLexroomConnectConfig(lexroomConnectConfigFrom(api.pluginConfig)).ok
+        ) {
           return undefined;
         }
         const memory = await openAdaMemoryFromApi(api, owner);

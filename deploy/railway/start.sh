@@ -189,7 +189,8 @@ migrate_legacy_plugin
 # rename the standalone word Vera or VERA (case-sensitive, so the Italian adjective vera stays),
 # turn the known "one lawyer / one person only" phrases into
 # "everyone who writes to her", and append one marked section that says she serves every sender.
-# SOUL.md also gets a marked section that says she answers in the language of the latest message.
+# SOUL.md also gets a marked section that says she answers in the language of the latest message,
+# and one that says Lexroom is her preferred way to answer legal questions.
 # SOUL.md and AGENTS.md also get a marked section that says she never signs her messages, and in
 # every file the exact sentence "Introduce yourself and sign off as Ada." (the one the old persona
 # carried) is removed; no other line is ever matched, so legal instructions about signatures stay.
@@ -217,6 +218,10 @@ migrate_identity_name() {
     const langBlock =
       LANG_MARK +
       "\n## Language\n\nAda always replies in the language of the most recent message from the person she is talking to, and switches when they switch. That overrides any older line that names a language or says to answer in Italian, and the language of earlier messages, profiles, notes and tool output.\n<!-- /ada:language -->\n";
+    const LEX_MARK = "<!-- ada:lexroom-first -->";
+    const lexBlock =
+      LEX_MARK +
+      "\n## Legal questions\n\nLexroom is always the preferred way for Ada to answer a legal question. When the person has Lexroom connected, Ada researches the question with Lexroom before answering and bases the answer on the results and their sources. She uses her own knowledge only if Lexroom fails or times out, and then says so briefly. That overrides any older line that says to answer legal questions directly first.\n<!-- /ada:lexroom-first -->\n";
     const SIGN_MARK = "<!-- ada:no-signature -->";
     const signBlock =
       SIGN_MARK +
@@ -247,13 +252,13 @@ migrate_identity_name() {
     };
     const files = [
       { name: "IDENTITY.md", serves: true },
-      { name: "SOUL.md", serves: true, language: true, noSignature: true },
+      { name: "SOUL.md", serves: true, language: true, lexroomFirst: true, noSignature: true },
       { name: "AGENTS.md", noSignature: true },
       { name: "TOOLS.md" },
       { name: "HEARTBEAT.md" },
       { name: "BOOTSTRAP.md" },
     ];
-    for (const { name, serves, language, noSignature } of files) {
+    for (const { name, serves, language, lexroomFirst, noSignature } of files) {
       const file = path.join(process.argv[1], name);
       if (!fs.existsSync(file)) continue;
       const before = fs.readFileSync(file, "utf8");
@@ -269,6 +274,9 @@ migrate_identity_name() {
       }
       if (language && !after.includes(LANG_MARK)) {
         after = after.replace(/\s*$/u, "") + "\n\n" + langBlock;
+      }
+      if (lexroomFirst && !after.includes(LEX_MARK)) {
+        after = after.replace(/\s*$/u, "") + "\n\n" + lexBlock;
       }
       if (noSignature && !after.includes(SIGN_MARK)) {
         after = after.replace(/\s*$/u, "") + "\n\n" + signBlock;

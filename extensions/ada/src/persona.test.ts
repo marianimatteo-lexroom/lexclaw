@@ -48,13 +48,20 @@ describe("Ada's persona", () => {
 
   it("helps without an account and sends the connect link instead of sending people away", () => {
     expect(ADA_PERSONA).toMatch(
-      /Answer general legal questions right away, for anyone, without needing any account/u,
+      /answer general legal questions right away, for anyone, without needing any account/u,
     );
     expect(ADA_PERSONA).toMatch(/does not replace a lawyer/u);
     expect(ADA_PERSONA).toMatch(/already have a Lexroom account.* send the link straight away/u);
     expect(ADA_PERSONA).toMatch(
       /Never tell anyone to find, sign up for or set up Lexroom themselves/u,
     );
+  });
+
+  it("makes Lexroom the first way to answer a legal question when it is connected", () => {
+    expect(ADA_PERSONA).toMatch(/Lexroom is always the preferred way to answer one/u);
+    expect(ADA_PERSONA).toMatch(/call ada_research before writing any answer/u);
+    expect(ADA_PERSONA).toMatch(/use your own knowledge only if Lexroom fails or times out/u);
+    expect(ADA_PERSONA).not.toMatch(/Help first\. Answer general legal questions right away/u);
   });
 
   it("asks naturally before connecting, understands yes in any form, and never teaches a command", () => {
