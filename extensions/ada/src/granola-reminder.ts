@@ -20,7 +20,11 @@ type ReminderApi = Pick<
 const KEEP_ALIVE_RENEW_WITHIN_MS = 20 * 60 * 1000;
 
 /** The owner's WhatsApp window: false only when this process or the wake row knows it closed. */
-async function windowMayBeOpen(api: ReminderApi, owner: string, nowMs: number): Promise<boolean> {
+export async function windowMayBeOpen(
+  api: ReminderApi,
+  owner: string,
+  nowMs: number,
+): Promise<boolean> {
   const memory = await openAdaMemoryIfExistsFromApi(api, owner).catch(() => null);
   const wake = memory ? await memory.readWake() : null;
   const inbound = Math.max(lastSenderInboundAt(owner) ?? 0, wake?.lastLawyerInboundAtMs ?? 0);

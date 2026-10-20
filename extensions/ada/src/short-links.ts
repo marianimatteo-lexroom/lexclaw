@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
  * live in this process only, so a restart makes the links already sent say "expired" and the
  * person asks Ada for a new one.
  */
-export type ShortLinkKind = "g" | "l" | "gr";
+export type ShortLinkKind = "g" | "l" | "gr" | "o";
 
 type ShortLink = {
   kind: ShortLinkKind;

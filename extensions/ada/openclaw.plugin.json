@@ -138,7 +138,16 @@
       "ada_granola_connect",
       "ada_granola_disconnect",
       "ada_granola_tools",
-      "ada_granola_call"
+      "ada_granola_call",
+      "ada_outlook_connect",
+      "ada_outlook_read_inbox",
+      "ada_outlook_read_message",
+      "ada_outlook_draft_email",
+      "ada_outlook_send_email",
+      "ada_outlook_reply",
+      "ada_outlook_read_calendar",
+      "ada_outlook_create_calendar_event",
+      "ada_outlook_update_calendar_event"
     ]
   },
   "toolMetadata": {
@@ -221,6 +230,33 @@
       "optional": true
     },
     "ada_granola_call": {
+      "optional": true
+    },
+    "ada_outlook_connect": {
+      "optional": true
+    },
+    "ada_outlook_read_inbox": {
+      "optional": true
+    },
+    "ada_outlook_read_message": {
+      "optional": true
+    },
+    "ada_outlook_draft_email": {
+      "optional": true
+    },
+    "ada_outlook_send_email": {
+      "optional": true
+    },
+    "ada_outlook_reply": {
+      "optional": true
+    },
+    "ada_outlook_read_calendar": {
+      "optional": true
+    },
+    "ada_outlook_create_calendar_event": {
+      "optional": true
+    },
+    "ada_outlook_update_calendar_event": {
       "optional": true
     }
   }

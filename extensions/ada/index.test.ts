@@ -32,6 +32,15 @@ const TOOL_NAMES = [
   "ada_granola_disconnect",
   "ada_granola_tools",
   "ada_granola_call",
+  "ada_outlook_connect",
+  "ada_outlook_read_inbox",
+  "ada_outlook_read_message",
+  "ada_outlook_draft_email",
+  "ada_outlook_send_email",
+  "ada_outlook_reply",
+  "ada_outlook_read_calendar",
+  "ada_outlook_create_calendar_event",
+  "ada_outlook_update_calendar_event",
 ];
 
 it("registers digest tools, memory tools, wake service, and Google routes", () => {
@@ -69,6 +78,12 @@ it("registers digest tools, memory tools, wake service, and Google routes", () =
     expect.objectContaining({ path: "/gr", auth: "plugin", match: "prefix" }),
   );
   expect(registerHttpRoute).toHaveBeenCalledWith(
+    expect.objectContaining({ path: "/ada/outlook/callback" }),
+  );
+  expect(registerHttpRoute).toHaveBeenCalledWith(
+    expect.objectContaining({ path: "/o", auth: "plugin", match: "prefix" }),
+  );
+  expect(registerHttpRoute).toHaveBeenCalledWith(
     expect.objectContaining({ path: "/ada/status", auth: "plugin", match: "exact" }),
   );
   expect(registerHttpRoute).toHaveBeenCalledWith(
@@ -90,6 +105,7 @@ it("registers digest tools, memory tools, wake service, and Google routes", () =
     "/vera/google/notify",
     "/vera/granola/callback",
     "/vera/lexroom/connect",
+    "/vera/outlook/callback",
     "/vera/status",
   ]) {
     expect(registerHttpRoute).toHaveBeenCalledWith(expect.objectContaining({ path: legacy }));
