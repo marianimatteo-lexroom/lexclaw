@@ -5,7 +5,7 @@ import { openAdaLexroomAccountFromApi } from "./lexroom-account.js";
 import { lexroomConnectConfigFrom, readLexroomConnectConfig } from "./lexroom-connect.js";
 import { LEXROOM_OFFER_DECLINED_KEY } from "./memory-contract.js";
 import { openAdaMemoryFromApi } from "./memory.js";
-import { lawyerOwner, resolveTurnOwner } from "./owner.js";
+import { lawyerOwner, resolveHookTurnOwner } from "./owner.js";
 import { effectiveTimeZone } from "./schedule.js";
 import { hasLiveShortLink } from "./short-links.js";
 
@@ -75,11 +75,7 @@ export function registerLexroomNudge(
         if (!authority?.allows("ada_lexroom_connect")) {
           return undefined;
         }
-        const turn = resolveTurnOwner({
-          requesterSenderId: ctx.senderId,
-          messageChannel: ctx.channelId,
-          sessionKey: ctx.sessionKey,
-        });
+        const turn = resolveHookTurnOwner(ctx);
         if (!turn.ok) {
           return undefined;
         }

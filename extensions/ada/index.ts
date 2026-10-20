@@ -69,7 +69,7 @@ import {
 } from "./src/memory-tools.js";
 import { openAdaMemoryIfExistsFromApi } from "./src/memory.js";
 import { ownerToolFactory } from "./src/owner-tool.js";
-import { lawyerOwner, resolveTurnOwner } from "./src/owner.js";
+import { lawyerOwner, resolveHookTurnOwner } from "./src/owner.js";
 import { ADA_PERSONA } from "./src/persona.js";
 import { adaPreferenceTools } from "./src/preference-tools.js";
 import { recordInboundLanguage, registerResearchLinkHooks } from "./src/research-link-outbound.js";
@@ -534,11 +534,7 @@ const entry = definePluginEntry({
     });
 
     api.on("before_prompt_build", (_event, ctx) => {
-      const turn = resolveTurnOwner({
-        requesterSenderId: ctx?.senderId,
-        messageChannel: ctx?.channelId,
-        sessionKey: ctx?.sessionKey,
-      });
+      const turn = resolveHookTurnOwner(ctx ?? {});
       const personTurn = ctx?.trigger === undefined || ctx.trigger === "user";
       const note = connectOfferNote(
         turn.ok && personTurn
@@ -563,11 +559,7 @@ const entry = definePluginEntry({
           if (!authority?.allows("ada_memory_search")) {
             return;
           }
-          const turn = resolveTurnOwner({
-            requesterSenderId: ctx.senderId,
-            messageChannel: ctx.channelId,
-            sessionKey: ctx.sessionKey,
-          });
+          const turn = resolveHookTurnOwner(ctx);
           if (!turn.ok) {
             return;
           }

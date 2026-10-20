@@ -954,7 +954,13 @@ describe("message_received hook", () => {
 });
 
 describe("before_prompt_build hook", () => {
-  const TURN = { senderId: LAWYER, channelId: "kapso-whatsapp", sessionKey: SESSION };
+  // The host's agent hook context names the channel in `channel`; `channelId` is the conversation.
+  const TURN = {
+    senderId: LAWYER,
+    channel: "kapso-whatsapp",
+    channelId: LAWYER,
+    sessionKey: SESSION,
+  };
   const PROFILE = {
     name: "Test Lawyer",
     timezone: "Europe/Rome",

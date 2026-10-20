@@ -130,7 +130,9 @@ describe("the offer hook", () => {
 
   const ctxFor = (owner: string, extra: Record<string, unknown> = {}) => ({
     senderId: owner,
-    channelId: "kapso-whatsapp",
+    channel: "kapso-whatsapp",
+    // In an agent hook context the channel id is the conversation: the number, in a private chat.
+    channelId: owner,
     sessionKey: `agent:main:kapso-whatsapp:direct:${owner}`,
     runId: "run-1",
     trigger: "user",
@@ -227,7 +229,7 @@ describe("the offer hook", () => {
   it("offers to nobody it cannot name: other channels, groups, cron runs, no connect tool", async () => {
     const owner = freshNumber();
     const ask = hook();
-    await expect(ask({}, ctxFor(owner, { channelId: "telegram" }))).resolves.toBeUndefined();
+    await expect(ask({}, ctxFor(owner, { channel: "telegram" }))).resolves.toBeUndefined();
     await expect(
       ask({}, ctxFor(owner, { sessionKey: `agent:main:kapso-whatsapp:group:${owner}` })),
     ).resolves.toBeUndefined();
