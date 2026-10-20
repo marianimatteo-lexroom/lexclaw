@@ -93,6 +93,16 @@ export function resolveShortLink(kind: ShortLinkKind, code: string, now: Date): 
   return entry.target;
 }
 
+/** True while `owner` holds a code of `kind` that has not expired: a link sent and still usable. */
+export function hasLiveShortLink(kind: ShortLinkKind, owner: string, now: Date): boolean {
+  for (const entry of links.values()) {
+    if (entry.kind === kind && entry.owner === owner && entry.expiresAtMs > now.getTime()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Drops every code whose state nonce was just spent, so a code never outlives its state. */
 export function revokeShortLinksForNonce(nonce: string): void {
   for (const [entryKey, entry] of links) {

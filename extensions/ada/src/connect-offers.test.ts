@@ -175,6 +175,26 @@ describe("the persona hook", () => {
     expect(hook({}, { ...turn(anna), runId: "r2", trigger: "user" })).toEqual(plain);
   });
 
+  it("finds the number in the context the host really builds, where the channel id is the number", () => {
+    const anna = freshNumber();
+    const hook = personaHook();
+    noteConnectOffer(anna, "google");
+    arrived(anna);
+    const hostContext = {
+      senderId: anna,
+      channel: "kapso-whatsapp",
+      messageProvider: "kapso-whatsapp",
+      channelId: anna,
+      sessionKey: `agent:main:kapso-whatsapp:direct:${anna}`,
+      runId: "r1",
+      trigger: "user",
+    };
+    expect(hook({}, hostContext)).toEqual(noted("ada_google_connect"));
+    expect(
+      hook({}, { ...hostContext, runId: "r2", channel: "telegram", messageProvider: "telegram" }),
+    ).toEqual(plain);
+  });
+
   it("keeps the question for the person's own turn when a cron or system run builds a prompt first", () => {
     const anna = freshNumber();
     const hook = personaHook();

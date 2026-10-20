@@ -27,6 +27,7 @@ export function wrapGranolaWorker(
       worker.execute({ type: "replacePending", input: { owner, nonce, expiresAtMs, pending } }),
     consumePending: (owner, nonce, nowMs) =>
       worker.execute({ type: "consumePending", input: { owner, nonce, nowMs } }),
+    pendingExpiresAt: (owner) => worker.execute({ type: "pendingExpiresAt", input: { owner } }),
     upsertAccount: (owner, account) =>
       worker.execute({ type: "upsertAccount", input: { owner, account } }),
     readAccount: (owner) => worker.execute({ type: "readAccount", input: { owner } }),
@@ -54,6 +55,7 @@ export function bindGranolaOwner(db: GranolaAccountDb, owner: string): GranolaAc
     replacePending: (nonce, expiresAtMs, pending) =>
       db.replacePending(owner, nonce, expiresAtMs, pending),
     consumePending: (nonce, nowMs) => db.consumePending(owner, nonce, nowMs),
+    pendingExpiresAt: () => db.pendingExpiresAt(owner),
     upsertAccount: (account) => db.upsertAccount(owner, account),
     readAccount: () => db.readAccount(owner),
     clearAccount: () => db.clearAccount(owner),

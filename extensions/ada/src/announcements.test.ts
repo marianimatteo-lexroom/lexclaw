@@ -113,6 +113,7 @@ describe("announcement input", () => {
     expect(parseAnnouncementInput({ ...valid, texts: { it: " Ciao ", en: "Hi" } }, NOW)).toEqual({
       ok: true,
       dryRun: false,
+      exclude: [],
       announcement: {
         id: "granola-1",
         texts: { it: "Ciao", en: "Hi" },
@@ -392,6 +393,9 @@ describe("release after the answer", () => {
   async function setup() {
     await registry.saveAnnouncement({ ...GRANOLA, feature: null });
     let handler: MessageSent | undefined;
+    let received:
+      | ((event: Record<string, unknown>, ctx: Record<string, unknown>) => void)
+      | undefined;
     const api = {
       logger,
       config: {},
@@ -405,6 +409,9 @@ describe("release after the answer", () => {
         if (name === "message_sent") {
           handler = fn;
         }
+        if (name === "message_received") {
+          received = fn as never;
+        }
       },
     };
     registerAnnouncementRelease(api as never);
@@ -414,7 +421,12 @@ describe("release after the answer", () => {
         { to: `+${PAOLO}`, content: "answer", success: true, runId: "run-1", sessionKey, ...event },
         { channelId: "kapso-whatsapp", ...ctx },
       );
-    return { fire };
+    const arrives = (event: Record<string, unknown> = {}, ctx: Record<string, unknown> = {}) =>
+      received?.(
+        { from: `+${PAOLO}`, content: "another question", ...event },
+        { channelId: "kapso-whatsapp", senderId: PAOLO, ...ctx },
+      );
+    return { fire, arrives };
   }
 
   it("delivers a pending announcement once the number's answer went out, and writes it to history", async () => {
@@ -459,6 +471,44 @@ describe("release after the answer", () => {
     }
   });
 
+  it("does not release between two answers: a message from the number cancels the wait until its answer went out", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      vi.setSystemTime(NOW);
+      recordSenderInbound(PAOLO, NOW - 1000);
+      const { fire, arrives } = await setup();
+      await fire({ content: "first answer" });
+      await vi.advanceTimersByTimeAsync(ANNOUNCEMENT_SETTLE_MS - 1000);
+      // The second question arrives; Ada takes longer than the wait to answer it.
+      arrives();
+      await vi.advanceTimersByTimeAsync(ANNOUNCEMENT_SETTLE_MS * 3);
+      expect(mocks.send).not.toHaveBeenCalled();
+      await fire({ content: "second answer", runId: "run-2" });
+      await vi.advanceTimersByTimeAsync(ANNOUNCEMENT_SETTLE_MS - 1);
+      expect(mocks.send).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(mocks.send).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels only the wait of the number that wrote, and ignores other channels", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      vi.setSystemTime(NOW);
+      recordSenderInbound(PAOLO, NOW - 1000);
+      const { fire, arrives } = await setup();
+      await fire();
+      arrives({ from: "+393339999999" }, { senderId: "393339999999" });
+      arrives({}, { channelId: "telegram" });
+      await vi.advanceTimersByTimeAsync(ANNOUNCEMENT_SETTLE_MS);
+      expect(mocks.send).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does nothing for a failed send, a message with no run, or another channel", async () => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     try {
@@ -473,6 +523,65 @@ describe("release after the answer", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("excluded numbers", () => {
+  const valid = { id: "granola-1", texts: { it: "Ciao", en: "Hi" }, feature: "granola" };
+
+  it("reads exclude as numbers in any spelling, without repeats, and refuses anything else", () => {
+    expect(
+      parseAnnouncementInput(
+        { ...valid, exclude: [PAOLO, `+${PAOLO}`, 393339999999, "+39 333 111 2222"] },
+        NOW,
+      ),
+    ).toMatchObject({ ok: true, exclude: [PAOLO, "393339999999", "393331112222"] });
+    for (const exclude of ["393331111111", [""], ["paolo"], [{}], [PAOLO, "123"]]) {
+      expect(parseAnnouncementInput({ ...valid, exclude }, NOW).ok).toBe(false);
+    }
+  });
+
+  it("marks an excluded number skipped for good, even one inside its window, and sends to the rest", async () => {
+    await registry.saveAnnouncement(GRANOLA);
+    const deps = makeDeps();
+    const results = await deliverToRecipients(deps, GRANOLA, [recipient(PAOLO), recipient(ANNA)], {
+      exclude: [PAOLO],
+    });
+    expect(
+      results.map(({ recipient: who, outcome }) => [who.owner, outcome.status, outcome.reason]),
+    ).toEqual([
+      [PAOLO, "skipped", "excluded"],
+      [ANNA, "sent", null],
+    ]);
+    expect(deps.send).toHaveBeenCalledTimes(1);
+    expect(deps.send).toHaveBeenCalledWith(ANNA, GRANOLA.texts.it);
+    expect(await registry.listAnnouncementDeliveries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ number: PAOLO, status: "skipped", reason: "excluded" }),
+      ]),
+    );
+  });
+
+  it("also marks an excluded number that has no conversation yet, so it is never told later", async () => {
+    await registry.saveAnnouncement(GRANOLA);
+    const deps = makeDeps();
+    const results = await deliverToRecipients(deps, GRANOLA, [], { exclude: [PAOLO] });
+    expect(results.map(({ outcome }) => [outcome.status, outcome.reason])).toEqual([
+      ["skipped", "excluded"],
+    ]);
+    await releasePendingAnnouncement(deps, recipient(PAOLO));
+    expect(deps.send).not.toHaveBeenCalled();
+  });
+
+  it("changes nothing in a dry run, but still reports the number as excluded", async () => {
+    const deps = makeDeps();
+    const results = await deliverToRecipients(deps, GRANOLA, [recipient(PAOLO)], {
+      dryRun: true,
+      exclude: [PAOLO],
+    });
+    expect(results[0]?.outcome).toMatchObject({ status: "skipped", reason: "excluded" });
+    expect(await registry.listAnnouncementDeliveries()).toEqual([]);
+    expect(deps.send).not.toHaveBeenCalled();
   });
 });
 

@@ -86,7 +86,8 @@ async function listView(deps: AnnouncementDeps, recipients: readonly Announcemen
  * `{"id":"<slug>","texts":{"it":"…","en":"…"},"feature":"granola","dryRun":true}` shows who would
  * get what without sending or saving; without `dryRun` it saves the announcement and delivers it
  * to every number inside its 24-hour window (the others get it after their next answered
- * message). `GET` lists the announcements with each number's delivery status. Disabled (404)
+ * message). The optional `exclude` list (E.164 digits) marks numbers already told by hand as
+ * skipped with reason `excluded`, in a dry run too. `GET` lists the announcements with each number's delivery status. Disabled (404)
  * unless `ADA_ADMIN_TOKEN` is set; every request then needs that bearer token.
  */
 export async function handleAdaAnnouncementsAdmin(
@@ -121,18 +122,20 @@ export async function handleAdaAnnouncementsAdmin(
         writeJson(res, 400, { ok: false, error: parsed.error });
         return true;
       }
-      const { announcement, dryRun } = parsed;
+      const { announcement, dryRun, exclude } = parsed;
       if (!dryRun && !(await (await deps.delivery.registry()).saveAnnouncement(announcement))) {
         writeJson(res, 409, { ok: false, error: "an announcement with this id already exists" });
         return true;
       }
       const results = await deliverToRecipients(deps.delivery, announcement, deps.recipients(), {
         dryRun,
+        exclude,
       });
       writeJson(res, dryRun ? 200 : 201, {
         ok: true,
         dryRun,
         announcement: announcementView(announcement),
+        excluded: exclude.length,
         recipients: results.map(({ recipient, outcome }) => outcomeView(recipient.owner, outcome)),
       });
       return true;

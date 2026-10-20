@@ -28,6 +28,8 @@ export type GoogleRefreshedTokens = {
 export type GoogleAccountStore = {
   replacePending(nonce: string, expiresAtMs: number): Promise<void>;
   consumePending(nonce: string, nowMs: number): Promise<boolean>;
+  /** When the connect link last issued to this number expires, or null when none is waiting. */
+  pendingExpiresAt(): Promise<number | null>;
   upsertAccount(account: GoogleAccountRecord): Promise<void>;
   readAccount(): Promise<GoogleAccountRecord | null>;
   clearAccount(): Promise<void>;
@@ -44,6 +46,7 @@ export type GoogleAccountStore = {
 export type GoogleAccountDb = {
   replacePending(owner: string, nonce: string, expiresAtMs: number): Promise<void>;
   consumePending(owner: string, nonce: string, nowMs: number): Promise<boolean>;
+  pendingExpiresAt(owner: string): Promise<number | null>;
   upsertAccount(owner: string, account: GoogleAccountRecord): Promise<void>;
   readAccount(owner: string): Promise<GoogleAccountRecord | null>;
   clearAccount(owner: string): Promise<void>;
@@ -64,6 +67,7 @@ type Operation<Input, Output> = { input: Input; output: Output };
 export type AdaGoogleOperations = {
   replacePending: Operation<{ owner: string; nonce: string; expiresAtMs: number }, undefined>;
   consumePending: Operation<{ owner: string; nonce: string; nowMs: number }, boolean>;
+  pendingExpiresAt: Operation<{ owner: string }, number | null>;
   upsertAccount: Operation<{ owner: string; account: GoogleAccountRecord }, undefined>;
   readAccount: Operation<{ owner: string }, GoogleAccountRecord | null>;
   clearAccount: Operation<{ owner: string }, undefined>;

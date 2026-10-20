@@ -329,6 +329,18 @@ class AdaLexroomDatabaseStore {
     return Boolean(row && row.owner === owner && row.expires_at_ms > nowMs);
   }
 
+  pendingExpiresAt(owner: string): number | null {
+    assertOwner(owner);
+    const row = executeSqliteQueryTakeFirstSync(
+      this.db,
+      this.query
+        .selectFrom("vera_lexroom_pending")
+        .select("expires_at_ms")
+        .where("owner", "=", owner),
+    );
+    return row?.expires_at_ms ?? null;
+  }
+
   consumePending(owner: string, nonce: string, nowMs: number): boolean {
     assertOwner(owner);
     assertNonce(nonce);
@@ -504,6 +516,8 @@ export function createSqliteWorkerBackend(
           );
         case "hasPending":
           return database.hasPending(command.input.owner, command.input.nonce, command.input.nowMs);
+        case "pendingExpiresAt":
+          return database.pendingExpiresAt(command.input.owner);
         case "consumePending":
           return database.consumePending(
             command.input.owner,

@@ -31,6 +31,7 @@ import { buildInjectedBrief } from "./src/brief.js";
 import { connectOfferNote, takeConnectOffers } from "./src/connect-offers.js";
 import { executeAdaDeadlineList, executeAdaDeadlineReply } from "./src/deadline-tools.js";
 import { planDigest, type DigestSignal } from "./src/digest.js";
+import { createInboundTextGuard, registerInboundDuplicateHooks } from "./src/duplicate-text.js";
 import { registerAdaFeedbackAdmin } from "./src/feedback-http.js";
 import { openAdaGoogleAccountFromApi } from "./src/google-account.js";
 import { exchangeAuthorizationCode } from "./src/google-api.js";
@@ -47,10 +48,13 @@ import {
 import { adaGranolaTools, registerAdaGranolaCallback } from "./src/granola-plugin.js";
 import { registerAdaHttpRoute } from "./src/http-paths.js";
 import { logInboundSkip, maskNumber } from "./src/inbound-log.js";
+import { registerAdaKapsoWebhook } from "./src/kapso-webhook-gate.js";
 import { openAdaLexroomAccountFromApi } from "./src/lexroom-account.js";
 import type { LexroomConfig } from "./src/lexroom-client.js";
 import { lexroomConfigProperties } from "./src/lexroom-config-schema.js";
 import { handleAdaLexroomConnect } from "./src/lexroom-connect-http.js";
+import { ownerResearchActive } from "./src/lexroom-jobs.js";
+import { registerLexroomNudge } from "./src/lexroom-nudge.js";
 import {
   executeAdaLexroomConnect,
   lexroomConnectConfigFrom,
@@ -69,7 +73,7 @@ import {
 } from "./src/memory-tools.js";
 import { openAdaMemoryIfExistsFromApi } from "./src/memory.js";
 import { ownerToolFactory } from "./src/owner-tool.js";
-import { lawyerOwner, resolveTurnOwner } from "./src/owner.js";
+import { lawyerOwner, resolveHookTurnOwner } from "./src/owner.js";
 import { ADA_PERSONA } from "./src/persona.js";
 import { adaPreferenceTools } from "./src/preference-tools.js";
 import { recordInboundLanguage, registerResearchLinkHooks } from "./src/research-link-outbound.js";
@@ -443,13 +447,19 @@ const entry = definePluginEntry({
   register(api) {
     tools.register(api);
     registerAdaService({ api });
+    registerAdaKapsoWebhook(api);
 
+    const inboundText = createInboundTextGuard();
+    registerInboundDuplicateHooks(api, inboundText);
     const statusReactions = registerStatusReactionHooks(api);
     registerResearchLinkHooks(
       api,
       async (owner) =>
         (await (await openAdaMemoryIfExistsFromApi(api, owner))?.readProfile())?.language,
+      (owner) => ownerResearchActive(owner),
     );
+
+    registerAnnouncementRelease(api);
 
     registerWelcomeHook(api, {
       onGreetingAnswered: (sessionKey) => {
@@ -476,13 +486,23 @@ const entry = definePluginEntry({
       api.logger.info(
         `ada inbound received channel=${channelId ?? "unknown"} sender=${maskNumber(ctx.senderId, event.from)}`,
       );
-      statusReactions.received({
-        sessionKey: ctx.sessionKey ?? event.sessionKey,
-        channelId,
-        accountId,
-        messageId,
-        senders: [ctx.senderId, event.from],
-      });
+      const repeatedText =
+        inboundText.verdict({
+          channelId,
+          senders: [ctx.senderId, event.from],
+          messageId,
+          text: event.content,
+          timestampMs: event.timestamp,
+        }) === "duplicate";
+      if (!repeatedText) {
+        statusReactions.received({
+          sessionKey: ctx.sessionKey ?? event.sessionKey,
+          channelId,
+          accountId,
+          messageId,
+          senders: [ctx.senderId, event.from],
+        });
+      }
       const readReceipt = markKapsoMessageRead({
         config: api.config,
         channelId,
@@ -522,11 +542,7 @@ const entry = definePluginEntry({
     });
 
     api.on("before_prompt_build", (_event, ctx) => {
-      const turn = resolveTurnOwner({
-        requesterSenderId: ctx?.senderId,
-        messageChannel: ctx?.channelId,
-        sessionKey: ctx?.sessionKey,
-      });
+      const turn = resolveHookTurnOwner(ctx ?? {});
       const personTurn = ctx?.trigger === undefined || ctx.trigger === "user";
       const note = connectOfferNote(
         turn.ok && personTurn
@@ -541,6 +557,8 @@ const entry = definePluginEntry({
         : { prependSystemContext: ADA_PERSONA };
     });
 
+    registerLexroomNudge(api);
+
     api.on(
       "before_prompt_build",
       async (_event, ctx) => {
@@ -549,11 +567,7 @@ const entry = definePluginEntry({
           if (!authority?.allows("ada_memory_search")) {
             return;
           }
-          const turn = resolveTurnOwner({
-            requesterSenderId: ctx.senderId,
-            messageChannel: ctx.channelId,
-            sessionKey: ctx.sessionKey,
-          });
+          const turn = resolveHookTurnOwner(ctx);
           if (!turn.ok) {
             return;
           }
@@ -638,7 +652,6 @@ const entry = definePluginEntry({
 
     registerAdaFeedbackAdmin(api);
     registerAdaAnnouncementsAdmin(api);
-    registerAnnouncementRelease(api);
     registerAdaGranolaCallback(api);
 
     registerAdaHttpRoute(api, {

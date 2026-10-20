@@ -157,6 +157,63 @@ describe("admin announcements endpoint: create", () => {
     expect(await registry.listAnnouncementDeliveries()).toEqual([]);
   });
 
+  it("shows excluded numbers as skipped in a dry run, without saving anything", async () => {
+    const result = await call({
+      method: "POST",
+      body: { ...newAnnouncement, dryRun: true, exclude: [PAOLO, "+39 333 999 9999"] },
+      ...auth,
+    });
+    expect(result.res.statusCode).toBe(200);
+    expect(result.json()).toMatchObject({
+      dryRun: true,
+      excluded: 2,
+      recipients: [
+        { numberLast4: "1111", status: "skipped", reason: "excluded", text: null },
+        { numberLast4: "2222", status: "pending", reason: "window_closed" },
+        { numberLast4: "9999", status: "skipped", reason: "excluded" },
+      ],
+    });
+    expect(result.body).not.toContain(PAOLO);
+    expect(result.body).not.toContain("393339999999");
+    expect(send).not.toHaveBeenCalled();
+    expect(await registry.listAnnouncementDeliveries()).toEqual([]);
+  });
+
+  it("does not send to an excluded number, marks it skipped for good, and lists it that way", async () => {
+    const created = await call({
+      method: "POST",
+      body: { ...newAnnouncement, exclude: [PAOLO, "393339999999"] },
+      ...auth,
+    });
+    expect(created.res.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({
+      recipients: [
+        { numberLast4: "1111", status: "skipped", reason: "excluded" },
+        { numberLast4: "2222", status: "pending", reason: "window_closed" },
+        { numberLast4: "9999", status: "skipped", reason: "excluded" },
+      ],
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(await registry.listAnnouncementDeliveries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ number: PAOLO, status: "skipped", reason: "excluded" }),
+        expect.objectContaining({ number: "393339999999", status: "skipped", reason: "excluded" }),
+      ]),
+    );
+    const [listed] = (await call({ ...auth })).json().announcements as Array<
+      Record<string, unknown>
+    >;
+    expect(listed?.counts).toEqual({ sent: 0, skipped: 2, pending: 1 });
+  });
+
+  it("refuses an exclude list that is not numbers", async () => {
+    for (const exclude of ["393331111111", ["paolo"], [""]]) {
+      const result = await call({ method: "POST", body: { ...newAnnouncement, exclude }, ...auth });
+      expect(result.res.statusCode).toBe(400);
+    }
+    expect(await registry.listAnnouncements()).toEqual([]);
+  });
+
   it("saves the announcement, sends inside the window, leaves the rest pending, and refuses a repeat id", async () => {
     const created = await call({ method: "POST", body: newAnnouncement, ...auth });
     expect(created.res.statusCode).toBe(201);

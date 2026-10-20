@@ -1,4 +1,10 @@
-import type { LawyerProfile, MemoryRecord, MemoryTodo, Preference } from "./memory-contract.js";
+import {
+  isConnectStateKey,
+  type LawyerProfile,
+  type MemoryRecord,
+  type MemoryTodo,
+  type Preference,
+} from "./memory-contract.js";
 import { renderMemoryPage } from "./memory-render.js";
 
 const PROFILE_BUDGET = 1200;
@@ -40,7 +46,8 @@ function flat(text: string): string {
  * The standing instructions of one number, for the start of every turn of that number. Each text
  * is flattened to one line so a saved preference cannot pose as a heading or a rule of its own.
  */
-export function renderPreferencesNote(preferences: readonly Preference[]): string | undefined {
+export function renderPreferencesNote(all: readonly Preference[]): string | undefined {
+  const preferences = all.filter(({ key }) => !isConnectStateKey(key));
   if (preferences.length === 0) {
     return undefined;
   }

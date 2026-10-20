@@ -203,6 +203,8 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
       "<!-- ada:multi-user -->\n## Who Ada serves\n\nAda serves everyone who writes to her on WhatsApp, each in a private chat, with their own Lexroom, Gmail and Calendar connections. She never says she works for one person only. Any older line saying she works for one lawyer or one person is out of date.\n<!-- /ada:multi-user -->\n";
     const LANGUAGE_BLOCK =
       "<!-- ada:language -->\n## Language\n\nAda always replies in the language of the most recent message from the person she is talking to, and switches when they switch. That overrides any older line that names a language or says to answer in Italian, and the language of earlier messages, profiles, notes and tool output.\n<!-- /ada:language -->\n";
+    const LEXROOM_BLOCK =
+      "<!-- ada:lexroom-first -->\n## Legal questions\n\nLexroom is always the preferred way for Ada to answer a legal question. When the person has Lexroom connected, Ada researches the question with Lexroom before answering and bases the answer on the results and their sources. She uses her own knowledge only if Lexroom fails or times out, and then says so briefly. That overrides any older line that says to answer legal questions directly first.\n<!-- /ada:lexroom-first -->\n";
     const SIGN_BLOCK =
       "<!-- ada:no-signature -->\n## No signature\n\nAda never signs her messages and never ends one with her name or a sign-off. The person already knows it is Ada. That overrides any older line that says to sign, sign off or close messages with a name.\n<!-- /ada:no-signature -->\n";
     const IDENTITY_NOW =
@@ -210,7 +212,7 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
         "assistant for one lawyer",
         "assistant for everyone who writes to her",
       ) + `\n${BLOCK}`;
-    const SOUL_NOW = `You are Ada. Do not ask what you should be called.\nADA never lies.\n\n${BLOCK}\n${LANGUAGE_BLOCK}\n${SIGN_BLOCK}`;
+    const SOUL_NOW = `You are Ada. Do not ask what you should be called.\nADA never lies.\n\n${BLOCK}\n${LANGUAGE_BLOCK}\n${LEXROOM_BLOCK}\n${SIGN_BLOCK}`;
     const USER = "Cliente: Vera Bianchi (Rossi SRL)\n";
 
     function seeded(config: Record<string, unknown> = {}) {
@@ -247,7 +249,7 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
       );
       expect(deploy.run().status).toBe(0);
       expect(read(deploy, "SOUL.md")).toBe(
-        `Lavori per chiunque le scriva e per chiunque le scriva.\n\n${BLOCK}\n${LANGUAGE_BLOCK}\n${SIGN_BLOCK}`,
+        `Lavori per chiunque le scriva e per chiunque le scriva.\n\n${BLOCK}\n${LANGUAGE_BLOCK}\n${LEXROOM_BLOCK}\n${SIGN_BLOCK}`,
       );
       expect(read(deploy, "SOUL.md.pre-ada")).toBe(
         "Lavori per una persona sola e per un solo avvocato.",
@@ -315,7 +317,7 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
       writeFileSync(join(deploy.workspace, "SOUL.md"), `Rispondi sempre in italiano.\n\n${BLOCK}`);
       expect(deploy.run().status).toBe(0);
       expect(read(deploy, "SOUL.md")).toBe(
-        `Rispondi sempre in italiano.\n\n${BLOCK}\n${LANGUAGE_BLOCK}\n${SIGN_BLOCK}`,
+        `Rispondi sempre in italiano.\n\n${BLOCK}\n${LANGUAGE_BLOCK}\n${LEXROOM_BLOCK}\n${SIGN_BLOCK}`,
       );
       expect(deploy.run().status).toBe(0);
       expect(read(deploy, "SOUL.md").split("<!-- ada:language -->")).toHaveLength(2);
@@ -348,7 +350,17 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
         const result = deploy.run();
         expect(result.status).toBe(0);
         expect(read(deploy, "SOUL.md")).toBe(
-          ["# SOUL", "", "Be warm.", "Be brief.", "", BLOCK, LANGUAGE_BLOCK, SIGN_BLOCK].join("\n"),
+          [
+            "# SOUL",
+            "",
+            "Be warm.",
+            "Be brief.",
+            "",
+            BLOCK,
+            LANGUAGE_BLOCK,
+            LEXROOM_BLOCK,
+            SIGN_BLOCK,
+          ].join("\n"),
         );
         expect(read(deploy, "AGENTS.md")).toBe(`Check the calendar first.\n\n${SIGN_BLOCK}`);
         expect(read(deploy, "SOUL.md.pre-nosig")).toBe(soul);
@@ -408,7 +420,7 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
         writeFileSync(join(deploy.workspace, "SOUL.md.pre-ada"), "the Vera original\n");
         expect(deploy.run().status).toBe(0);
         expect(read(deploy, "SOUL.md")).toBe(
-          `Stay warm.\n\n${BLOCK}\n${LANGUAGE_BLOCK}\n${SIGN_BLOCK}`,
+          `Stay warm.\n\n${BLOCK}\n${LANGUAGE_BLOCK}\n${LEXROOM_BLOCK}\n${SIGN_BLOCK}`,
         );
         expect(read(deploy, "SOUL.md.pre-ada")).toBe("the Vera original\n");
         expect(read(deploy, "SOUL.md.pre-nosig")).toBe(`Stay warm.\n\n${BLOCK}\n${LANGUAGE_BLOCK}`);
@@ -416,7 +428,7 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
 
       it("writes no .pre-nosig when this migration changes nothing", () => {
         const deploy = seed({
-          "SOUL.md": `Stay warm.\n\n${BLOCK}\n${LANGUAGE_BLOCK}\n${SIGN_BLOCK}`,
+          "SOUL.md": `Stay warm.\n\n${BLOCK}\n${LANGUAGE_BLOCK}\n${LEXROOM_BLOCK}\n${SIGN_BLOCK}`,
           "TOOLS.md": "Notes for Vera.\n",
         });
         expect(deploy.run().status).toBe(0);

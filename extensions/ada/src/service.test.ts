@@ -211,6 +211,7 @@ describe("runAdaCollectPass", () => {
       lastCollectAtMs: null,
       lastDigestAtMs: null,
       lastMorningBriefAtMs: null,
+      lastConnectNudgeAtMs: null,
       heldPlanJson: null,
       heldPlanAtMs: null,
       watchExpirationMs: null,

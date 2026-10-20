@@ -1,4 +1,10 @@
 import { randomUUID } from "node:crypto";
+import {
+  CONNECT_FEATURES,
+  connectDeclinedKey,
+  LEXROOM_OFFER_DECLINED_KEY,
+  type ConnectFeature,
+} from "./memory-contract.js";
 
 /**
  * When code (not the model) asks a person a question, or sends the morning digest, that message
@@ -10,7 +16,13 @@ import { randomUUID } from "node:crypto";
  * delivered does not read it: that person has not seen the question yet. It is kept in this
  * process only.
  */
-export type ConnectOfferKind = "lexroom" | "lexroom_reconnect" | "google" | "digest";
+export type ConnectOfferKind =
+  | "lexroom"
+  | "lexroom_nudge"
+  | "lexroom_reconnect"
+  | "google"
+  | "connect_reminder"
+  | "digest";
 
 export type ConnectOffer = { kind: ConnectOfferKind; detail?: string };
 
@@ -74,14 +86,34 @@ export function takeConnectOffers(
   return taken;
 }
 
-const NAMES: Record<Exclude<ConnectOfferKind, "digest">, { account: string; call: string }> = {
+/** What each connectable account is called to the model, and which tool connects it. */
+export const CONNECT_FEATURE_NAMES: Record<ConnectFeature, { account: string; call: string }> = {
+  google: { account: "their Gmail and Google Calendar", call: "ada_google_connect" },
   lexroom: { account: "their Lexroom account", call: "ada_lexroom_connect" },
+  granola: { account: "their Granola meeting notes", call: "ada_granola_connect" },
+};
+
+const NAMES: Record<
+  Exclude<ConnectOfferKind, "digest" | "connect_reminder">,
+  { account: string; call: string }
+> = {
+  lexroom: { account: "their Lexroom account", call: "ada_lexroom_connect" },
+  lexroom_nudge: { account: "their Lexroom account", call: "ada_lexroom_connect" },
   lexroom_reconnect: {
     account: "their Lexroom account again (Lexroom refused the saved sign-in)",
     call: "ada_lexroom_connect with force true, because the saved sign-in is still on file and would otherwise be reported as connected",
   },
   google: { account: "their Gmail and Google Calendar", call: "ada_google_connect" },
 };
+
+function reminderLine(detail: string | undefined): string {
+  const feature = CONNECT_FEATURES.find((candidate) => candidate === detail);
+  if (!feature) {
+    return "";
+  }
+  const { account, call } = CONNECT_FEATURE_NAMES[feature];
+  return `- Your last reply may have ended with a line saying that connecting ${account} was not finished, and offering a new link; ignore this if it did not. If their message says yes in any form, call ${call} and send the link. If it says no in any form, drop it and call ada_set_preference with key ${connectDeclinedKey(feature)} and one short sentence saying they declined, then do not bring it up again.`;
+}
 
 /** The note for the model; it is only a reminder of a question already asked. */
 export function connectOfferNote(offers: readonly ConnectOffer[]): string | undefined {
@@ -97,12 +129,19 @@ export function connectOfferNote(offers: readonly ConnectOffer[]): string | unde
         ]
           .filter(Boolean)
           .join("\n")
-      : `- You asked whether they want to connect ${NAMES[kind].account}. If their message says yes in any form, call ${NAMES[kind].call} and send the link. If it says no, drop it and do not ask again.`,
+      : kind === "connect_reminder"
+        ? reminderLine(detail)
+        : kind === "lexroom_nudge"
+          ? `- Your last reply may have opened with an offer to connect ${NAMES[kind].account}, with its link or an offer to send it; ignore this if it did not. If their message says yes in any form and you did not send the link, call ${NAMES[kind].call} and send it. If it says no in any form, drop it and call ada_set_preference with key ${LEXROOM_OFFER_DECLINED_KEY} and one short sentence saying they declined connecting Lexroom, then do not bring it up again.`
+          : `- You asked whether they want to connect ${NAMES[kind].account}. If their message says yes in any form, call ${NAMES[kind].call} and send the link. If it says no, drop it and do not ask again.`,
   );
+  if (lines.every((line) => !line)) {
+    return undefined;
+  }
   return [
     "# Question you just asked",
     "Ada's code sent this person a message that is not in the conversation above:",
-    ...lines,
+    ...lines.filter(Boolean),
     "If their message is about something else, answer that and do not repeat the question.",
   ].join("\n");
 }

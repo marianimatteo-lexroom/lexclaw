@@ -75,6 +75,25 @@ export function resolveTurnOwner(turn: TrustedTurn): OwnerResolution {
   return owner ? { ok: true, owner } : { ok: false, reason: "no_sender" };
 }
 
+/**
+ * The owner of the turn an agent hook (`before_prompt_build` and the like) runs for. In an agent
+ * hook context `channel` names the channel and `channelId` is the conversation's id (the
+ * sender's number in a private chat), so `channelId` must never be read as the channel.
+ */
+export function resolveHookTurnOwner(ctx: {
+  senderId?: string;
+  channel?: string;
+  messageProvider?: string;
+  channelId?: string;
+  sessionKey?: string;
+}): OwnerResolution {
+  return resolveTurnOwner({
+    requesterSenderId: ctx.senderId,
+    messageChannel: ctx.channel ?? ctx.messageProvider ?? ctx.channelId,
+    sessionKey: ctx.sessionKey,
+  });
+}
+
 /** The person-facing text for a refused owner, for tool results the model relays. */
 export function ownerRefusalMessage(reason: OwnerRefusal): string {
   return reason === "group_chat"

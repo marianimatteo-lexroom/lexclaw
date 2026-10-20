@@ -39,6 +39,9 @@ function wrap(worker: SqliteWorkerStore<AdaLexroomOperations>): LexroomAccountDb
     consumePending(owner, nonce, nowMs) {
       return worker.execute({ type: "consumePending", input: { owner, nonce, nowMs } });
     },
+    pendingExpiresAt(owner) {
+      return worker.execute({ type: "pendingExpiresAt", input: { owner } });
+    },
     upsertAccount(owner, account) {
       return worker.execute({ type: "upsertAccount", input: { owner, account } });
     },
@@ -60,6 +63,7 @@ export function bindLexroomOwner(db: LexroomAccountDb, owner: string): LexroomAc
     replacePending: (nonce, expiresAtMs) => db.replacePending(owner, nonce, expiresAtMs),
     hasPending: (nonce, nowMs) => db.hasPending(owner, nonce, nowMs),
     consumePending: (nonce, nowMs) => db.consumePending(owner, nonce, nowMs),
+    pendingExpiresAt: () => db.pendingExpiresAt(owner),
     upsertAccount: (account) => db.upsertAccount(owner, account),
     readAccount: () => db.readAccount(owner),
     clearAccount: () => db.clearAccount(owner),

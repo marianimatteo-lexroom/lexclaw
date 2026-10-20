@@ -92,6 +92,7 @@ function registerAda(
 ) {
   const tools = new Map<string, RegisteredTool>();
   const hooks = new Map<string, RegisteredHook>();
+  const allHooks = new Map<string, RegisteredHook["handler"][]>();
   const api = createTestPluginApi({
     id: "ada",
     logger,
@@ -115,6 +116,7 @@ function registerAda(
     },
     on: ((name: string, handler: RegisteredHook["handler"], options?: unknown) => {
       hooks.set(name, { handler, options });
+      allHooks.set(name, [...(allHooks.get(name) ?? []), handler]);
     }) as OpenClawPluginApi["on"],
   });
   plugin.register?.(api);
@@ -135,6 +137,10 @@ function registerAda(
         return started;
       }
       return await callTool("ada_research_status", { jobId: started.jobId, waitSeconds: 5 });
+    },
+    /** Every handler registered for `name`, in registration order, for hooks that claim a message. */
+    claimingHooks(name: string): RegisteredHook["handler"][] {
+      return allHooks.get(name) ?? [];
     },
     hook(name: string): RegisteredHook["handler"] {
       const hook = hooks.get(name);
@@ -948,7 +954,13 @@ describe("message_received hook", () => {
 });
 
 describe("before_prompt_build hook", () => {
-  const TURN = { senderId: LAWYER, channelId: "kapso-whatsapp", sessionKey: SESSION };
+  // The host's agent hook context names the channel in `channel`; `channelId` is the conversation.
+  const TURN = {
+    senderId: LAWYER,
+    channel: "kapso-whatsapp",
+    channelId: LAWYER,
+    sessionKey: SESSION,
+  };
   const PROFILE = {
     name: "Test Lawyer",
     timezone: "Europe/Rome",
@@ -1153,5 +1165,44 @@ describe("status reaction hooks", () => {
       { message_id: MESSAGE_ID, emoji: "👀" },
       { message_id: MESSAGE_ID, emoji: "" },
     ]);
+  });
+
+  it("answers the first copy of a text sent twice and reacts to it only, claiming the second", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("ADA_STATUS_REACTIONS", "true");
+    fetchMock.mockImplementation(async () => json({ success: true }));
+    const { hook, claimingHooks } = registerAda();
+    const sessionKey = "agent:main:kapso-whatsapp:direct:393338262862";
+    const text = "Quali sono i termini per impugnare una sentenza di primo grado?";
+    const second = "wamid.HBgMMzkzMzM4MjYyODYyFQIAEhgUM0IyMjUwOEJBREUwODEyNEQ2MDkB";
+    const received = (messageId: string) =>
+      hook("message_received")(
+        { from: "+393338262862", content: text, messageId },
+        { channelId: "kapso-whatsapp", messageId, senderId: "393338262862", sessionKey },
+      );
+    const dispatched = async (messageId: string) => {
+      for (const claim of claimingHooks("before_dispatch")) {
+        const claimed = await claim(
+          { content: text, messageId, channel: "kapso-whatsapp", senderId: "393338262862" },
+          { channelId: "kapso-whatsapp", messageId, senderId: "393338262862", sessionKey },
+        );
+        if (claimed) {
+          return claimed;
+        }
+      }
+      return undefined;
+    };
+
+    await received(MESSAGE_ID);
+    await expect(dispatched(MESSAGE_ID)).resolves.toBeUndefined();
+    await received(second);
+    await expect(dispatched(second)).resolves.toEqual({ handled: true });
+    await vi.advanceTimersByTimeAsync(0);
+
+    const reactions = fetchMock.mock.calls
+      .map(([, init]) => JSON.parse(String(init?.body)))
+      .filter((body) => body.type === "reaction")
+      .map((body) => body.reaction);
+    expect(reactions).toEqual([{ message_id: MESSAGE_ID, emoji: "👀" }]);
   });
 });

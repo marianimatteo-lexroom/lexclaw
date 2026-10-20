@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { abortResearchJobs, ownerResearchActive, startResearchJob } from "./lexroom-jobs.js";
 import {
   clearInboundLanguages,
   detectLanguage,
@@ -395,5 +396,93 @@ describe("the outbound hooks", () => {
     expect(await reply("final", "Partecipanti:\nMarco\nAda")).toBeUndefined();
     expect(await reply("final", "Cordiali saluti,\nAda")).toBeUndefined();
     expect(await sending("Prima riga.\nRisponde Ada.")).toBeUndefined();
+  });
+});
+
+describe("the host's no-summary text", () => {
+  type Handler = (event: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<unknown>;
+  const INTERNAL =
+    "The tool run finished, but no final summary was produced. I did not repeat any completed actions.";
+
+  function register() {
+    const handlers = new Map<string, Handler>();
+    registerResearchLinkHooks(
+      {
+        on: ((name: string, handler: Handler) => {
+          handlers.set(name, handler);
+        }) as never,
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+      },
+      undefined,
+      (owner) => ownerResearchActive(owner),
+    );
+    const reply = (kind: string, text: string, runId = "run-1") =>
+      handlers.get("reply_payload_sending")?.(
+        { kind, runId, payload: { text } },
+        { sessionKey: SESSION, runId },
+      ) as Promise<{ cancel?: boolean; payload?: { text?: string } } | undefined>;
+    return { handlers, reply };
+  }
+
+  afterEach(() => {
+    abortResearchJobs();
+  });
+
+  it("is never sent as it is: the person gets a short line in their language instead", async () => {
+    const { reply } = register();
+    recordInboundLanguage(OWNER, "Quali sono i termini per impugnare una sentenza civile?");
+    const italian = await reply("final", INTERNAL);
+    expect(italian?.payload?.text).toBe(
+      "Ho completato l'operazione ma non ho un riepilogo da mostrarti. Scrivimi se vuoi i dettagli.",
+    );
+    expect(JSON.stringify(italian)).not.toContain("no final summary");
+
+    clearInboundLanguages();
+    recordInboundLanguage(
+      OWNER,
+      "What are the deadlines to appeal a first instance civil judgment?",
+    );
+    const english = await reply("final", INTERNAL, "run-2");
+    expect(english?.payload?.text).toMatch(/^I finished the task but have no summary to show/u);
+  });
+
+  it("sends nothing when the answer already went out in this run", async () => {
+    const { reply } = register();
+    await reply("block", "Ecco la risposta alla tua domanda.");
+    expect(await reply("final", INTERNAL)).toEqual({
+      cancel: true,
+      reason: "internal_fallback_text",
+    });
+    // Another run has no answer yet, so it still gets the line.
+    expect((await reply("final", INTERNAL, "run-2"))?.payload?.text).toBeDefined();
+  });
+
+  it("sends nothing while a Lexroom research for that number will deliver the answer itself", async () => {
+    const { reply } = register();
+    startResearchJob({
+      matterId: "general",
+      owner: OWNER,
+      deadlineMs: 60_000,
+      run: () => new Promise(() => {}),
+      log: () => undefined,
+    });
+    expect(await reply("final", INTERNAL)).toEqual({
+      cancel: true,
+      reason: "internal_fallback_text",
+    });
+  });
+
+  it("also guards the message_sending fallback path, and leaves normal text alone", async () => {
+    const { handlers, reply } = register();
+    const sending = (content: string) =>
+      handlers.get("message_sending")?.(
+        { to: `+${OTHER}`, content },
+        { runId: "run-9" },
+      ) as Promise<{ cancel?: boolean; content?: string } | undefined>;
+    expect((await sending(INTERNAL))?.content).toMatch(
+      /riepilogo|summary|resumen|résumé|Zusammenfassung/u,
+    );
+    expect(await sending("Una risposta normale.")).toBeUndefined();
+    expect((await reply("final", "Una risposta normale senza link."))?.cancel).toBeUndefined();
   });
 });

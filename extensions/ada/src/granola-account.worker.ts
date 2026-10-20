@@ -269,6 +269,18 @@ class AdaGranolaDatabaseStore {
     return undefined;
   }
 
+  pendingExpiresAt(owner: string): number | null {
+    assertOwner(owner);
+    const row = executeSqliteQueryTakeFirstSync(
+      this.db,
+      this.query
+        .selectFrom("ada_granola_pending")
+        .select("expires_at_ms")
+        .where("owner", "=", owner),
+    );
+    return row?.expires_at_ms ?? null;
+  }
+
   consumePending(owner: string, nonce: string, nowMs: number): GranolaPending | null {
     assertOwner(owner);
     if (!NONCE.test(nonce)) {
@@ -615,6 +627,8 @@ export function createSqliteWorkerBackend(
             command.input.expiresAtMs,
             command.input.pending,
           );
+        case "pendingExpiresAt":
+          return database.pendingExpiresAt(command.input.owner);
         case "consumePending":
           return database.consumePending(
             command.input.owner,
