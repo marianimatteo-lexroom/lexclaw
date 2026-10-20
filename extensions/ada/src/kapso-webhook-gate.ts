@@ -129,27 +129,44 @@ export function createKapsoInboundQueue(deps: {
     chains.set(entry.senderKey, next);
   }
 
+  /** Settles once what an earlier run saved has been queued, so nothing newer jumps ahead of it. */
+  let replayed: Promise<void> | undefined;
+
+  async function replay(): Promise<number> {
+    controller = controller.signal.aborted ? new AbortController() : controller;
+    const store = await deps.store();
+    let resumed = 0;
+    for (const row of await store.listSpooled()) {
+      if (row.attempts >= MAX_TOTAL_ATTEMPTS) {
+        await finish(row, "dropped after too many failed attempts");
+      } else if (!queued.has(row.id)) {
+        enqueue({ ...row });
+        resumed += 1;
+      }
+    }
+    return resumed;
+  }
+
   return {
     /** Saves the webhook, then queues it; resolves once it is safe to acknowledge. */
     async accept(entry: NewSpooledWebhook): Promise<number> {
       const id = await (await deps.store()).spool(entry);
+      // A webhook that arrives before the saved ones were replayed queues behind them.
+      await (replayed ??= replay().then(
+        () => undefined,
+        () => undefined,
+      ));
       enqueue({ ...entry, id, attempts: 0 });
       return id;
     },
     /** Queues what an earlier run saved and did not finish, oldest first; returns how many it queued. */
     async resume(): Promise<number> {
-      controller = controller.signal.aborted ? new AbortController() : controller;
-      const store = await deps.store();
-      let resumed = 0;
-      for (const row of await store.listSpooled()) {
-        if (row.attempts >= MAX_TOTAL_ATTEMPTS) {
-          await finish(row, "dropped after too many failed attempts");
-        } else if (!queued.has(row.id)) {
-          enqueue(row);
-          resumed += 1;
-        }
-      }
-      return resumed;
+      const run = replay();
+      replayed = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      return await run;
     },
     /** Gives up waiting and in-flight hand-offs; what is saved stays saved for the next start. */
     stop(): void {

@@ -242,6 +242,22 @@ describe("the hand-off queue", () => {
     expect(first).toBe(1);
   });
 
+  it("hands a webhook that arrives right after a restart over behind the ones saved before it", async () => {
+    const store = memoryStore();
+    await store.db.spool(entry(ANNA, "before"));
+    const order: string[] = [];
+    const { queue } = queueWith(async (row) => {
+      order.push(JSON.parse(Buffer.from(row.bodyBase64, "base64").toString()).message.text);
+      return "delivered";
+    }, store);
+
+    await queue.accept(entry(ANNA, "after"));
+    expect(await queue.resume()).toBe(0);
+    await queue.settled();
+    expect(order).toEqual(["before", "after"]);
+    expect(store.rows.size).toBe(0);
+  });
+
   it("does not hand a webhook over twice when resume sees one that is already queued", async () => {
     const forward = vi.fn(async (): Promise<ForwardOutcome> => "delivered");
     const { queue } = queueWith(forward);
