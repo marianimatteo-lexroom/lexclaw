@@ -19,6 +19,7 @@ import {
   openAdaRegistryFromApi,
   type MemoryStore,
 } from "./memory.js";
+import { openAdaOutlookAccountFromApi } from "./outlook-account.js";
 import { sessionKeyOwner, toOwner } from "./owner.js";
 import { resolveLanguage, type Language } from "./research-link-outbound.js";
 import { lastSenderInboundAt } from "./research-push.js";
@@ -53,6 +54,8 @@ const FEATURE_PROBES: Record<string, FeatureProbe> = {
     (await (await openAdaGoogleAccountFromApi(api, owner)).readAccount()) !== null,
   lexroom: async (api, owner) =>
     (await (await openAdaLexroomAccountFromApi(api, owner)).readAccount()) !== null,
+  outlook: async (api, owner) =>
+    (await (await openAdaOutlookAccountFromApi(api, owner)).readAccount()) !== null,
 };
 
 export const ANNOUNCEMENT_FEATURES = Object.keys(FEATURE_PROBES);

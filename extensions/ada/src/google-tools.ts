@@ -31,7 +31,7 @@ import { DEFAULT_TIME_ZONE, validTimeZone } from "./schedule.js";
 
 type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger" | "config">;
 
-type ToolFailure = {
+export type ToolFailure = {
   ok: false;
   error: string;
   reason?:
@@ -42,7 +42,12 @@ type ToolFailure = {
     | "private_chat_required";
 };
 
-function clamp(value: number | undefined, fallback: number, min: number, max: number): number {
+export function clamp(
+  value: number | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
   if (value === undefined || !Number.isInteger(value)) {
     return fallback;
   }
@@ -248,7 +253,7 @@ export async function readConnectedCalendar(params: {
   return { ok: true, email: access.email, events: listed.events };
 }
 
-const RECIPIENT = /^[^\s@]+@[^\s@]+$/u;
+export const RECIPIENT = /^[^\s@]+@[^\s@]+$/u;
 
 export async function sendConnectedEmail(params: {
   config: GoogleConnectConfig;
@@ -366,7 +371,7 @@ type ReadEvent = {
 };
 
 /** The event fields as Google takes them, or the reason the call cannot go ahead. */
-function readCalendarEventInput(
+export function readCalendarEventInput(
   args: CalendarEventArgs,
   update: boolean,
 ): ({ ok: true } & ReadEvent) | ToolFailure {
@@ -435,7 +440,7 @@ const NEEDS_CALENDAR_SCOPE =
 const NO_WRITE_ACCESS =
   "The person has no write access to that calendar, so nothing was changed. Tell them so; a new permission would not help.";
 
-type CalendarEventResult = {
+export type CalendarEventResult = {
   ok: true;
   email: string;
   event: CalendarEvent;

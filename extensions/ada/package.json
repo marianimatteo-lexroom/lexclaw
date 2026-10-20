@@ -19,7 +19,8 @@
         "./src/granola-account.worker.ts",
         "./src/kapso-inbound.worker.ts",
         "./src/lexroom-account.worker.ts",
-        "./src/memory.worker.ts"
+        "./src/memory.worker.ts",
+        "./src/outlook-account.worker.ts"
       ]
     }
   }

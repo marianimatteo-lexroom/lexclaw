@@ -72,6 +72,7 @@ import {
   executeAdaTodoList,
 } from "./src/memory-tools.js";
 import { openAdaMemoryIfExistsFromApi } from "./src/memory.js";
+import { adaOutlookTools, registerAdaOutlookCallback } from "./src/outlook-plugin.js";
 import { ownerToolFactory } from "./src/owner-tool.js";
 import { lawyerOwner, resolveHookTurnOwner } from "./src/owner.js";
 import { ADA_PERSONA } from "./src/persona.js";
@@ -430,6 +431,15 @@ const tools = defineToolPlugin({
     tool(adaGranolaTools.disconnect),
     tool(adaGranolaTools.tools),
     tool(adaGranolaTools.call),
+    tool(adaOutlookTools.connect),
+    tool(adaOutlookTools.readInbox),
+    tool(adaOutlookTools.readMessage),
+    tool(adaOutlookTools.draft),
+    tool(adaOutlookTools.send),
+    tool(adaOutlookTools.reply),
+    tool(adaOutlookTools.readCalendar),
+    tool(adaOutlookTools.createEvent),
+    tool(adaOutlookTools.updateEvent),
   ],
 });
 
@@ -638,7 +648,7 @@ const entry = definePluginEntry({
       },
     });
 
-    for (const kind of ["g", "l", "gr"] as const) {
+    for (const kind of ["g", "l", "gr", "o"] as const) {
       const route = {
         path: `/${kind}`,
         auth: "plugin",
@@ -653,6 +663,7 @@ const entry = definePluginEntry({
     registerAdaFeedbackAdmin(api);
     registerAdaAnnouncementsAdmin(api);
     registerAdaGranolaCallback(api);
+    registerAdaOutlookCallback(api);
 
     registerAdaHttpRoute(api, {
       path: "/google/notify",
