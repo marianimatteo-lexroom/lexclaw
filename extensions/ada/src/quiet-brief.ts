@@ -71,6 +71,8 @@ export function buildQuietBrief(input: {
   inbox: readonly InboxMessage[];
   /** How many messages Ada asked Gmail for; a full window means there may be more. */
   inboxLimit: number;
+  /** Set when the inbox is the merge of several providers: true when any one of them came back full. */
+  inboxFull?: boolean;
   aliases: readonly MatterAlias[];
   deadlines?: readonly DigestDeadlineInput[];
   alertedToday?: boolean;
@@ -93,7 +95,7 @@ export function buildQuietBrief(input: {
     alertedToday: input.alertedToday ?? false,
     events: todaysEvents(input.events, input.now, input.timeZone),
     unreadMail: unread.length,
-    unreadMailCapped: input.inbox.length >= input.inboxLimit,
+    unreadMailCapped: input.inboxFull ?? input.inbox.length >= input.inboxLimit,
     mailHighlights,
     deadlines: (input.deadlines ?? [])
       .filter((line) => line.daysLeft >= 0 && line.daysLeft <= DEADLINE_HORIZON_DAYS)

@@ -36,6 +36,14 @@ import { abortResearchJobs } from "./lexroom-jobs.js";
 import { QUIET_BRIEF_OFF_KEY } from "./memory-contract.js";
 import { openAdaMemoryFromApi, openAdaMemoryIfExistsFromApi, type MemoryStore } from "./memory.js";
 import { createMorningSchedule, createServiceTimers } from "./morning-schedule.js";
+import { openAdaOutlookAccountDbFromApi } from "./outlook-account.js";
+import { outlookEnabled } from "./outlook-oauth.js";
+import { isOutlookSnapshotId, loadOutlookReads, type OutlookReads } from "./outlook-reads.js";
+import {
+  releaseHeldOutlookReminder,
+  remindOutlookReconnect,
+  runOutlookKeepAlive,
+} from "./outlook-reminder.js";
 import { lawyerOwner, toOwner } from "./owner.js";
 import { buildQuietBrief } from "./quiet-brief.js";
 import { buildDailyTimelineRecord, buildOnePagerRecord } from "./reconcile.js";
@@ -193,6 +201,41 @@ async function loadGoogleReads(api: OpenClawPluginApi, owner: string, now: Date)
   };
 }
 
+/**
+ * Outlook's share of a pass. It never throws and never ends the pass: a person without Outlook, or
+ * with Outlook down for a moment, still gets what Google feeds. A sign-in Microsoft just refused
+ * for good starts the once-a-day reconnect text here, because nothing else would notice it.
+ */
+async function loadOutlookReadsSafely(
+  api: OpenClawPluginApi,
+  owner: string,
+  now: Date,
+): Promise<OutlookReads> {
+  if (!outlookEnabled()) {
+    return { ok: false, error: "disabled" };
+  }
+  try {
+    const db = await openAdaOutlookAccountDbFromApi(api);
+    const reads = await loadOutlookReads(api, owner, now, {
+      db,
+      inboxWindow: INBOX_WINDOW,
+      hours: 72,
+    });
+    if (!reads.ok && reads.error === "reconnect") {
+      await remindOutlookReconnect(api, db, owner, now);
+    }
+    return reads;
+  } catch (error) {
+    api.logger.warn(
+      `ada outlook reads failed owner=${maskNumber(owner)}: ${error instanceof Error ? error.message : "unknown"}`,
+    );
+    return { ok: false, error: "unavailable" };
+  }
+}
+
+/** A provider that is only down for a moment keeps its rows in the shared snapshots for the next pass. */
+const TRANSIENT_READ_ERROR = /^(?:gmail_|calendar_|outlook_)|^(?:google_error|unavailable)$/u;
+
 export type AdaCollectTrigger = "poll" | "morning" | "notify" | "inbound";
 
 export type AdaCollectOutcome = {
@@ -345,18 +388,22 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
   }
 
   const google = await loadGoogleReads(params.api, params.owner, params.now);
-  if (!google.ok) {
-    if (google.error === "reconnect") {
-      // The dead row is gone, so nothing would retry: a note that cannot go out is held for the
-      // number's next message. Free text outside the 24-hour window can be accepted by WhatsApp
-      // and fail later, so a closed window holds it without trying.
-      const windowOpen = whatsappWindowOpen(earlyWake.lastLawyerInboundAtMs, nowMs);
-      const dispatch = windowOpen
-        ? await dispatchSafely(dispatchDigestTurn, reconnectNoteRequest(params))
-        : { ok: false };
-      if (!dispatch.ok) {
-        holdReconnectNote(params.owner, nowMs);
-      }
+  const outlook = await loadOutlookReadsSafely(params.api, params.owner, params.now);
+  // Neither saved nor configured: the person has nothing from Outlook to lose or to be asked about.
+  const outlookGone =
+    !outlook.ok && (outlook.error === "disabled" || outlook.error === "not_connected");
+  if (!google.ok && google.error === "reconnect") {
+    // The dead row is gone, so nothing would retry: a note that cannot go out is held for the
+    // number's next message. Free text outside the 24-hour window can be accepted by WhatsApp
+    // and fail later, so a closed window holds it without trying.
+    const windowOpen = whatsappWindowOpen(earlyWake.lastLawyerInboundAtMs, nowMs);
+    const dispatch = windowOpen
+      ? await dispatchSafely(dispatchDigestTurn, reconnectNoteRequest(params))
+      : { ok: false };
+    if (!dispatch.ok) {
+      holdReconnectNote(params.owner, nowMs);
+    }
+    if (!outlook.ok) {
       return {
         collected: false,
         delivered: dispatch.ok,
@@ -365,7 +412,9 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
         decision: "connect",
       };
     }
-    if (params.forceMorning && !params.catchUp && google.error === "not_connected") {
+  }
+  if (!google.ok && !outlook.ok) {
+    if (params.forceMorning && !params.catchUp && google.error === "not_connected" && outlookGone) {
       const ownZone = effectiveTimeZone((await params.memory.readProfile())?.timezone);
       const day = dayKey(params.now, ownZone);
       const dispatch = await dispatchSafely(dispatchDigestTurn, {
@@ -386,10 +435,15 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
       collected: false,
       delivered: false,
       held: false,
-      reason: google.error,
+      reason: google.error === "not_connected" && !outlookGone ? outlook.error : google.error,
       decision: "none",
     };
   }
+  /** What the person's connected providers feed this pass; Gmail and Outlook merge into one list. */
+  const feeds = [google, outlook].filter((feed) => feed.ok);
+  const messages = [...(google.ok ? google.messages : []), ...(outlook.ok ? outlook.messages : [])];
+  const events = [...(google.ok ? google.events : []), ...(outlook.ok ? outlook.events : [])];
+  const inboxFull = feeds.some((feed) => feed.messages.length >= INBOX_WINDOW);
 
   const [previousGmail, previousCalendar, aliases, todos, wake, profile, preferences] =
     await Promise.all([
@@ -415,20 +469,23 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
   }
 
   const timeZone = effectiveTimeZone(profile?.timezone);
-  const deadlineIntake = await prepareDeadlineIntake({
-    api: params.api,
-    memory: params.memory,
-    now: params.now,
-    forceMorning: params.forceMorning,
-    aliases,
-    timeZone,
-    accessToken: google.accessToken,
-  });
+  // Deadline intake reads Gmail itself, so it runs only for a person who has Google connected.
+  const deadlineIntake = google.ok
+    ? await prepareDeadlineIntake({
+        api: params.api,
+        memory: params.memory,
+        now: params.now,
+        forceMorning: params.forceMorning,
+        aliases,
+        timeZone,
+        accessToken: google.accessToken,
+      })
+    : null;
   const result = collectDigest({
     now: params.now,
     forceMorning: params.forceMorning,
-    inbox: google.messages,
-    events: google.events,
+    inbox: messages,
+    events,
     previousGmail,
     previousCalendar,
     aliases,
@@ -443,6 +500,7 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
 
   const topic = readPubSubTopic(params.api.pluginConfig);
   if (
+    google.ok &&
     topic &&
     (wake.watchExpirationMs === null || wake.watchExpirationMs < nowMs + 60 * 60 * 1000)
   ) {
@@ -486,9 +544,22 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
   const windowOpen = whatsappWindowOpen(wake.lastLawyerInboundAtMs, nowMs);
   const heldPlanAtMs = wake.heldPlanJson ? (wake.heldPlanAtMs ?? nowMs) : nowMs;
 
+  // A provider read for a moment only keeps its earlier rows, so it does not look new next pass.
+  const keptRows = <Row>(rows: readonly Row[], idOf: (row: Row) => string): Row[] =>
+    rows.filter((row) => {
+      const isOutlook = isOutlookSnapshotId(idOf(row));
+      const feed = isOutlook ? outlook : google;
+      return !feed.ok && TRANSIENT_READ_ERROR.test(feed.error);
+    });
   const commitSnapshots = async () => {
-    await params.memory.replaceGmailSnapshot(result.gmailSnapshot);
-    await params.memory.replaceCalendarSnapshot(result.calendarSnapshot);
+    await params.memory.replaceGmailSnapshot([
+      ...result.gmailSnapshot,
+      ...keptRows(previousGmail, (row) => row.messageId),
+    ]);
+    await params.memory.replaceCalendarSnapshot([
+      ...result.calendarSnapshot,
+      ...keptRows(previousCalendar, (row) => row.eventId),
+    ]);
   };
   const noHeldPlan = {
     heldPlanJson: null,
@@ -532,9 +603,10 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
     const brief = buildQuietBrief({
       now: params.now,
       timeZone,
-      events: google.events,
-      inbox: google.messages,
+      events,
+      inbox: messages,
       inboxLimit: INBOX_WINDOW,
+      inboxFull,
       aliases,
       deadlines: deadlineIntake?.digest.lines,
       alertedToday:
@@ -803,6 +875,13 @@ export function registerAdaService(deps: AdaServiceDeps): void {
             `ada granola keep-alive failed: ${error instanceof Error ? error.message : "unknown"}`,
           );
         }
+        try {
+          await runOutlookKeepAlive(api, now());
+        } catch (error) {
+          api.logger.error(
+            `ada outlook keep-alive failed: ${error instanceof Error ? error.message : "unknown"}`,
+          );
+        }
       };
       const { armMorning, armCatchUp } = createMorningSchedule({
         api,
@@ -855,9 +934,14 @@ export function registerAdaService(deps: AdaServiceDeps): void {
   });
 }
 
-/** Every number that has a Google connection, plus the lawyer; the passes the service runs. */
+/** Every number that has a Google or Outlook connection, plus the lawyer; the passes the service runs. */
 export async function listCollectOwners(api: OpenClawPluginApi): Promise<string[]> {
   const owners = new Set(await (await openAdaGoogleAccountDbFromApi(api)).listOwners());
+  if (outlookEnabled()) {
+    for (const owner of await (await openAdaOutlookAccountDbFromApi(api)).listOwners()) {
+      owners.add(owner);
+    }
+  }
   const lawyer = lawyerOwner(api.config);
   if (lawyer) {
     owners.add(lawyer);
@@ -940,6 +1024,11 @@ export async function recordSenderInbound(params: {
   await releaseHeldGranolaReminder(params.api, owner, params.atMs).catch((error: unknown) => {
     params.api.logger.error(
       `ada granola reminder release failed owner=${maskNumber(owner)}: ${error instanceof Error ? error.message : "unknown"}`,
+    );
+  });
+  await releaseHeldOutlookReminder(params.api, owner, params.atMs).catch((error: unknown) => {
+    params.api.logger.error(
+      `ada outlook reminder release failed owner=${maskNumber(owner)}: ${error instanceof Error ? error.message : "unknown"}`,
     );
   });
   const memory = await openAdaMemoryIfExistsFromApi(params.api, owner);
