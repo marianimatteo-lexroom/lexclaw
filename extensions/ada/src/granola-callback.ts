@@ -15,7 +15,6 @@ import {
   exchangeGranolaCode,
   GRANOLA_SCOPE,
   includesMcpScope,
-  rejectGranolaMcpScope,
 } from "./granola-oauth.js";
 import { revokeShortLinksForNonce } from "./short-links.js";
 
@@ -74,19 +73,20 @@ export async function handleAdaGranolaCallback(
   /**
    * Granola refused `mcp` as a scope, which its authorization server does not list: the person is
    * sent through the sign-in once more with the scope left out, from this very request, so they
-   * see no failure. A link that had already left `mcp` out gets no second try.
+   * see no failure. Only this link changes: nothing is remembered for anyone else, and a link that
+   * had already left `mcp` out gets no second try.
    */
   const retryWithoutMcp = async (scope: string, owner: string): Promise<boolean> => {
     if (!includesMcpScope(scope)) {
       return false;
     }
-    rejectGranolaMcpScope();
     const again = await prepareGranolaConnect({
       owner,
       config: deps.config,
       db,
       now,
       force: true,
+      withoutMcp: true,
       fetchImpl: deps.fetchImpl,
     });
     if (!again.ok || again.connected) {

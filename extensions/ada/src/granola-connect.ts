@@ -8,6 +8,7 @@ import {
   discoverGranolaEndpoints,
   ensureGranolaClient,
   granolaScope,
+  GRANOLA_SCOPE_WITHOUT_MCP,
 } from "./granola-oauth.js";
 import { loadGranolaAccess } from "./granola-session.js";
 import { isAdaPath } from "./http-paths.js";
@@ -107,6 +108,8 @@ export async function prepareGranolaConnect(params: {
   db: GranolaAccountDb;
   now: Date;
   force?: boolean;
+  /** This link leaves `mcp` out of its scope, after Granola refused it for the link before. */
+  withoutMcp?: boolean;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
   log?: (message: string) => void;
@@ -156,7 +159,7 @@ export async function prepareGranolaConnect(params: {
     params.owner,
   );
   const pkce = createPkce();
-  const scope = granolaScope();
+  const scope = params.withoutMcp ? GRANOLA_SCOPE_WITHOUT_MCP : granolaScope();
   await bindGranolaOwner(params.db, params.owner).replacePending(issued.nonce, issued.expiresAtMs, {
     codeVerifier: pkce.verifier,
     clientId: client.clientId,
