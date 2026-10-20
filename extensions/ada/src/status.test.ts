@@ -14,6 +14,7 @@ function wake(patch: Partial<WakeState> = {}): WakeState {
     lastCollectAtMs: null,
     lastDigestAtMs: null,
     lastMorningBriefAtMs: null,
+    lastConnectNudgeAtMs: null,
     heldPlanJson: null,
     heldPlanAtMs: null,
     watchExpirationMs: null,

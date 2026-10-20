@@ -50,6 +50,7 @@ import { openAdaLexroomAccountFromApi } from "./src/lexroom-account.js";
 import type { LexroomConfig } from "./src/lexroom-client.js";
 import { lexroomConfigProperties } from "./src/lexroom-config-schema.js";
 import { handleAdaLexroomConnect } from "./src/lexroom-connect-http.js";
+import { registerLexroomNudge } from "./src/lexroom-nudge.js";
 import {
   executeAdaLexroomConnect,
   lexroomConnectConfigFrom,
@@ -551,6 +552,8 @@ const entry = definePluginEntry({
         ? { prependSystemContext: ADA_PERSONA, prependContext: note }
         : { prependSystemContext: ADA_PERSONA };
     });
+
+    registerLexroomNudge(api);
 
     api.on(
       "before_prompt_build",

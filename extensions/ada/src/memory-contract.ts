@@ -112,6 +112,8 @@ export type WakeState = {
   lastDigestAtMs: number | null;
   /** When the morning brief was last delivered to this number: the once-a-local-day guard. */
   lastMorningBriefAtMs: number | null;
+  /** When Ada was last told to offer this number the Lexroom connection: the once-a-local-day guard. */
+  lastConnectNudgeAtMs: number | null;
   heldPlanJson: string | null;
   /** Failed dispatch attempts for the held plan; zero while it waits on the WhatsApp window. */
   heldPlanAttempts: number;
@@ -133,6 +135,7 @@ export const EMPTY_WAKE_STATE: WakeState = {
   lastCollectAtMs: null,
   lastDigestAtMs: null,
   lastMorningBriefAtMs: null,
+  lastConnectNudgeAtMs: null,
   heldPlanJson: null,
   heldPlanAttempts: 0,
   heldPlanNextAttemptAtMs: null,
@@ -238,6 +241,12 @@ export const PREFERENCE_LIMITS = { maxCount: 30, maxKeyChars: 40, maxTextChars: 
  * brief on quiet days. Urgent digests and the person's time zone are not affected.
  */
 export const QUIET_BRIEF_OFF_KEY = "quiet_brief_off";
+
+/**
+ * Saved (through ada_set_preference) when a person declines the offer to connect Lexroom. Code
+ * reads its time as a cooldown, not as a standing instruction, so the brief does not show it.
+ */
+export const LEXROOM_OFFER_DECLINED_KEY = "lexroom_offer_declined";
 
 export const FEEDBACK_CATEGORIES = [
   "bug",

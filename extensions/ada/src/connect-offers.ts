@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { LEXROOM_OFFER_DECLINED_KEY } from "./memory-contract.js";
 
 /**
  * When code (not the model) asks a person a question, or sends the morning digest, that message
@@ -10,7 +11,12 @@ import { randomUUID } from "node:crypto";
  * delivered does not read it: that person has not seen the question yet. It is kept in this
  * process only.
  */
-export type ConnectOfferKind = "lexroom" | "lexroom_reconnect" | "google" | "digest";
+export type ConnectOfferKind =
+  | "lexroom"
+  | "lexroom_nudge"
+  | "lexroom_reconnect"
+  | "google"
+  | "digest";
 
 export type ConnectOffer = { kind: ConnectOfferKind; detail?: string };
 
@@ -76,6 +82,7 @@ export function takeConnectOffers(
 
 const NAMES: Record<Exclude<ConnectOfferKind, "digest">, { account: string; call: string }> = {
   lexroom: { account: "their Lexroom account", call: "ada_lexroom_connect" },
+  lexroom_nudge: { account: "their Lexroom account", call: "ada_lexroom_connect" },
   lexroom_reconnect: {
     account: "their Lexroom account again (Lexroom refused the saved sign-in)",
     call: "ada_lexroom_connect with force true, because the saved sign-in is still on file and would otherwise be reported as connected",
@@ -97,7 +104,9 @@ export function connectOfferNote(offers: readonly ConnectOffer[]): string | unde
         ]
           .filter(Boolean)
           .join("\n")
-      : `- You asked whether they want to connect ${NAMES[kind].account}. If their message says yes in any form, call ${NAMES[kind].call} and send the link. If it says no, drop it and do not ask again.`,
+      : kind === "lexroom_nudge"
+        ? `- Your last answer may have ended with an offer to connect ${NAMES[kind].account}; ignore this if it did not. If their message says yes in any form, call ${NAMES[kind].call} and send the link. If it says no in any form, drop it and call ada_set_preference with key ${LEXROOM_OFFER_DECLINED_KEY} and one short sentence saying they declined connecting Lexroom, then do not bring it up again.`
+        : `- You asked whether they want to connect ${NAMES[kind].account}. If their message says yes in any form, call ${NAMES[kind].call} and send the link. If it says no, drop it and do not ask again.`,
   );
   return [
     "# Question you just asked",
