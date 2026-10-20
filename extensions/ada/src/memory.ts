@@ -5,6 +5,8 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { openSqliteWorkerStore, type SqliteWorkerStore } from "openclaw/plugin-sdk/sqlite-runtime";
 import { maskNumber } from "./inbound-log.js";
 import type {
+  Announcement,
+  AnnouncementDelivery,
   CalendarSnapshotRow,
   DeadlineCandidate,
   DeadlineItem,
@@ -41,6 +43,11 @@ export type MemoryStore = {
   addFeedback(feedback: NewFeedback): Promise<number>;
   listFeedback(sinceMs: number): Promise<FeedbackEntry[]>;
   setFeedbackStatus(id: number, status: FeedbackStatus): Promise<FeedbackEntry | null>;
+  saveAnnouncement(announcement: Announcement): Promise<boolean>;
+  listAnnouncements(): Promise<Announcement[]>;
+  claimAnnouncementDelivery(delivery: AnnouncementDelivery): Promise<boolean>;
+  releaseAnnouncementDelivery(announcementId: string, number: string): Promise<void>;
+  listAnnouncementDeliveries(): Promise<AnnouncementDelivery[]>;
   upsertRecord(record: MemoryRecord, reason: RevisionReason, atMs: number): Promise<void>;
   searchRecords(
     query: string,
@@ -112,6 +119,24 @@ export function wrapMemoryWorker(worker: SqliteWorkerStore<AdaMemoryOperations>)
     },
     setFeedbackStatus(id, status) {
       return worker.execute({ type: "setFeedbackStatus", input: { id, status } });
+    },
+    saveAnnouncement(announcement) {
+      return worker.execute({ type: "saveAnnouncement", input: announcement });
+    },
+    listAnnouncements() {
+      return worker.execute({ type: "listAnnouncements", input: undefined });
+    },
+    claimAnnouncementDelivery(delivery) {
+      return worker.execute({ type: "claimAnnouncementDelivery", input: delivery });
+    },
+    releaseAnnouncementDelivery(announcementId, number) {
+      return worker.execute({
+        type: "releaseAnnouncementDelivery",
+        input: { announcementId, number },
+      });
+    },
+    listAnnouncementDeliveries() {
+      return worker.execute({ type: "listAnnouncementDeliveries", input: undefined });
     },
     upsertRecord(record, reason, atMs) {
       return worker.execute({ type: "upsertRecord", input: { record, reason, atMs } });

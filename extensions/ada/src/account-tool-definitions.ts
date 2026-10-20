@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 import { DEADLINE_REPLY_ACTIONS } from "./deadline-tools.js";
 import {
+  ANNOUNCEMENTS_OFF_KEY,
   FEEDBACK_CATEGORIES,
   FEEDBACK_MAX_TEXT_CHARS,
   MEMORY_FOLDERS,
@@ -194,7 +195,7 @@ export const adaSetTimezoneDefinition = {
 export const adaSetPreferenceDefinition = {
   name: "ada_set_preference",
   label: "Save my preference",
-  description: `Save a standing preference of the person asking, so you follow it from now on in every chat with them. Call it whenever they tell you, in any words, how they want you to behave: style, length, tone, formality, language, emoji, signatures, how to address them, what the morning brief should contain, what to alert them about. Use a short snake_case topic as key (signature, length, tone, language, emoji, address_form, brief_content, alerts). Look at the standing preferences already in your context: when one covers the same topic, reuse its key so the new text replaces it. Write text as one standing instruction in your own words, at most ${PREFERENCE_LIMITS.maxTextChars} characters. To stop the short morning brief on quiet days use the key ${QUIET_BRIEF_OFF_KEY}. Not for time zones (use ada_set_timezone) and not for complaints about the product (use ada_report_feedback). At most ${PREFERENCE_LIMITS.maxCount} are kept; past that it returns the list so you can ask which to drop. Afterwards confirm in one short natural sentence in their language.`,
+  description: `Save a standing preference of the person asking, so you follow it from now on in every chat with them. Call it whenever they tell you, in any words, how they want you to behave: style, length, tone, formality, language, emoji, signatures, how to address them, what the morning brief should contain, what to alert them about. Use a short snake_case topic as key (signature, length, tone, language, emoji, address_form, brief_content, alerts). Look at the standing preferences already in your context: when one covers the same topic, reuse its key so the new text replaces it. Write text as one standing instruction in your own words, at most ${PREFERENCE_LIMITS.maxTextChars} characters. To stop the short morning brief on quiet days use the key ${QUIET_BRIEF_OFF_KEY}. When they do not want product news or what's-new messages from Ada, use the key ${ANNOUNCEMENTS_OFF_KEY}. Not for time zones (use ada_set_timezone) and not for complaints about the product (use ada_report_feedback). At most ${PREFERENCE_LIMITS.maxCount} are kept; past that it returns the list so you can ask which to drop. Afterwards confirm in one short natural sentence in their language.`,
   parameters: Type.Object(
     {
       key: Type.String({ minLength: 1, description: "Short snake_case topic, such as signature." }),
@@ -207,7 +208,7 @@ export const adaSetPreferenceDefinition = {
 export const adaForgetPreferenceDefinition = {
   name: "ada_forget_preference",
   label: "Forget my preference",
-  description: `Remove a saved standing preference of the person asking, by its key, when they take it back or ask you to stop doing it. Returns what is still saved. For ${QUIET_BRIEF_OFF_KEY} it turns the quiet-day brief back on. Confirm in one short natural sentence in their language.`,
+  description: `Remove a saved standing preference of the person asking, by its key, when they take it back or ask you to stop doing it. Returns what is still saved. For ${QUIET_BRIEF_OFF_KEY} it turns the quiet-day brief back on, and for ${ANNOUNCEMENTS_OFF_KEY} product news. Confirm in one short natural sentence in their language.`,
   parameters: Type.Object(
     { key: Type.String({ minLength: 1, description: "Key of a saved preference." }) },
     { additionalProperties: false },

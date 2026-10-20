@@ -37,6 +37,8 @@ import {
   REVISION_REASONS,
   TODO_OWNERS,
   TODO_STATUSES,
+  type Announcement,
+  type AnnouncementDelivery,
   type CalendarSnapshotRow,
   type DeadlineCandidate,
   type DeadlineItem,
@@ -279,6 +281,22 @@ CREATE TABLE IF NOT EXISTS vera_feedback (
   status TEXT NOT NULL DEFAULT 'new'
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS vera_announcements (
+  id TEXT PRIMARY KEY,
+  texts_json TEXT NOT NULL,
+  feature TEXT,
+  created_at_ms INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS vera_announcement_deliveries (
+  announcement_id TEXT NOT NULL,
+  number TEXT NOT NULL,
+  status TEXT NOT NULL,
+  reason TEXT,
+  at_ms INTEGER NOT NULL,
+  PRIMARY KEY (announcement_id, number)
+) STRICT;
+
 CREATE INDEX IF NOT EXISTS vera_feedback_at ON vera_feedback (at_ms);
 CREATE INDEX IF NOT EXISTS vera_deadlines_due ON vera_deadlines (due_at_ms);
 CREATE INDEX IF NOT EXISTS vera_deadlines_matter ON vera_deadlines (matter_id);
@@ -408,6 +426,19 @@ type AdaMemoryDatabase = {
     text: string;
     language: string;
     status: string;
+  };
+  vera_announcements: {
+    id: string;
+    texts_json: string;
+    feature: string | null;
+    created_at_ms: number;
+  };
+  vera_announcement_deliveries: {
+    announcement_id: string;
+    number: string;
+    status: string;
+    reason: string | null;
+    at_ms: number;
   };
 };
 
@@ -600,6 +631,26 @@ function feedbackEntry(row: AdaMemoryDatabase["vera_feedback"]): FeedbackEntry {
     text: row.text,
     language: row.language,
     status: row.status as FeedbackStatus,
+  };
+}
+
+function announcementOf(row: AdaMemoryDatabase["vera_announcements"]): Announcement {
+  return {
+    id: row.id,
+    // The column only ever holds what saveAnnouncement wrote.
+    texts: JSON.parse(row.texts_json) as Announcement["texts"],
+    feature: row.feature,
+    createdAtMs: row.created_at_ms,
+  };
+}
+
+function deliveryOf(row: AdaMemoryDatabase["vera_announcement_deliveries"]): AnnouncementDelivery {
+  return {
+    announcementId: row.announcement_id,
+    number: row.number,
+    status: row.status as AnnouncementDelivery["status"],
+    reason: row.reason,
+    atMs: row.at_ms,
   };
 }
 
@@ -853,6 +904,118 @@ class AdaMemoryDatabaseStore {
       this.query.selectFrom("vera_feedback").selectAll().where("id", "=", id),
     );
     return row ? feedbackEntry(row) : null;
+  }
+
+  saveAnnouncement(announcement: Announcement): boolean {
+    assertId(announcement.id, "announcement id");
+    if (
+      Object.keys(announcement.texts).length === 0 ||
+      !Number.isFinite(announcement.createdAtMs)
+    ) {
+      throw new Error("announcement is invalid");
+    }
+    return runSqliteImmediateTransactionSync(
+      this.db,
+      () => {
+        const existing = executeSqliteQueryTakeFirstSync(
+          this.db,
+          this.query
+            .selectFrom("vera_announcements")
+            .select("id")
+            .where("id", "=", announcement.id),
+        );
+        if (existing) {
+          return false;
+        }
+        executeSqliteQuerySync(
+          this.db,
+          this.query.insertInto("vera_announcements").values({
+            id: announcement.id,
+            texts_json: JSON.stringify(announcement.texts),
+            feature: announcement.feature,
+            created_at_ms: announcement.createdAtMs,
+          }),
+        );
+        return true;
+      },
+      {
+        busyTimeoutMs: 5000,
+        databaseLabel: "ada memory",
+        operationLabel: "ada.memory.announcement.save",
+      },
+    );
+  }
+
+  listAnnouncements(): Announcement[] {
+    return executeSqliteQuerySync(
+      this.db,
+      this.query
+        .selectFrom("vera_announcements")
+        .selectAll()
+        .orderBy("created_at_ms")
+        .orderBy("id"),
+    ).rows.map(announcementOf);
+  }
+
+  claimAnnouncementDelivery(delivery: AnnouncementDelivery): boolean {
+    assertId(delivery.announcementId, "announcement id");
+    if (!isOwner(delivery.number) || !Number.isFinite(delivery.atMs)) {
+      throw new Error("announcement delivery is invalid");
+    }
+    return runSqliteImmediateTransactionSync(
+      this.db,
+      () => {
+        const existing = executeSqliteQueryTakeFirstSync(
+          this.db,
+          this.query
+            .selectFrom("vera_announcement_deliveries")
+            .select("number")
+            .where("announcement_id", "=", delivery.announcementId)
+            .where("number", "=", delivery.number),
+        );
+        if (existing) {
+          return false;
+        }
+        executeSqliteQuerySync(
+          this.db,
+          this.query.insertInto("vera_announcement_deliveries").values({
+            announcement_id: delivery.announcementId,
+            number: delivery.number,
+            status: delivery.status,
+            reason: delivery.reason,
+            at_ms: delivery.atMs,
+          }),
+        );
+        return true;
+      },
+      {
+        busyTimeoutMs: 5000,
+        databaseLabel: "ada memory",
+        operationLabel: "ada.memory.announcement.claim",
+      },
+    );
+  }
+
+  releaseAnnouncementDelivery(announcementId: string, number: string): undefined {
+    executeSqliteQuerySync(
+      this.db,
+      this.query
+        .deleteFrom("vera_announcement_deliveries")
+        .where("announcement_id", "=", announcementId)
+        .where("number", "=", number),
+    );
+    return undefined;
+  }
+
+  listAnnouncementDeliveries(): AnnouncementDelivery[] {
+    return executeSqliteQuerySync(
+      this.db,
+      this.query
+        .selectFrom("vera_announcement_deliveries")
+        .selectAll()
+        .orderBy("at_ms")
+        .orderBy("number"),
+    ).rows.map(deliveryOf);
   }
 
   upsertRecord(record: MemoryRecord, reason: RevisionReason, atMs: number): undefined {
@@ -1678,6 +1841,8 @@ class AdaMemoryDatabaseStore {
     try {
       copy.exec("DELETE FROM vera_welcomed");
       copy.exec("DELETE FROM vera_feedback");
+      copy.exec("DELETE FROM vera_announcements");
+      copy.exec("DELETE FROM vera_announcement_deliveries");
     } finally {
       copy.close();
     }
@@ -1789,6 +1954,19 @@ export function createSqliteWorkerBackend(
           return database.listFeedback(command.input.sinceMs);
         case "setFeedbackStatus":
           return database.setFeedbackStatus(command.input.id, command.input.status);
+        case "saveAnnouncement":
+          return database.saveAnnouncement(command.input);
+        case "listAnnouncements":
+          return database.listAnnouncements();
+        case "claimAnnouncementDelivery":
+          return database.claimAnnouncementDelivery(command.input);
+        case "releaseAnnouncementDelivery":
+          return database.releaseAnnouncementDelivery(
+            command.input.announcementId,
+            command.input.number,
+          );
+        case "listAnnouncementDeliveries":
+          return database.listAnnouncementDeliveries();
         case "upsertRecord":
           return database.upsertRecord(
             command.input.record,

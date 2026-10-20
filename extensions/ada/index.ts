@@ -25,6 +25,8 @@ import {
   adaTodoListDefinition,
   adaUpdateCalendarEventDefinition,
 } from "./src/account-tool-definitions.js";
+import { registerAdaAnnouncementsAdmin } from "./src/announcements-http.js";
+import { registerAnnouncementRelease } from "./src/announcements.js";
 import { buildInjectedBrief } from "./src/brief.js";
 import { connectOfferNote, takeConnectOffers } from "./src/connect-offers.js";
 import { executeAdaDeadlineList, executeAdaDeadlineReply } from "./src/deadline-tools.js";
@@ -645,6 +647,8 @@ const entry = definePluginEntry({
     }
 
     registerAdaFeedbackAdmin(api);
+    registerAdaAnnouncementsAdmin(api);
+    registerAnnouncementRelease(api);
     registerAdaGranolaCallback(api);
 
     registerAdaHttpRoute(api, {

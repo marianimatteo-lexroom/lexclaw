@@ -248,6 +248,12 @@ export const QUIET_BRIEF_OFF_KEY = "quiet_brief_off";
  */
 export const LEXROOM_OFFER_DECLINED_KEY = "lexroom_offer_declined";
 
+/**
+ * The preference that opts a number out of product news: while it is saved, no announcement is
+ * delivered to that number. Delivery reads it as a setting; the person sets it in their own words.
+ */
+export const ANNOUNCEMENTS_OFF_KEY = "announcements_off";
+
 export const FEEDBACK_CATEGORIES = [
   "bug",
   "missing_feature",
@@ -276,6 +282,25 @@ export type FeedbackEntry = {
 
 export type NewFeedback = Omit<FeedbackEntry, "id" | "status">;
 
+/** A product update the team wants every known number to hear about once, kept in the registry file. */
+export type Announcement = {
+  id: string;
+  /** The message by language code; every announcement has at least `it` and `en`. */
+  texts: Record<string, string>;
+  /** The feature it is about, so a number that already has it connected is not told to connect it. */
+  feature: string | null;
+  createdAtMs: number;
+};
+
+/** `sent` went to the number; `skipped` never will (the number opted out or already has the feature). */
+export type AnnouncementDelivery = {
+  announcementId: string;
+  number: string;
+  status: "sent" | "skipped";
+  reason: string | null;
+  atMs: number;
+};
+
 export type SetPreferenceResult = { ok: true; replaced: boolean } | { ok: false; reason: "limit" };
 
 export type EmbeddingCandidate = { id: string; text: string };
@@ -300,6 +325,15 @@ export type AdaMemoryOperations = {
   /** Entries at or after `sinceMs`, oldest first. */
   listFeedback: Operation<{ sinceMs: number }, FeedbackEntry[]>;
   setFeedbackStatus: Operation<{ id: number; status: FeedbackStatus }, FeedbackEntry | null>;
+  /** False when an announcement with this id already exists; it is never overwritten. */
+  saveAnnouncement: Operation<Announcement, boolean>;
+  /** Oldest first. */
+  listAnnouncements: Operation<undefined, Announcement[]>;
+  /** True when the number had no delivery row for the announcement and now has one; the dedupe. */
+  claimAnnouncementDelivery: Operation<AnnouncementDelivery, boolean>;
+  /** Frees a claim whose send failed, so the number is tried again. */
+  releaseAnnouncementDelivery: Operation<{ announcementId: string; number: string }, undefined>;
+  listAnnouncementDeliveries: Operation<undefined, AnnouncementDelivery[]>;
   upsertRecord: Operation<
     { record: MemoryRecord; reason: RevisionReason; atMs: number },
     undefined
