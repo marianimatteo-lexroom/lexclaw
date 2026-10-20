@@ -28,6 +28,10 @@ const TOOL_NAMES = [
   "ada_memory_history",
   "ada_todo_list",
   "ada_todo_get",
+  "ada_granola_connect",
+  "ada_granola_disconnect",
+  "ada_granola_tools",
+  "ada_granola_call",
 ];
 
 it("registers digest tools, memory tools, wake service, and Google routes", () => {
@@ -59,6 +63,12 @@ it("registers digest tools, memory tools, wake service, and Google routes", () =
     expect.objectContaining({ path: "/ada/lexroom/connect" }),
   );
   expect(registerHttpRoute).toHaveBeenCalledWith(
+    expect.objectContaining({ path: "/ada/granola/callback" }),
+  );
+  expect(registerHttpRoute).toHaveBeenCalledWith(
+    expect.objectContaining({ path: "/gr", auth: "plugin", match: "prefix" }),
+  );
+  expect(registerHttpRoute).toHaveBeenCalledWith(
     expect.objectContaining({ path: "/ada/status", auth: "plugin", match: "exact" }),
   );
   expect(registerHttpRoute).toHaveBeenCalledWith(
@@ -71,6 +81,7 @@ it("registers digest tools, memory tools, wake service, and Google routes", () =
     "/vera/admin/feedback",
     "/vera/google/callback",
     "/vera/google/notify",
+    "/vera/granola/callback",
     "/vera/lexroom/connect",
     "/vera/status",
   ]) {

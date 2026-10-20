@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import plugin from "../index.js";
 import { renderDigestText, renderGoogleConnectText } from "./digest-text.js";
 import { googleConnectedText } from "./google-notify.js";
+import { granolaConnectedText, granolaReconnectText } from "./granola-text.js";
 import { lexroomConnectedText } from "./lexroom-tools.js";
 import { extractPdfText } from "./pdf-text.js";
 import { ADA_PERSONA } from "./persona.js";
@@ -110,6 +111,8 @@ describe("the assistant's name", () => {
         renderGoogleConnectText(language, "https://example.com/connect", "send"),
         googleConnectedText(language),
         lexroomConnectedText(language),
+        granolaConnectedText(language),
+        granolaReconnectText(language, "https://ada.example/gr/abc"),
         renderDigestText(DIGEST, language, "Europe/Rome"),
       );
       for (const failure of [

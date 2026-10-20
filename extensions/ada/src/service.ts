@@ -29,6 +29,7 @@ import {
 } from "./google-api.js";
 import { googleConnectConfigFrom, readGoogleConnectConfig } from "./google-connect.js";
 import { saveRefreshedAccount } from "./google-tools.js";
+import { releaseHeldGranolaReminder, runGranolaKeepAlive } from "./granola-reminder.js";
 import { holdReconnectNote, takeHeldReconnectNote } from "./held-reconnect.js";
 import { maskNumber, logInboundSkip } from "./inbound-log.js";
 import { abortResearchJobs } from "./lexroom-jobs.js";
@@ -794,6 +795,13 @@ export function registerAdaService(deps: AdaServiceDeps): void {
         for (const owner of owners) {
           await tickOwner(owner, false);
         }
+        try {
+          await runGranolaKeepAlive(api, now());
+        } catch (error) {
+          api.logger.error(
+            `ada granola keep-alive failed: ${error instanceof Error ? error.message : "unknown"}`,
+          );
+        }
       };
       const { armMorning, armCatchUp } = createMorningSchedule({
         api,
@@ -928,6 +936,11 @@ export async function recordSenderInbound(params: {
     return;
   }
   await releaseHeldReconnectNote(params.api, owner, params.atMs);
+  await releaseHeldGranolaReminder(params.api, owner, params.atMs).catch((error: unknown) => {
+    params.api.logger.error(
+      `ada granola reminder release failed owner=${maskNumber(owner)}: ${error instanceof Error ? error.message : "unknown"}`,
+    );
+  });
   const memory = await openAdaMemoryIfExistsFromApi(params.api, owner);
   if (!memory) {
     logInboundSkip(params.api.logger, {
