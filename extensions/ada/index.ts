@@ -29,6 +29,7 @@ import { buildInjectedBrief } from "./src/brief.js";
 import { connectOfferNote, takeConnectOffers } from "./src/connect-offers.js";
 import { executeAdaDeadlineList, executeAdaDeadlineReply } from "./src/deadline-tools.js";
 import { planDigest, type DigestSignal } from "./src/digest.js";
+import { createInboundTextGuard, registerInboundDuplicateHooks } from "./src/duplicate-text.js";
 import { registerAdaFeedbackAdmin } from "./src/feedback-http.js";
 import { openAdaGoogleAccountFromApi } from "./src/google-account.js";
 import { exchangeAuthorizationCode } from "./src/google-api.js";
@@ -442,6 +443,8 @@ const entry = definePluginEntry({
     tools.register(api);
     registerAdaService({ api });
 
+    const inboundText = createInboundTextGuard();
+    registerInboundDuplicateHooks(api, inboundText);
     const statusReactions = registerStatusReactionHooks(api);
     registerResearchLinkHooks(
       api,
@@ -474,13 +477,23 @@ const entry = definePluginEntry({
       api.logger.info(
         `ada inbound received channel=${channelId ?? "unknown"} sender=${maskNumber(ctx.senderId, event.from)}`,
       );
-      statusReactions.received({
-        sessionKey: ctx.sessionKey ?? event.sessionKey,
-        channelId,
-        accountId,
-        messageId,
-        senders: [ctx.senderId, event.from],
-      });
+      const repeatedText =
+        inboundText.verdict({
+          channelId,
+          senders: [ctx.senderId, event.from],
+          messageId,
+          text: event.content,
+          timestampMs: event.timestamp,
+        }) === "duplicate";
+      if (!repeatedText) {
+        statusReactions.received({
+          sessionKey: ctx.sessionKey ?? event.sessionKey,
+          channelId,
+          accountId,
+          messageId,
+          senders: [ctx.senderId, event.from],
+        });
+      }
       const readReceipt = markKapsoMessageRead({
         config: api.config,
         channelId,
