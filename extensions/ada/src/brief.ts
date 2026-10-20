@@ -1,5 +1,5 @@
 import {
-  LEXROOM_OFFER_DECLINED_KEY,
+  isConnectStateKey,
   type LawyerProfile,
   type MemoryRecord,
   type MemoryTodo,
@@ -47,7 +47,7 @@ function flat(text: string): string {
  * is flattened to one line so a saved preference cannot pose as a heading or a rule of its own.
  */
 export function renderPreferencesNote(all: readonly Preference[]): string | undefined {
-  const preferences = all.filter(({ key }) => key !== LEXROOM_OFFER_DECLINED_KEY);
+  const preferences = all.filter(({ key }) => !isConnectStateKey(key));
   if (preferences.length === 0) {
     return undefined;
   }

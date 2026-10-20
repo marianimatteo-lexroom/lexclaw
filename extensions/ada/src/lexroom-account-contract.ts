@@ -24,6 +24,8 @@ export type LexroomAccountStore = {
   replacePending(nonce: string, expiresAtMs: number): Promise<void>;
   hasPending(nonce: string, nowMs: number): Promise<boolean>;
   consumePending(nonce: string, nowMs: number): Promise<boolean>;
+  /** When the connect link last issued to this number expires, or null when none is waiting. */
+  pendingExpiresAt(): Promise<number | null>;
   upsertAccount(account: LexroomAccountRecord): Promise<void>;
   readAccount(): Promise<LexroomAccountRecord | null>;
   clearAccount(): Promise<void>;
@@ -34,6 +36,7 @@ export type LexroomAccountDb = {
   replacePending(owner: string, nonce: string, expiresAtMs: number): Promise<void>;
   hasPending(owner: string, nonce: string, nowMs: number): Promise<boolean>;
   consumePending(owner: string, nonce: string, nowMs: number): Promise<boolean>;
+  pendingExpiresAt(owner: string): Promise<number | null>;
   upsertAccount(owner: string, account: LexroomAccountRecord): Promise<void>;
   readAccount(owner: string): Promise<LexroomAccountRecord | null>;
   clearAccount(owner: string): Promise<void>;
@@ -47,6 +50,7 @@ export type AdaLexroomOperations = {
   replacePending: Operation<{ owner: string; nonce: string; expiresAtMs: number }, undefined>;
   hasPending: Operation<{ owner: string; nonce: string; nowMs: number }, boolean>;
   consumePending: Operation<{ owner: string; nonce: string; nowMs: number }, boolean>;
+  pendingExpiresAt: Operation<{ owner: string }, number | null>;
   upsertAccount: Operation<{ owner: string; account: LexroomAccountRecord }, undefined>;
   readAccount: Operation<{ owner: string }, LexroomAccountRecord | null>;
   clearAccount: Operation<{ owner: string }, undefined>;

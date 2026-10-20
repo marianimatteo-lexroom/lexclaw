@@ -248,6 +248,22 @@ export const QUIET_BRIEF_OFF_KEY = "quiet_brief_off";
  */
 export const LEXROOM_OFFER_DECLINED_KEY = "lexroom_offer_declined";
 
+export const CONNECT_FEATURES = ["google", "lexroom", "granola"] as const;
+export type ConnectFeature = (typeof CONNECT_FEATURES)[number];
+
+/** Set by code once the unfinished-connection line was shown for `feature`: at most once each. */
+export const connectRemindedKey = (feature: ConnectFeature) => `connect_reminded_${feature}`;
+
+/** Set (through ada_set_preference) when a person declines connecting `feature`. */
+export const connectDeclinedKey = (feature: ConnectFeature) =>
+  feature === "lexroom" ? LEXROOM_OFFER_DECLINED_KEY : `connect_declined_${feature}`;
+
+/** Preferences code reads as state; they are not standing instructions, so the brief omits them. */
+export const isConnectStateKey = (key: string) =>
+  key === LEXROOM_OFFER_DECLINED_KEY ||
+  key.startsWith("connect_reminded_") ||
+  key.startsWith("connect_declined_");
+
 /**
  * The preference that opts a number out of product news: while it is saved, no announcement is
  * delivered to that number. Delivery reads it as a setting; the person sets it in their own words.

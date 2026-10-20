@@ -322,6 +322,18 @@ class AdaGoogleDatabaseStore {
     return undefined;
   }
 
+  pendingExpiresAt(owner: string): number | null {
+    assertOwner(owner);
+    const row = executeSqliteQueryTakeFirstSync(
+      this.db,
+      this.query
+        .selectFrom("vera_google_pending")
+        .select("expires_at_ms")
+        .where("owner", "=", owner),
+    );
+    return row?.expires_at_ms ?? null;
+  }
+
   consumePending(owner: string, nonce: string, nowMs: number): boolean {
     assertOwner(owner);
     assertNonce(nonce);
@@ -558,6 +570,8 @@ export function createSqliteWorkerBackend(
             command.input.nonce,
             command.input.expiresAtMs,
           );
+        case "pendingExpiresAt":
+          return database.pendingExpiresAt(command.input.owner);
         case "consumePending":
           return database.consumePending(
             command.input.owner,

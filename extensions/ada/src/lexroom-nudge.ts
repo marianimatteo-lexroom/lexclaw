@@ -1,11 +1,16 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { noteConnectOffer } from "./connect-offers.js";
+import { findUnfinishedConnect, unfinishedConnectNote } from "./connect-reminder.js";
 import { localIsoDate } from "./deadline-time.js";
 import { openAdaLexroomAccountFromApi } from "./lexroom-account.js";
 import { lexroomConnectConfigFrom, readLexroomConnectConfig } from "./lexroom-connect.js";
-import { LEXROOM_OFFER_DECLINED_KEY } from "./memory-contract.js";
+import {
+  connectRemindedKey,
+  LEXROOM_OFFER_DECLINED_KEY,
+  type ConnectFeature,
+} from "./memory-contract.js";
 import { openAdaMemoryFromApi } from "./memory.js";
-import { lawyerOwner, resolveHookTurnOwner } from "./owner.js";
+import { lawyerOwner, resolveHookTurnOwner, sessionKeyOwner, toOwner } from "./owner.js";
 import { effectiveTimeZone } from "./schedule.js";
 import { hasLiveShortLink } from "./short-links.js";
 
@@ -65,17 +70,69 @@ async function lexroomConnected(api: OpenClawPluginApi, owner: string): Promise<
   return owner === lawyerOwner(api.config) && Boolean(staticToken);
 }
 
+/** The Lexroom connect link, as the short alias Ada sends: `<origin>/l/<ten characters>`. */
+const SHORT_LINK = /\/l\/[A-Za-z0-9_-]{10}(?![A-Za-z0-9_-])/u;
+
+/** What a reply that made the offer shows: Lexroom's short link, or Lexroom named in the offer. */
+export function replyMadeLexroomOffer(text: string): boolean {
+  return SHORT_LINK.test(text) || /lexroom/iu.test(text);
+}
+
 /**
  * Adds to the prompt of a person's own turn: the Lexroom-first instruction while Lexroom is
- * connected, otherwise, when it is due, the offer to connect. The slot of the day is
- * spent when the note is handed out, so a retry of the same run still gets it and no other run
- * does; the model decides whether the message was a legal question worth the offer.
+ * connected; otherwise, when it is due, the offer to connect; and, once per account, one line
+ * about a connection that was started and never finished. A retry of the same run gets the same
+ * notes again and no other run does. The slot of the day for the offer is spent only when Ada
+ * really made it (she called ada_lexroom_connect, or her reply carries the link or names
+ * Lexroom), so a greeting does not use it up; the model decides whether the message was a legal
+ * question worth the offer.
  */
 export function registerLexroomNudge(
   api: OpenClawPluginApi,
   now: () => Date = () => new Date(),
 ): void {
-  const grants = new Map<string, string>();
+  /** The run that was handed the offer note, per number, until the offer is seen or the next run replaces it. */
+  const offerRuns = new Map<string, string>();
+  const reminderRuns = new Map<string, { runId: string; feature: ConnectFeature }>();
+  const remember = <T>(map: Map<string, T>, owner: string, value: T) => {
+    map.delete(owner);
+    map.set(owner, value);
+    if (map.size > MAX_GRANTS) {
+      map.delete(map.keys().next().value ?? owner);
+    }
+  };
+
+  /** Ada made the offer on this run: from now on it counts as today's, and the next turn reads the answer. */
+  const offerMade = async (owner: string, runId: string) => {
+    if (offerRuns.get(owner) !== runId) {
+      return;
+    }
+    offerRuns.delete(owner);
+    const at = now().getTime();
+    try {
+      await (await openAdaMemoryFromApi(api, owner)).writeWake({ lastConnectNudgeAtMs: at });
+      noteConnectOffer(owner, "lexroom_nudge", at);
+    } catch (error) {
+      api.logger.error(
+        `ada lexroom offer not recorded: ${error instanceof Error ? error.message : "unknown"}`,
+      );
+    }
+  };
+
+  api.on("after_tool_call", async (event, ctx) => {
+    const owner = sessionKeyOwner(ctx.sessionKey);
+    const runId = event.runId ?? ctx.runId;
+    if (event.toolName === "ada_lexroom_connect" && !event.error && owner && runId) {
+      await offerMade(owner, runId);
+    }
+  });
+  api.on("message_sent", async (event, ctx) => {
+    const owner = sessionKeyOwner(event.sessionKey ?? ctx.sessionKey) ?? toOwner(event.to);
+    if (event.success && owner && event.runId && replyMadeLexroomOffer(event.content)) {
+      await offerMade(owner, event.runId);
+    }
+  });
+
   api.on(
     "before_prompt_build",
     async (_event, ctx) => {
@@ -92,54 +149,82 @@ export function registerLexroomNudge(
           return undefined;
         }
         const { owner } = turn;
-        if (ctx.runId && grants.get(owner) === ctx.runId) {
-          return { prependContext: LEXROOM_NUDGE_NOTE };
+        const notes: string[] = [];
+        let offered = false;
+        const retry = ctx.runId !== undefined && offerRuns.get(owner) === ctx.runId;
+        if (retry) {
+          notes.push(LEXROOM_NUDGE_NOTE);
+          offered = true;
         }
         const clock = now();
         const connected = await lexroomConnected(api, owner);
-        if (connected) {
-          return authority.allows("ada_research")
-            ? { prependContext: LEXROOM_RESEARCH_FIRST_NOTE }
-            : undefined;
-        }
-        const linkLive = hasLiveShortLink("l", owner, clock);
-        if (
-          linkLive ||
-          !authority.allows("ada_lexroom_connect") ||
-          !readLexroomConnectConfig(lexroomConnectConfigFrom(api.pluginConfig)).ok
-        ) {
-          return undefined;
-        }
-        const memory = await openAdaMemoryFromApi(api, owner);
-        const [wake, preferences, profile] = await Promise.all([
-          memory.readWake(),
-          memory.listPreferences(),
-          memory.readProfile(),
-        ]);
-        const due = lexroomNudgeDue({
-          nowMs: clock.getTime(),
-          timeZone: effectiveTimeZone(profile?.timezone),
-          connected,
-          linkLive,
-          lastNudgeAtMs: wake.lastConnectNudgeAtMs,
-          declinedAtMs:
-            preferences.find((entry) => entry.key === LEXROOM_OFFER_DECLINED_KEY)?.updatedAtMs ??
-            null,
-        });
-        if (!due) {
-          return undefined;
-        }
-        authority.assertActive();
-        await memory.writeWake({ lastConnectNudgeAtMs: clock.getTime() });
-        noteConnectOffer(owner, "lexroom_nudge", clock.getTime());
-        if (ctx.runId) {
-          grants.delete(owner);
-          grants.set(owner, ctx.runId);
-          if (grants.size > MAX_GRANTS) {
-            grants.delete(grants.keys().next().value ?? owner);
+        if (!retry && connected) {
+          if (authority.allows("ada_research")) {
+            notes.push(LEXROOM_RESEARCH_FIRST_NOTE);
+          }
+        } else if (!retry) {
+          const linkLive = hasLiveShortLink("l", owner, clock);
+          if (
+            !linkLive &&
+            authority.allows("ada_lexroom_connect") &&
+            readLexroomConnectConfig(lexroomConnectConfigFrom(api.pluginConfig)).ok
+          ) {
+            const memory = await openAdaMemoryFromApi(api, owner);
+            const [wake, preferences, profile] = await Promise.all([
+              memory.readWake(),
+              memory.listPreferences(),
+              memory.readProfile(),
+            ]);
+            const due = lexroomNudgeDue({
+              nowMs: clock.getTime(),
+              timeZone: effectiveTimeZone(profile?.timezone),
+              connected,
+              linkLive,
+              lastNudgeAtMs: wake.lastConnectNudgeAtMs,
+              declinedAtMs:
+                preferences.find((entry) => entry.key === LEXROOM_OFFER_DECLINED_KEY)
+                  ?.updatedAtMs ?? null,
+            });
+            if (due) {
+              authority.assertActive();
+              remember(offerRuns, owner, ctx.runId ?? "");
+              notes.push(LEXROOM_NUDGE_NOTE);
+              offered = true;
+            }
           }
         }
-        return { prependContext: LEXROOM_NUDGE_NOTE };
+
+        const again = reminderRuns.get(owner);
+        if (again && ctx.runId !== undefined && again.runId === ctx.runId) {
+          notes.push(unfinishedConnectNote(again.feature));
+        } else {
+          const feature = await findUnfinishedConnect({
+            api,
+            owner,
+            nowMs: clock.getTime(),
+            allows: (tool) => authority.allows(tool),
+            lexroomConnected: async () => connected,
+            offeredLexroomThisTurn: offered,
+            preferences: async () =>
+              await (await openAdaMemoryFromApi(api, owner)).listPreferences(),
+          });
+          if (feature) {
+            authority.assertActive();
+            await (
+              await openAdaMemoryFromApi(api, owner)
+            ).setPreference(
+              connectRemindedKey(feature),
+              "The unfinished-connection line was shown once.",
+              clock.getTime(),
+            );
+            noteConnectOffer(owner, "connect_reminder", clock.getTime(), feature);
+            if (ctx.runId) {
+              remember(reminderRuns, owner, { runId: ctx.runId, feature });
+            }
+            notes.push(unfinishedConnectNote(feature));
+          }
+        }
+        return notes.length > 0 ? { prependContext: notes.join("\n\n") } : undefined;
       } catch (error) {
         api.logger.error(
           `ada lexroom offer check failed: ${error instanceof Error ? error.message : "unknown"}`,

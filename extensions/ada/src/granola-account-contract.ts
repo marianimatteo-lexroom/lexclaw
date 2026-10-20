@@ -37,6 +37,8 @@ export type GranolaAccountStore = {
   replacePending(nonce: string, expiresAtMs: number, pending: GranolaPending): Promise<void>;
   /** Spends the link's state: the PKCE verifier once, and null when it is unknown, spent or expired. */
   consumePending(nonce: string, nowMs: number): Promise<GranolaPending | null>;
+  /** When the connect link last issued to this number expires, or null when none is waiting. */
+  pendingExpiresAt(): Promise<number | null>;
   upsertAccount(account: GranolaAccountRecord): Promise<void>;
   readAccount(): Promise<GranolaAccountRecord | null>;
   clearAccount(): Promise<void>;
@@ -63,6 +65,7 @@ export type GranolaAccountDb = {
     pending: GranolaPending,
   ): Promise<void>;
   consumePending(owner: string, nonce: string, nowMs: number): Promise<GranolaPending | null>;
+  pendingExpiresAt(owner: string): Promise<number | null>;
   upsertAccount(owner: string, account: GranolaAccountRecord): Promise<void>;
   readAccount(owner: string): Promise<GranolaAccountRecord | null>;
   clearAccount(owner: string): Promise<void>;
@@ -95,6 +98,7 @@ export type AdaGranolaOperations = {
     undefined
   >;
   consumePending: Operation<{ owner: string; nonce: string; nowMs: number }, GranolaPending | null>;
+  pendingExpiresAt: Operation<{ owner: string }, number | null>;
   upsertAccount: Operation<{ owner: string; account: GranolaAccountRecord }, undefined>;
   readAccount: Operation<{ owner: string }, GranolaAccountRecord | null>;
   clearAccount: Operation<{ owner: string }, undefined>;

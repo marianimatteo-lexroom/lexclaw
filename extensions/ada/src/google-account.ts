@@ -29,6 +29,9 @@ function wrap(worker: SqliteWorkerStore<AdaGoogleOperations>): GoogleAccountDb {
     consumePending(owner, nonce, nowMs) {
       return worker.execute({ type: "consumePending", input: { owner, nonce, nowMs } });
     },
+    pendingExpiresAt(owner) {
+      return worker.execute({ type: "pendingExpiresAt", input: { owner } });
+    },
     upsertAccount(owner, account) {
       return worker.execute({ type: "upsertAccount", input: { owner, account } });
     },
@@ -58,6 +61,7 @@ export function bindGoogleOwner(db: GoogleAccountDb, owner: string): GoogleAccou
   return {
     replacePending: (nonce, expiresAtMs) => db.replacePending(owner, nonce, expiresAtMs),
     consumePending: (nonce, nowMs) => db.consumePending(owner, nonce, nowMs),
+    pendingExpiresAt: () => db.pendingExpiresAt(owner),
     upsertAccount: (account) => db.upsertAccount(owner, account),
     readAccount: () => db.readAccount(owner),
     clearAccount: () => db.clearAccount(owner),
