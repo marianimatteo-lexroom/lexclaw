@@ -288,6 +288,24 @@ export async function withResearchLinks(
 }
 
 /**
+ * The host's own words for a tool-only turn that ended with no text, in English only. They are
+ * about the run, not the person's question, so they are never sent as they are.
+ */
+export function isInternalFallbackText(text: string): boolean {
+  return /^\s*the tool run finished, but no final summary was produced\b/iu.test(text);
+}
+
+const NO_SUMMARY: Record<Language, string> = {
+  it: "Ho completato l'operazione ma non ho un riepilogo da mostrarti. Scrivimi se vuoi i dettagli.",
+  en: "I finished the task but have no summary to show. Write to me if you want the details.",
+  es: "Terminé la tarea pero no tengo un resumen que mostrarte. Escríbeme si quieres los detalles.",
+  fr: "J'ai terminé la tâche mais je n'ai pas de résumé à te montrer. Écris-moi si tu veux les détails.",
+  de: "Ich habe die Aufgabe abgeschlossen, habe aber keine Zusammenfassung. Schreib mir, wenn du Details möchtest.",
+};
+
+const MAX_ANSWERED_RUNS = 500;
+
+/**
  * Appends the research link to the final reply. `reply_payload_sending` is the owner; if the
  * host has never run it, `message_sending` takes over, because that one also sees blocks and
  * must not be used once the final payload is available.
@@ -295,9 +313,40 @@ export async function withResearchLinks(
 export function registerResearchLinkHooks(
   api: Pick<OpenClawPluginApi, "on" | "logger">,
   readProfileLanguage?: (owner: string) => Promise<string | undefined>,
+  /** True while a Lexroom research for the number will deliver its answer itself. */
+  researchActive?: (owner: string) => boolean,
 ): void {
   const log = lexroomLogger(api.logger);
   let payloadHookRuns = false;
+  /** Runs that already sent the person some text, so an empty ending adds nothing. */
+  const answeredRuns = new Set<string>();
+  const noteAnswered = (runId: string | undefined) => {
+    if (runId) {
+      answeredRuns.delete(runId);
+      answeredRuns.add(runId);
+      if (answeredRuns.size > MAX_ANSWERED_RUNS) {
+        answeredRuns.delete(answeredRuns.values().next().value ?? runId);
+      }
+    }
+  };
+  /**
+   * What replaces the host's no-summary text: nothing when the answer already went out or a
+   * research will deliver it, otherwise a short line in the person's language.
+   */
+  const internalFallback = async (
+    owner: string | null,
+    runId: string | undefined,
+  ): Promise<string | null> => {
+    if ((runId && answeredRuns.has(runId)) || (owner && researchActive?.(owner))) {
+      return null;
+    }
+    const language = await resolveLanguage(
+      "",
+      owner && readProfileLanguage ? () => readProfileLanguage(owner) : undefined,
+      owner ?? undefined,
+    );
+    return NO_SUMMARY[language];
+  };
   /** The number a reply goes to: its own session, else the conversation or recipient. */
   const ownerOf = (
     ctx: { sessionKey?: string; conversationId?: string } | undefined,
@@ -318,6 +367,21 @@ export function registerResearchLinkHooks(
   api.on("reply_payload_sending", async (event, ctx) => {
     payloadHookRuns = true;
     const text = event.payload.text;
+    if (typeof text === "string" && isInternalFallbackText(text)) {
+      const owner = ownerOf(ctx);
+      logInboundSkip(api.logger, {
+        stage: "reply",
+        reason: "internal_fallback_text",
+        sender: ctx?.sessionKey ? ctx.sessionKey.split(":") : undefined,
+      });
+      const fallback = await internalFallback(owner, event.runId ?? ctx?.runId);
+      return fallback === null
+        ? { cancel: true, reason: "internal_fallback_text" }
+        : { payload: { ...event.payload, text: fallback } };
+    }
+    if (typeof text === "string" && text.trim() && text.trim() !== "NO_REPLY") {
+      noteAnswered(event.runId ?? ctx?.runId);
+    }
     if (event.kind === "final" && typeof text === "string" && text.trim() === "NO_REPLY") {
       logInboundSkip(api.logger, {
         stage: "reply",
@@ -338,6 +402,10 @@ export function registerResearchLinkHooks(
   });
 
   api.on("message_sending", async (event, ctx) => {
+    if (isInternalFallbackText(event.content)) {
+      const fallback = await internalFallback(ownerOf(ctx, event.to), ctx?.runId);
+      return fallback === null ? { cancel: true } : { content: fallback };
+    }
     if (payloadHookRuns || !event.content.trim() || event.content.trim() === "NO_REPLY") {
       return undefined;
     }

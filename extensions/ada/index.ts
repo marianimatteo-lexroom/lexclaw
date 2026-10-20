@@ -53,6 +53,7 @@ import { openAdaLexroomAccountFromApi } from "./src/lexroom-account.js";
 import type { LexroomConfig } from "./src/lexroom-client.js";
 import { lexroomConfigProperties } from "./src/lexroom-config-schema.js";
 import { handleAdaLexroomConnect } from "./src/lexroom-connect-http.js";
+import { ownerResearchActive } from "./src/lexroom-jobs.js";
 import { registerLexroomNudge } from "./src/lexroom-nudge.js";
 import {
   executeAdaLexroomConnect,
@@ -455,6 +456,7 @@ const entry = definePluginEntry({
       api,
       async (owner) =>
         (await (await openAdaMemoryIfExistsFromApi(api, owner))?.readProfile())?.language,
+      (owner) => ownerResearchActive(owner),
     );
 
     registerAnnouncementRelease(api);

@@ -72,6 +72,22 @@ function prune(nowMs: number): void {
   }
 }
 
+/**
+ * True while `owner` has a research running, or had one end less than `graceMs` ago: they are
+ * about to get, or just got, its answer from Ada herself.
+ */
+export function ownerResearchActive(owner: string, nowMs = Date.now(), graceMs = 120_000): boolean {
+  for (const job of jobs.values()) {
+    if (
+      job.owner === owner &&
+      (job.finishedAtMs === undefined || nowMs - job.finishedAtMs <= graceMs)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function runningCount(): number {
   let count = 0;
   for (const job of jobs.values()) {
