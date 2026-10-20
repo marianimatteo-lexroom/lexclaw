@@ -58,14 +58,22 @@ function text(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+/**
+ * Endpoints read from metadata are only used when they are https on Granola's own hosts, so a
+ * tampered or misrouted metadata answer can never point people's sign-in, or the tokens Ada posts,
+ * anywhere else.
+ */
 function secureUrl(value: string | undefined): string | undefined {
   if (!value) {
     return undefined;
   }
   try {
     const url = new URL(value);
-    const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-    return url.protocol === "https:" || (url.protocol === "http:" && local) ? value : undefined;
+    const host = url.hostname.toLowerCase();
+    const granola = host === "granola.ai" || host.endsWith(".granola.ai");
+    return url.protocol === "https:" && granola && !url.username && !url.password
+      ? value
+      : undefined;
   } catch {
     return undefined;
   }
