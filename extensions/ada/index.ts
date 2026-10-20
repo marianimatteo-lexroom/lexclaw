@@ -46,6 +46,7 @@ import {
 import { adaGranolaTools, registerAdaGranolaCallback } from "./src/granola-plugin.js";
 import { registerAdaHttpRoute } from "./src/http-paths.js";
 import { logInboundSkip, maskNumber } from "./src/inbound-log.js";
+import { registerAdaKapsoWebhook } from "./src/kapso-webhook-gate.js";
 import { openAdaLexroomAccountFromApi } from "./src/lexroom-account.js";
 import type { LexroomConfig } from "./src/lexroom-client.js";
 import { lexroomConfigProperties } from "./src/lexroom-config-schema.js";
@@ -443,6 +444,7 @@ const entry = definePluginEntry({
   register(api) {
     tools.register(api);
     registerAdaService({ api });
+    registerAdaKapsoWebhook(api);
 
     const inboundText = createInboundTextGuard();
     registerInboundDuplicateHooks(api, inboundText);

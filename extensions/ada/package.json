@@ -17,6 +17,7 @@
       "workerEntries": [
         "./src/google-account.worker.ts",
         "./src/granola-account.worker.ts",
+        "./src/kapso-inbound.worker.ts",
         "./src/lexroom-account.worker.ts",
         "./src/memory.worker.ts"
       ]
