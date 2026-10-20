@@ -6,10 +6,17 @@ import type { GranolaAccountDb } from "./granola-account-contract.js";
 import { bindGranolaOwner } from "./granola-account.js";
 import {
   granolaStateKey,
+  prepareGranolaConnect,
   readGranolaConnectConfig,
   type GranolaConnectConfig,
 } from "./granola-connect.js";
-import { discoverGranolaEndpoints, exchangeGranolaCode } from "./granola-oauth.js";
+import {
+  discoverGranolaEndpoints,
+  exchangeGranolaCode,
+  GRANOLA_SCOPE,
+  includesMcpScope,
+  rejectGranolaMcpScope,
+} from "./granola-oauth.js";
 import { revokeShortLinksForNonce } from "./short-links.js";
 
 type CallbackDeps = {
@@ -57,7 +64,52 @@ export async function handleAdaGranolaCallback(
     return true;
   }
   const params = new URL(req.url ?? "/", "http://127.0.0.1").searchParams;
+  const code = params.get("code")?.trim() ?? "";
+  const state = params.get("state")?.trim() ?? "";
+  const now = deps.now();
+  const parsed = state
+    ? readConnectState(granolaStateKey(config.settings.stateSecret), state, now)
+    : null;
+  const db = await deps.db();
+  /**
+   * Granola refused `mcp` as a scope, which its authorization server does not list: the person is
+   * sent through the sign-in once more with the scope left out, from this very request, so they
+   * see no failure. A link that had already left `mcp` out gets no second try.
+   */
+  const retryWithoutMcp = async (scope: string, owner: string): Promise<boolean> => {
+    if (!includesMcpScope(scope)) {
+      return false;
+    }
+    rejectGranolaMcpScope();
+    const again = await prepareGranolaConnect({
+      owner,
+      config: deps.config,
+      db,
+      now,
+      force: true,
+      fetchImpl: deps.fetchImpl,
+    });
+    if (!again.ok || again.connected) {
+      return false;
+    }
+    res.statusCode = 302;
+    res.setHeader("location", again.ask.url);
+    res.setHeader("cache-control", "no-store");
+    res.setHeader("referrer-policy", "no-referrer");
+    res.end();
+    return true;
+  };
   if (params.get("error")) {
+    if (params.get("error") === "invalid_scope" && parsed) {
+      const spent = await bindGranolaOwner(db, parsed.owner).consumePending(
+        parsed.nonce,
+        now.getTime(),
+      );
+      revokeShortLinksForNonce(parsed.nonce);
+      if (spent && (await retryWithoutMcp(spent.scope || GRANOLA_SCOPE, parsed.owner))) {
+        return true;
+      }
+    }
     writeAdaConnectPage(res, 200, {
       kind: "retry",
       heading: "Not connected",
@@ -66,17 +118,10 @@ export async function handleAdaGranolaCallback(
     });
     return true;
   }
-  const code = params.get("code")?.trim() ?? "";
-  const state = params.get("state")?.trim() ?? "";
-  const now = deps.now();
-  const parsed = state
-    ? readConnectState(granolaStateKey(config.settings.stateSecret), state, now)
-    : null;
   if (!code || !parsed) {
     writeAdaConnectPage(res, 400, EXPIRED);
     return true;
   }
-  const db = await deps.db();
   const store = bindGranolaOwner(db, parsed.owner);
   const pending = await store.consumePending(parsed.nonce, now.getTime());
   revokeShortLinksForNonce(parsed.nonce);
@@ -102,6 +147,12 @@ export async function handleAdaGranolaCallback(
   if (!exchanged?.ok) {
     const reason = exchanged?.reason ?? "unreachable";
     deps.log.error(`ada granola token exchange failed: ${reason}`);
+    if (
+      exchanged?.oauthError === "invalid_scope" &&
+      (await retryWithoutMcp(pending.scope || GRANOLA_SCOPE, parsed.owner))
+    ) {
+      return true;
+    }
     if (reason === "invalid_client") {
       // Granola forgot Ada's registration: the next link registers it again.
       await db.clearClient(client.clientId);

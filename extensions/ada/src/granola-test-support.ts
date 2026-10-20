@@ -7,7 +7,7 @@ import { wrapGranolaWorker } from "./granola-account.js";
 import { createSqliteWorkerBackend } from "./granola-account.worker.js";
 import { handleAdaGranolaCallback } from "./granola-callback.js";
 import { granolaConnectConfigFrom, prepareGranolaConnect } from "./granola-connect.js";
-import { clearGranolaDiscoveryCache } from "./granola-oauth.js";
+import { clearGranolaDiscoveryCache, resetGranolaScope } from "./granola-oauth.js";
 import { handleAdaShortLink } from "./short-links-http.js";
 
 export const ANNA = "393331111111";
@@ -53,6 +53,7 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
   });
 
 type Grant = {
+  scope: string;
   clientId: string;
   redirectUri: string;
   challenge: string;
@@ -90,6 +91,10 @@ export class MockGranola {
   /** `expires_in` as a string, as some servers send it. */
   expiresInAsString = false;
   transcriptError: string | null = null;
+  /** Where Granola's authorization server refuses `mcp` as a scope, as the real one would not list it. */
+  rejectMcp: "register" | "authorize" | "token" | null = null;
+  /** The scope of every authorize request and registration it has seen. */
+  readonly scopesSeen: string[] = [];
 
   readonly fetch: typeof fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -140,7 +145,18 @@ export class MockGranola {
     return new Response("not found", { status: 404 });
   };
 
-  private register(request: { redirect_uris?: string[]; grant_types?: string[] }): Response {
+  private register(request: {
+    redirect_uris?: string[];
+    grant_types?: string[];
+    scope?: string;
+  }): Response {
+    this.scopesSeen.push(`register:${request.scope ?? ""}`);
+    if (this.rejectMcp === "register" && request.scope?.split(" ").includes("mcp")) {
+      return json(
+        { error: "invalid_client_metadata", error_description: "unknown scope mcp" },
+        400,
+      );
+    }
     if (!request.redirect_uris?.length || !request.grant_types?.includes("refresh_token")) {
       return json({ error: "invalid_client_metadata" }, 400);
     }
@@ -161,8 +177,17 @@ export class MockGranola {
     if (url.searchParams.get("code_challenge_method") !== "S256") {
       throw new Error("PKCE S256 is required");
     }
+    const scope = url.searchParams.get("scope") ?? "";
+    this.scopesSeen.push(`authorize:${scope}`);
+    if (this.rejectMcp === "authorize" && scope.split(" ").includes("mcp")) {
+      const refused = new URL(redirectUri);
+      refused.searchParams.set("error", "invalid_scope");
+      refused.searchParams.set("state", url.searchParams.get("state") ?? "");
+      return refused;
+    }
     const code = `code-${randomBytes(6).toString("hex")}`;
     this.grants.set(code, {
+      scope,
       clientId,
       redirectUri,
       challenge: url.searchParams.get("code_challenge") ?? "",
@@ -196,6 +221,9 @@ export class MockGranola {
     if (form.get("grant_type") === "authorization_code") {
       const grant = this.grants.get(form.get("code") ?? "");
       this.grants.delete(form.get("code") ?? "");
+      if (this.rejectMcp === "token" && grant?.scope.split(" ").includes("mcp")) {
+        return json({ error: "invalid_scope" }, 400);
+      }
       const challenge = createHash("sha256")
         .update(form.get("code_verifier") ?? "")
         .digest("base64url");
@@ -352,6 +380,7 @@ export class MockGranola {
 /** A mock whose users have signed in through the real connect flow's tokens. */
 export function newMockGranola(): MockGranola {
   clearGranolaDiscoveryCache();
+  resetGranolaScope();
   return new MockGranola();
 }
 

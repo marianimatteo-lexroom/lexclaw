@@ -302,3 +302,92 @@ describe("Granola OAuth callback", () => {
     expect(await store.db.readAccount(ANNA)).toBeNull();
   });
 });
+
+describe("Granola scope without mcp", () => {
+  const WITHOUT_MCP = "openid email profile offline_access";
+
+  /** Follows what the browser does after a callback answered with a redirect. */
+  async function follow(
+    ctx: ReturnType<typeof setupConnect>,
+    res: ReturnType<typeof response>,
+    user: string,
+  ) {
+    expect(res.statusCode).toBe(302);
+    const toAuthorize = open(res.headers.get("location") ?? "", NOW);
+    expect(toAuthorize.statusCode).toBe(302);
+    const back = ctx.mock.signIn(toAuthorize.headers.get("location") ?? "", user);
+    return back;
+  }
+
+  it("asks for mcp first", async () => {
+    const ctx = setupConnect();
+    await ctx.connect(ANNA, "anna");
+    expect(ctx.mock.scopesSeen).toContain(`authorize:${WITHOUT_MCP} mcp`);
+    expect((await ctx.store.db.readAccount(ANNA))?.scope).toContain("mcp");
+  });
+
+  it("asks again without mcp when the sign-in answers invalid_scope, and the person sees no failure", async () => {
+    const ctx = setupConnect();
+    ctx.mock.rejectMcp = "authorize";
+    const ask = await ctx.link(ANNA);
+    const refused = ctx.mock.signIn(open(ask.url, NOW).headers.get("location") ?? "", "anna");
+    expect(refused.searchParams.get("error")).toBe("invalid_scope");
+
+    const retry = await ctx.callback(`${refused.pathname}${refused.search}`);
+    const back = await follow(ctx, retry, "anna");
+    expect(ctx.mock.scopesSeen.filter((entry) => entry.startsWith("authorize:"))).toEqual([
+      `authorize:${WITHOUT_MCP} mcp`,
+      `authorize:${WITHOUT_MCP}`,
+    ]);
+    const done = await ctx.callback(`${back.pathname}${back.search}`);
+    expect(done.statusCode).toBe(200);
+    expect(ctx.mock.userOf((await ctx.store.db.readAccount(ANNA))?.accessToken ?? "")).toBe("anna");
+
+    // The next number goes straight to the scope that works.
+    await ctx.link(BRUNO);
+    expect(ctx.mock.scopesSeen.filter((entry) => entry.startsWith("authorize:"))).toHaveLength(2);
+    const next = await ctx.link(BRUNO);
+    const location = new URL(open(next.url, NOW).headers.get("location") ?? "");
+    expect(location.searchParams.get("scope")).toBe(WITHOUT_MCP);
+  });
+
+  it("asks again without mcp when the token step answers invalid_scope", async () => {
+    const ctx = setupConnect();
+    ctx.mock.rejectMcp = "token";
+    const ask = await ctx.link(ANNA);
+    const back = ctx.mock.signIn(open(ask.url, NOW).headers.get("location") ?? "", "anna");
+    const retry = await ctx.callback(`${back.pathname}${back.search}`);
+    const again = await follow(ctx, retry, "anna");
+    const done = await ctx.callback(`${again.pathname}${again.search}`);
+    expect(done.statusCode).toBe(200);
+    expect(await ctx.store.db.readAccount(ANNA)).not.toBeNull();
+  });
+
+  it("registers without mcp when registration rejects the scope", async () => {
+    const ctx = setupConnect();
+    ctx.mock.rejectMcp = "register";
+    const ask = await ctx.link(ANNA);
+    expect(ctx.mock.scopesSeen.filter((entry) => entry.startsWith("register:"))).toEqual([
+      `register:${WITHOUT_MCP} mcp`,
+      `register:${WITHOUT_MCP}`,
+    ]);
+    expect(ctx.mock.registrations).toBe(1);
+    const location = new URL(open(ask.url, NOW).headers.get("location") ?? "");
+    expect(location.searchParams.get("scope")).toBe(WITHOUT_MCP);
+  });
+
+  it("does not loop: a refusal of a scope that already left mcp out is final", async () => {
+    const ctx = setupConnect();
+    ctx.mock.rejectMcp = "authorize";
+    const ask = await ctx.link(ANNA);
+    const refused = ctx.mock.signIn(open(ask.url, NOW).headers.get("location") ?? "", "anna");
+    const retry = await ctx.callback(`${refused.pathname}${refused.search}`);
+    const second = open(retry.headers.get("location") ?? "", NOW).headers.get("location") ?? "";
+    const again = new URL(refused);
+    again.searchParams.set("state", new URL(second).searchParams.get("state") ?? "");
+    const final = await ctx.callback(`${again.pathname}${again.search}`);
+    expect(final.statusCode).toBe(200);
+    expect(final.body).toContain("Not connected");
+    expect(await ctx.store.db.readAccount(ANNA)).toBeNull();
+  });
+});

@@ -12,6 +12,32 @@ import type {
  */
 export const GRANOLA_MCP_URL = "https://mcp.granola.ai/mcp";
 export const GRANOLA_SCOPE = "openid email profile offline_access mcp";
+/**
+ * Granola's resource metadata advertises `mcp`, but its authorization server lists only the OpenID
+ * scopes. Ada asks for `mcp` first and, when the server answers `invalid_scope`, asks again
+ * without it.
+ */
+export const GRANOLA_SCOPE_WITHOUT_MCP = "openid email profile offline_access";
+
+let mcpScopeRejected = false;
+
+/** The scope new registrations and links ask for. */
+export function granolaScope(): string {
+  return mcpScopeRejected ? GRANOLA_SCOPE_WITHOUT_MCP : GRANOLA_SCOPE;
+}
+
+export function includesMcpScope(scope: string): boolean {
+  return scope.split(/\s+/u).includes("mcp");
+}
+
+/** Remembers, until the process restarts, that Granola does not grant `mcp`. */
+export function rejectGranolaMcpScope(): void {
+  mcpScopeRejected = true;
+}
+
+export function resetGranolaScope(): void {
+  mcpScopeRejected = false;
+}
 
 const DEFAULT_AUTH_SERVER = "https://mcp-auth.granola.ai";
 const DEFAULT_REGISTRATION_URL = "https://mcp-auth.granola.ai/oauth2/register";
@@ -148,13 +174,14 @@ export function buildGranolaAuthorizationUrl(params: {
   redirectUri: string;
   state: string;
   challenge: string;
+  scope?: string;
   mcpUrl?: string;
 }): string {
   const url = new URL(params.endpoints.authorizationEndpoint);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("client_id", params.clientId);
   url.searchParams.set("redirect_uri", params.redirectUri);
-  url.searchParams.set("scope", GRANOLA_SCOPE);
+  url.searchParams.set("scope", params.scope ?? granolaScope());
   url.searchParams.set("state", params.state);
   url.searchParams.set("code_challenge", params.challenge);
   url.searchParams.set("code_challenge_method", "S256");
@@ -191,25 +218,35 @@ export function ensureGranolaClient(params: {
     ) {
       return existing;
     }
-    let response: Response;
-    try {
-      response = await (params.fetchImpl ?? fetch)(params.endpoints.registrationEndpoint, {
-        method: "POST",
-        headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify({
-          client_name: "Ada",
-          redirect_uris: [params.redirectUri],
-          grant_types: ["authorization_code", "refresh_token"],
-          response_types: ["code"],
-          token_endpoint_auth_method: "none",
-          scope: GRANOLA_SCOPE,
-        }),
-        signal: timeout(params.signal),
-      });
-    } catch {
-      return null;
+    const register = async (scope: string) => {
+      try {
+        return await (params.fetchImpl ?? fetch)(params.endpoints.registrationEndpoint, {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "application/json" },
+          body: JSON.stringify({
+            client_name: "Ada",
+            redirect_uris: [params.redirectUri],
+            grant_types: ["authorization_code", "refresh_token"],
+            response_types: ["code"],
+            token_endpoint_auth_method: "none",
+            scope,
+          }),
+          signal: timeout(params.signal),
+        });
+      } catch {
+        return null;
+      }
+    };
+    let response = await register(granolaScope());
+    if (response && !response.ok && includesMcpScope(granolaScope())) {
+      // RFC 7591 reports a scope the server does not know as invalid_client_metadata; some say invalid_scope.
+      const failure = (await response.json().catch(() => null)) as { error?: unknown } | null;
+      if (failure?.error === "invalid_scope" || failure?.error === "invalid_client_metadata") {
+        rejectGranolaMcpScope();
+        response = await register(granolaScope());
+      }
     }
-    if (!response.ok) {
+    if (!response?.ok) {
       return null;
     }
     const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;

@@ -29,7 +29,8 @@ export type GranolaClientRecord = {
   secretExpiresAtMs: number | null;
 };
 
-export type GranolaPending = { codeVerifier: string; clientId: string };
+/** What a connect link in progress needs back: the PKCE verifier, the client, and the scope asked for. */
+export type GranolaPending = { codeVerifier: string; clientId: string; scope: string };
 
 /** One owner's view of the Granola store: every call acts for that number only. */
 export type GranolaAccountStore = {

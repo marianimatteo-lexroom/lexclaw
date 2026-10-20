@@ -50,7 +50,11 @@ describe("Granola account store", () => {
           owner: ANNA,
           nonce: "pending-nonce-aaaaaa",
           expiresAtMs: 9_000,
-          pending: { codeVerifier: "verifier-secret-value", clientId: "client-1" },
+          pending: {
+            codeVerifier: "verifier-secret-value",
+            clientId: "client-1",
+            scope: "openid mcp",
+          },
         },
       });
       expect(backend.execute({ type: "readAccount", input: { owner: ANNA } })).toMatchObject({
@@ -84,7 +88,7 @@ describe("Granola account store", () => {
   it("keeps one account per number, spends a pending connect once, and binds it to its number", () => {
     const { backend } = open();
     try {
-      const pending = { codeVerifier: "verifier-value", clientId: "client-1" };
+      const pending = { codeVerifier: "verifier-value", clientId: "client-1", scope: "openid mcp" };
       backend.execute({
         type: "replacePending",
         input: { owner: ANNA, nonce: "pending-nonce-aaaaaa", expiresAtMs: 200, pending },
@@ -155,6 +159,31 @@ describe("Granola account store", () => {
         "ada_granola_reminder",
         "unrelated",
       ]);
+    } finally {
+      void reopened.close();
+    }
+  });
+
+  it("adds the pending scope column to a store made before it, and reads old rows as the default", () => {
+    const { databasePath, backend } = open();
+    void backend.close();
+    const raw = new DatabaseSync(databasePath);
+    raw.exec("DROP TABLE ada_granola_pending");
+    raw.exec(
+      "CREATE TABLE ada_granola_pending (nonce TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at_ms INTEGER NOT NULL, code_verifier TEXT NOT NULL, client_id TEXT NOT NULL) STRICT",
+    );
+    raw.exec(
+      `INSERT INTO ada_granola_pending VALUES ('old-nonce-aaaaaaaaaa', '${ANNA}', 9000, 'plain-verifier', 'client-1')`,
+    );
+    raw.close();
+    const reopened = createSqliteWorkerBackend(undefined, { databasePath });
+    try {
+      expect(
+        reopened.execute({
+          type: "consumePending",
+          input: { owner: ANNA, nonce: "old-nonce-aaaaaaaaaa", nowMs: 100 },
+        }),
+      ).toEqual({ codeVerifier: "plain-verifier", clientId: "client-1", scope: "" });
     } finally {
       void reopened.close();
     }

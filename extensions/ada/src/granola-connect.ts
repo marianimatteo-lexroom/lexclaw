@@ -7,6 +7,7 @@ import {
   createPkce,
   discoverGranolaEndpoints,
   ensureGranolaClient,
+  granolaScope,
 } from "./granola-oauth.js";
 import { loadGranolaAccess } from "./granola-session.js";
 import { isAdaPath } from "./http-paths.js";
@@ -155,9 +156,11 @@ export async function prepareGranolaConnect(params: {
     params.owner,
   );
   const pkce = createPkce();
+  const scope = granolaScope();
   await bindGranolaOwner(params.db, params.owner).replacePending(issued.nonce, issued.expiresAtMs, {
     codeVerifier: pkce.verifier,
     clientId: client.clientId,
+    scope,
   });
   const target = buildGranolaAuthorizationUrl({
     endpoints,
@@ -165,6 +168,7 @@ export async function prepareGranolaConnect(params: {
     redirectUri: config.settings.redirectUri,
     state: issued.state,
     challenge: pkce.challenge,
+    scope,
   });
   const url = shortLinkUrl(
     new URL(config.settings.redirectUri).origin,

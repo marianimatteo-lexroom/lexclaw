@@ -143,6 +143,7 @@ type AdaGranolaDatabase = {
     expires_at_ms: number;
     code_verifier: string;
     client_id: string;
+    scope: string;
   };
   ada_granola_account: {
     id: string;
@@ -163,6 +164,10 @@ type AdaGranolaDatabase = {
   };
   ada_granola_reminder: { id: string; last_reminded_at_ms: number; owed: number };
 };
+
+/** Added after the first release: a link made before it asked for the default scope. */
+const PENDING_SCOPE_COLUMN_SQL =
+  "ALTER TABLE ada_granola_pending ADD COLUMN scope TEXT NOT NULL DEFAULT ''";
 
 const ACCESS_TOKEN_CONTEXT = "ada_granola_account.access_token";
 const REFRESH_TOKEN_CONTEXT = "ada_granola_account.refresh_token";
@@ -257,6 +262,7 @@ class AdaGranolaDatabaseStore {
           expires_at_ms: expiresAtMs,
           code_verifier: this.cipher.seal(pending.codeVerifier, CODE_VERIFIER_CONTEXT),
           client_id: pending.clientId,
+          scope: pending.scope,
         }),
       );
     });
@@ -273,7 +279,7 @@ class AdaGranolaDatabaseStore {
         this.db,
         this.query
           .selectFrom("ada_granola_pending")
-          .select(["owner", "expires_at_ms", "code_verifier", "client_id"])
+          .select(["owner", "expires_at_ms", "code_verifier", "client_id", "scope"])
           .where("nonce", "=", nonce),
       );
       if (!row || row.owner !== owner) {
@@ -289,6 +295,7 @@ class AdaGranolaDatabaseStore {
       return {
         codeVerifier: this.cipher.open(row.code_verifier, CODE_VERIFIER_CONTEXT).value,
         clientId: row.client_id,
+        scope: row.scope,
       };
     });
   }
@@ -573,6 +580,12 @@ function openAdaGranolaDatabase(dbPath: string): AdaGranolaDatabaseStore {
       synchronous: "NORMAL",
     });
     db.exec(SCHEMA_SQL);
+    const pendingColumns = db
+      .prepare("SELECT name FROM pragma_table_info('ada_granola_pending')")
+      .all() as Array<{ name: string }>;
+    if (!pendingColumns.some((column) => column.name === "scope")) {
+      db.exec(PENDING_SCOPE_COLUMN_SQL);
+    }
     for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`]) {
       chmodIfExists(file);
     }
