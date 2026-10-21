@@ -39,13 +39,20 @@ const RESULT_NOTES_MAX = 5;
 
 /** The detail of a `research_result` offer: the notes as one string, in this process only. */
 export function researchResultDetail(notes: readonly ResearchResultNote[]): string {
-  return JSON.stringify(
-    notes.slice(-RESULT_NOTES_MAX).map(({ query, matterId, researchId }) => ({
+  const kept: ResearchResultNote[] = [];
+  for (const { query, matterId, researchId } of notes.slice(-RESULT_NOTES_MAX)) {
+    const note: ResearchResultNote = {
       query: query.replace(/\s+/gu, " ").trim().slice(0, RESULT_QUERY_MAX),
-      ...(matterId ? { matterId } : {}),
-      ...(researchId ? { researchId } : {}),
-    })),
-  );
+    };
+    if (matterId) {
+      note.matterId = matterId;
+    }
+    if (researchId) {
+      note.researchId = researchId;
+    }
+    kept.push(note);
+  }
+  return JSON.stringify(kept);
 }
 
 function readResearchResults(detail: string | undefined): Partial<ResearchResultNote>[] {
