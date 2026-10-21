@@ -8,7 +8,7 @@ The 07:40 slot is per number (scheduling lives in `src/morning-schedule.ts`). Ea
 
 ### Morning brief on a quiet day
 
-The morning pass of a connected number with an open WhatsApp 24-hour window always sends something. When a plan clears the bar it is the digest above. When nothing does, Ada sends a short brief written by code in that person's latest language (Italian by default): today's calendar events in their own time zone (or "nessun impegno"), the count of unread inbox mail with up to three subjects about their matters, the next hearings and deadlines within two weeks when deadline intake is on (listed without reply numbers or offers), and a "nothing urgent" line first ("nothing else new to report" when an alert already went out to that number earlier the same local day). It is not sent by polls or by the release of a held plan after a reply (a reply does release a brief that was held for a closed window, below). A catch-up after a restart sends it only while that number's local time is before 11:00; later it skips the brief for the day, still records the collect, and does not mark the day as briefed (an urgent plan is still sent or held). With the window closed the brief is held, not lost (`heldBriefDay`, a column on the wake state, is that number's local day): Ada sends one pre-approved utility template ([Reopening the WhatsApp 24-hour window](#reopening-the-whatsapp-24-hour-window)) to say the brief is ready, and the number's next message the same local day releases it. The reply is answered as usual and the brief is built then, from that moment's calendar and mail, and sent alongside it, whatever the hour (a reply at 19:00 to the nudge still gets it); a number that replies on a later day gets no stale brief, because the held day is dropped. The nudge goes at most once per number per local day, claimed before it is sent, so a second pass the same day, a restart or a failed send never repeats it, and none goes out on a day an urgent held-plan template already did. An urgent plan keeps its own path: it is held (with the digest-ready template, once, as before) and its release is the day's morning message, so a day with both costs one template and one message. A release that fails to send keeps the held day for the number's next message that day; a brief already sent, or turned off in the meantime, settles it without sending. Numbers without a Google or Outlook connection are not polled and are not affected. At most one morning brief per number per local day: the time of the last delivered morning brief (`lastMorningBriefAt`, a column on the wake state) is compared with the number's current local day, so a restart or a catch-up never sends a second one. A failed send is not counted, so the next morning pass for that number tries again.
+The morning pass of a connected number with an open WhatsApp 24-hour window always sends something. When a plan clears the bar it is the digest above. When nothing does, Ada sends a short brief written by code in that person's latest language (Italian by default): today's calendar events in their own time zone (or "nessun impegno"), the count of unread inbox mail with up to three subjects about their matters, the next hearings and deadlines within two weeks when deadline intake is on (listed without reply numbers or offers), and a "nothing urgent" line first ("nothing else new to report" when an alert already went out to that number earlier the same local day). It is not sent by polls or by the release of a held plan after a reply (a reply does release a brief that was held for a closed window, below). A catch-up after a restart sends it only while that number's local time is before 11:00; later it skips the brief for the day, still records the collect, and does not mark the day as briefed (an urgent plan is still sent or held). With the window closed the brief is held, not lost (`heldBriefDay`, a column on the wake state, is that number's local day): Ada sends one pre-approved utility template ([Reopening the WhatsApp 24-hour window](#reopening-the-whatsapp-24-hour-window)) to say the brief is ready, and the number's next message the same local day releases it. The reply is answered as usual and the brief is built then, from that moment's calendar and mail, and sent alongside it, whatever the hour (a reply at 19:00 to the nudge still gets it); a number that replies on a later day gets no stale brief, because the held day is dropped. The nudge goes at most once per number per local day, claimed before it is sent, so a second pass the same day, a restart or a failed send never repeats it, and none goes out on a day an urgent held-plan template already did. An urgent plan keeps its own path, unchanged: it is held (with the digest-ready template, once, as before) and its release is the day's morning message. A release that fails to send keeps the held day for the number's next message that day; a brief already sent, or turned off in the meantime, settles it without sending. Numbers without a Google or Outlook connection are not polled and are not affected. At most one morning brief per number per local day: the time of the last delivered morning brief (`lastMorningBriefAt`, a column on the wake state) is compared with the number's current local day, so a restart or a catch-up never sends a second one. A failed send is not counted, so the next morning pass for that number tries again.
 
 Matter memory is Instinct-shaped: markdown pages with aliases, keyword search (plus Voyage embeddings per number when `VOYAGE_API_KEY` is set; see the Railway README), a small injected brief, and a daily reconcile that writes while the answering agent only reads. Pages are matter-scoped. Research and draft still go through Lexroom, with a separate confirmation before any draft or email send.
 
@@ -171,22 +171,19 @@ With `NODE_ENV=production` the account stores refuse to open without `ADA_TOKEN_
 
 ## Environment and config reference
 
-| Name                         | Where         | Purpose                                                                                                                                                                                                                                     |
-| ---------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ADA_TOKEN_KEY`              | environment   | AES-256 key for tokens at rest. Required in production. `VERA_TOKEN_KEY` still works.                                                                                                                                                       |
-| `ADA_MS_CLIENT_ID`           | environment   | Application (client) ID of the Entra app registration. Unset: Outlook is off.                                                                                                                                                               |
-| `ADA_MS_CLIENT_SECRET`       | environment   | Client secret value of that app (secret). Unset: Outlook is off.                                                                                                                                                                            |
-| `ADA_MS_TENANT`              | environment   | Optional. Tenant id, domain, `organizations` or `consumers`. Default `common`.                                                                                                                                                              |
-| `ADA_WELCOME_ENABLED`        | environment   | `false` (also `0`, `off`, `no`) turns the first-message welcome off. Default on.                                                                                                                                                            |
-| `ADA_ADMIN_TOKEN`            | environment   | Bearer token (16+ chars) for `/admin/feedback` and `/admin/announcements`. Unset: both return 404.                                                                                                                                          |
-| `ADA_BRIEF_TEMPLATE_NAME`    | environment   | Railway deploy only: sets `briefReadyTemplate.name`, the nudge for a held morning brief. Unset: `digestReadyTemplate` is used.                                                                                                              |
-| `ADA_BRIEF_TEMPLATE_LANG`    | environment   | Railway deploy only: `briefReadyTemplate.language` (default `it`), or a list such as `it,en` (first is the default) when the template is approved in several languages.                                                                     |
-| `briefReadyTemplate`         | plugin config | `{ name, language, languages? }`. The nudge template for a morning brief held on a closed window. `languages` lists where it is approved; the number's profile language is used when listed, else `language`. Unset: `digestReadyTemplate`. |
-| `googleNotifyAudience`       | plugin config | Audience of the Pub/Sub push OIDC token. Enables JWT verification.                                                                                                                                                                          |
-| `googleNotifyIssuer`         | plugin config | Expected issuer. Defaults to `https://accounts.google.com` or `accounts.google.com`.                                                                                                                                                        |
-| `googleNotifyServiceAccount` | plugin config | Required `email` claim (verified) of the push subscription service account.                                                                                                                                                                 |
-| `googleNotifyToken`          | plugin config | Static Bearer fallback, 16+ chars.                                                                                                                                                                                                          |
-| `statusToken`                | plugin config | Bearer token (16+ chars) for `GET /ada/status`.                                                                                                                                                                                             |
+| Name                         | Where         | Purpose                                                                                            |
+| ---------------------------- | ------------- | -------------------------------------------------------------------------------------------------- |
+| `ADA_TOKEN_KEY`              | environment   | AES-256 key for tokens at rest. Required in production. `VERA_TOKEN_KEY` still works.              |
+| `ADA_MS_CLIENT_ID`           | environment   | Application (client) ID of the Entra app registration. Unset: Outlook is off.                      |
+| `ADA_MS_CLIENT_SECRET`       | environment   | Client secret value of that app (secret). Unset: Outlook is off.                                   |
+| `ADA_MS_TENANT`              | environment   | Optional. Tenant id, domain, `organizations` or `consumers`. Default `common`.                     |
+| `ADA_WELCOME_ENABLED`        | environment   | `false` (also `0`, `off`, `no`) turns the first-message welcome off. Default on.                   |
+| `ADA_ADMIN_TOKEN`            | environment   | Bearer token (16+ chars) for `/admin/feedback` and `/admin/announcements`. Unset: both return 404. |
+| `googleNotifyAudience`       | plugin config | Audience of the Pub/Sub push OIDC token. Enables JWT verification.                                 |
+| `googleNotifyIssuer`         | plugin config | Expected issuer. Defaults to `https://accounts.google.com` or `accounts.google.com`.               |
+| `googleNotifyServiceAccount` | plugin config | Required `email` claim (verified) of the push subscription service account.                        |
+| `googleNotifyToken`          | plugin config | Static Bearer fallback, 16+ chars.                                                                 |
+| `statusToken`                | plugin config | Bearer token (16+ chars) for `GET /ada/status`.                                                    |
 
 Plugin config values can reference environment variables, for example `googleNotifyAudience: "${ADA_GOOGLE_NOTIFY_AUDIENCE}"`.
 
@@ -420,25 +417,11 @@ The template goes to `channels["kapso-whatsapp"].defaultTo` using the same Kapso
 
 ### Nudge for a held morning brief
 
-When the 07:40 pass owes the quiet brief and the window is closed, Ada holds the brief for that local day and sends a nudge template the same way. Create a second template ("Your Ada morning brief is ready. Reply to see it.") or reuse the digest one:
+When the 07:40 pass owes the quiet brief and the window is closed, Ada holds the brief for that local day and sends the same `digestReadyTemplate` nudge, in its configured language, with the same rules:
 
-```json5
-{
-  plugins: {
-    entries: {
-      ada: {
-        config: {
-          briefReadyTemplate: { name: "ada_brief_ready", language: "it", languages: ["it", "en"] },
-        },
-      },
-    },
-  },
-}
-```
-
-- `briefReadyTemplate` unset (or missing `name` or `language`): `digestReadyTemplate` is used as configured, in its one language. With neither set, nothing is sent, the brief is still held for the number's reply, and the gateway logs one warning per start.
-- The template language comes from the number's profile language when it is in `languages` (a code such as `en` matches `en` and `en_US`), else `language`. List only languages the template is approved in: Meta rejects a template in a language it does not have, and the nudge is never retried.
-- At most one template per number per local day, recorded (as `heldBriefDay`) before Kapso is called and never retried. No template goes out on a day an urgent held-plan template already did, and an urgent plan held after a brief nudge does not send a second one.
+- With `digestReadyTemplate` unset, nothing is sent, the brief is still held for the number's reply, and the gateway logs the same one warning per start.
+- At most one brief nudge per number per local day, recorded (as `heldBriefDay`) before Kapso is called and never retried.
+- No brief nudge goes out on a day an urgent held-plan template already did. An urgent plan is not affected by a held brief: it sends its own template exactly as above.
 - A reply the same local day releases the brief; a reply on a later day drops it.
 
 ## WhatsApp read receipts

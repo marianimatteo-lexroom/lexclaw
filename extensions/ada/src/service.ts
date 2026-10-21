@@ -49,7 +49,6 @@ import { buildQuietBrief } from "./quiet-brief.js";
 import { buildDailyTimelineRecord, buildOnePagerRecord } from "./reconcile.js";
 import { DEFAULT_TIME_ZONE, effectiveTimeZone } from "./schedule.js";
 import {
-  readBriefReadyTemplate,
   readDigestReadyTemplate,
   sendDigestReadyNotice,
   warnDigestReadyTemplateUnset,
@@ -672,11 +671,9 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
       wake.heldBriefDay === day ||
       (wake.heldPlanTemplateAttemptedAtMs !== null &&
         dayKey(new Date(wake.heldPlanTemplateAttemptedAtMs), timeZone) === day);
-    const template = nudgedToday
-      ? null
-      : readBriefReadyTemplate(params.api.pluginConfig, profile?.language);
+    const template = nudgedToday ? null : readDigestReadyTemplate(params.api.pluginConfig);
     if (!nudgedToday && !template) {
-      warnDigestReadyTemplateUnset(params.api, "brief");
+      warnDigestReadyTemplateUnset(params.api);
     }
     // Nothing urgent was dropped, so the baseline advances like in the brief itself.
     await commitSnapshots();
@@ -700,9 +697,8 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
   }
 
   if (decision.action === "hold") {
-    // One template per held plan, and none when a brief nudge already went out today. The claim
-    // is written with the hold, before the send, so a crash or a timeout that Kapso actually
-    // accepted can never produce a second nudge.
+    // One template per held plan. The claim is written with the hold, before the send, so a
+    // crash or a timeout that Kapso actually accepted can never produce a second nudge.
     const template = readDigestReadyTemplate(params.api.pluginConfig);
     const needsTemplate = wake.heldPlanTemplateAttemptedAtMs === null;
     if (needsTemplate && !template) {
@@ -718,7 +714,7 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
       heldPlanNextAttemptAtMs: null,
       ...(needsTemplate && template ? { heldPlanTemplateAttemptedAtMs: nowMs } : {}),
     });
-    if (needsTemplate && template && wake.heldBriefDay !== day) {
+    if (needsTemplate && template) {
       await sendNudge(template);
     }
     return {

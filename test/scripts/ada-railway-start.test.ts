@@ -157,62 +157,6 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
     });
   });
 
-  describe("the morning brief template", () => {
-    const KEY = "plugins.entries.ada.config.briefReadyTemplate";
-    const ENV = { ADA_PUBLIC_ORIGIN: "https://ada.example.com" };
-
-    it("is not configured while its name is unset", () => {
-      const deploy = boot(ENV);
-      const result = deploy.run();
-      expect(result.status).toBe(0);
-      expect(deploy.store()).not.toHaveProperty(KEY);
-      expect(`${result.stdout}${result.stderr}`).toContain("ADA_BRIEF_TEMPLATE_NAME is unset");
-    });
-
-    it("defaults the language to it, like the digest template", () => {
-      const deploy = boot({ ...ENV, ADA_BRIEF_TEMPLATE_NAME: " ada_brief_ready " });
-      expect(deploy.run().status).toBe(0);
-      expect(deploy.store()[KEY]).toEqual({ name: "ada_brief_ready", language: "it" });
-    });
-
-    it("takes one language, or a list whose first entry is the default", () => {
-      const single = boot({
-        ...ENV,
-        ADA_BRIEF_TEMPLATE_NAME: "ada_brief_ready",
-        ADA_BRIEF_TEMPLATE_LANG: "en",
-      });
-      expect(single.run().status).toBe(0);
-      expect(single.store()[KEY]).toEqual({ name: "ada_brief_ready", language: "en" });
-
-      const several = boot({
-        ...ENV,
-        ADA_BRIEF_TEMPLATE_NAME: "ada_brief_ready",
-        ADA_BRIEF_TEMPLATE_LANG: "it, en",
-      });
-      expect(several.run().status).toBe(0);
-      expect(several.store()[KEY]).toEqual({
-        name: "ada_brief_ready",
-        language: "it",
-        languages: ["it", "en"],
-      });
-    });
-
-    it("warns about a language with no name, and refuses a language list with no entry", () => {
-      const orphan = boot({ ...ENV, ADA_BRIEF_TEMPLATE_LANG: "en" });
-      const result = orphan.run();
-      expect(result.status).toBe(0);
-      expect(orphan.store()).not.toHaveProperty(KEY);
-      expect(`${result.stdout}${result.stderr}`).toContain("ADA_BRIEF_TEMPLATE_LANG is ignored");
-
-      const empty = boot({
-        ...ENV,
-        ADA_BRIEF_TEMPLATE_NAME: "ada_brief_ready",
-        ADA_BRIEF_TEMPLATE_LANG: " , ",
-      });
-      expect(empty.run().status).not.toBe(0);
-    });
-  });
-
   it("lets ADA_* win over VERA_* when both are set", () => {
     const deploy = boot({
       ADA_PUBLIC_ORIGIN: "https://ada.example.com",

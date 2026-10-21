@@ -12,7 +12,6 @@ import {
   registerAdaService,
   runAdaCollectPass,
 } from "./service.js";
-import type { KapsoTemplate } from "./whatsapp-template.js";
 
 const google = vi.hoisted(() => ({
   loadAccessToken: vi.fn(),
@@ -66,7 +65,7 @@ const BIANCHI_MAIL: InboxMessage = {
   snippet: "Can you confirm?",
 };
 
-function createMemory(wake: Partial<WakeState> = {}, timezone?: string, language?: string) {
+function createMemory(wake: Partial<WakeState> = {}, timezone?: string) {
   let gmail: GmailSnapshotRow[] = [];
   let calendar: CalendarSnapshotRow[] = [];
   let state: WakeState = {
@@ -100,7 +99,7 @@ function createMemory(wake: Partial<WakeState> = {}, timezone?: string, language
       { matterId: "bianchi", alias: "Bianchi", title: "Bianchi" },
     ],
     listTodos: async () => [],
-    readProfile: async () => (timezone || language ? { timezone, language } : null),
+    readProfile: async () => (timezone ? { timezone } : null),
     listPreferences: async () => [],
     readWake: async () => ({ ...state }),
     writeWake: async (patch: Partial<WakeState>) => {
@@ -832,7 +831,6 @@ describe("morning brief held for a closed WhatsApp window", () => {
       },
     },
   } as OpenClawPluginApi["config"];
-  const briefTemplate = { name: "ada_brief_ready", language: "it", languages: ["it", "en"] };
   const sendText = vi.fn(async (_params: { to: string; text: string }) => undefined);
   const apiWith = (pluginConfig: Record<string, unknown>) =>
     createTestPluginApi({
@@ -844,7 +842,7 @@ describe("morning brief held for a closed WhatsApp window", () => {
         channel: { outbound: { loadAdapter: async () => ({ sendText }) } },
       } as unknown as OpenClawPluginApi["runtime"],
     });
-  const briefApi = apiWith({ briefReadyTemplate: briefTemplate });
+  const briefApi = apiWith({ digestReadyTemplate: { name: "ada_digest_ready", language: "it" } });
   const closedWindow = { lastLawyerInboundAtMs: MORNING.getTime() - 30 * HOUR_MS };
   const REPLY_AT = new Date("2026-10-06T17:00:00.000Z");
   const NEXT_MORNING_REPLY_AT = new Date("2026-10-07T08:00:00.000Z");
@@ -901,7 +899,7 @@ describe("morning brief held for a closed WhatsApp window", () => {
     });
     expect(dispatch).not.toHaveBeenCalled();
     expect(notice).toHaveBeenCalledOnce();
-    expect(notice).toHaveBeenCalledWith({ name: "ada_brief_ready", language: "it" });
+    expect(notice).toHaveBeenCalledWith({ name: "ada_digest_ready", language: "it" });
     expect(store.wake()).toMatchObject({
       heldBriefDay: "2026-10-06",
       lastMorningBriefAtMs: null,
@@ -1020,7 +1018,7 @@ describe("morning brief held for a closed WhatsApp window", () => {
     });
   });
 
-  it("sends one template for an urgent plan and a brief on the same day", async () => {
+  it("leaves an urgent plan held after a brief nudge as on main: its own template, once", async () => {
     const store = createMemory(closedWindow);
     const notice = vi.fn(async () => ({ ok: true }));
     const dispatch = vi.fn(async () => ({ ok: true }));
@@ -1035,8 +1033,9 @@ describe("morning brief held for a closed WhatsApp window", () => {
     });
 
     expect(urgent).toMatchObject({ decision: "hold", held: true });
+    expect(store.wake()).toMatchObject({ heldPlanTemplateAttemptedAtMs: POLL_1.getTime() });
     expect(store.wake().heldPlanJson).not.toBeNull();
-    expect(notice).toHaveBeenCalledOnce();
+    expect(notice).toHaveBeenCalledTimes(2);
 
     await reply(store, REPLY_AT);
     expect(sendText).toHaveBeenCalledOnce();
@@ -1059,32 +1058,6 @@ describe("morning brief held for a closed WhatsApp window", () => {
     expect(store.wake().heldBriefDay).toBe("2026-10-06");
   });
 
-  it("picks the template language from the profile, then the configured default", async () => {
-    const send = async (language?: string) => {
-      const store = createMemory(closedWindow, undefined, language);
-      const notice = vi.fn(async (_template: KapsoTemplate) => ({ ok: true }));
-      await morning(store.memory, { notice });
-      return notice.mock.calls[0]?.[0];
-    };
-
-    expect(await send("English")).toEqual({ name: "ada_brief_ready", language: "en" });
-    expect(await send("it")).toEqual({ name: "ada_brief_ready", language: "it" });
-    expect(await send("fr")).toEqual({ name: "ada_brief_ready", language: "it" });
-    expect(await send(undefined)).toEqual({ name: "ada_brief_ready", language: "it" });
-  });
-
-  it("falls back to digestReadyTemplate, as configured, when briefReadyTemplate is unset", async () => {
-    const store = createMemory(closedWindow, undefined, "en");
-    const notice = vi.fn(async () => ({ ok: true }));
-
-    await morning(store.memory, {
-      notice,
-      api: apiWith({ digestReadyTemplate: { name: "ada_digest_ready", language: "it" } }),
-    });
-
-    expect(notice).toHaveBeenCalledWith({ name: "ada_digest_ready", language: "it" });
-  });
-
   it("still holds the brief and warns once when no template is configured", async () => {
     const store = createMemory(closedWindow);
     const notice = vi.fn(async () => ({ ok: true }));
@@ -1096,6 +1069,6 @@ describe("morning brief held for a closed WhatsApp window", () => {
     expect(notice).not.toHaveBeenCalled();
     expect(store.wake().heldBriefDay).toBe("2026-10-06");
     expect(warn).toHaveBeenCalledOnce();
-    expect(warn.mock.calls[0]?.[0]).toContain("briefReadyTemplate");
+    expect(warn.mock.calls[0]?.[0]).toContain("digestReadyTemplate");
   });
 });

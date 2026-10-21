@@ -180,7 +180,7 @@ export function detectLanguage(text: string): Language | undefined {
     : undefined;
 }
 
-export function languageFromProfile(value: string | undefined): Language | undefined {
+function languageFromProfile(value: string | undefined): Language | undefined {
   const text = value?.trim().toLowerCase() ?? "";
   if (/^(it|ital)/u.test(text)) {
     return "it";

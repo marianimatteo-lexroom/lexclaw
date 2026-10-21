@@ -6,7 +6,6 @@ import {
   readRecord,
   resolveKapsoAccount,
 } from "./kapso-api.js";
-import { languageFromProfile } from "./research-link-outbound.js";
 
 const TEMPLATE_TIMEOUT_MS = 10_000;
 
@@ -26,30 +25,6 @@ export function readDigestReadyTemplate(pluginConfig: unknown): KapsoTemplate | 
   const name = firstString(value?.name);
   const language = firstString(value?.language);
   return name && language ? { name, language } : null;
-}
-
-/**
- * The template that nudges a number whose morning brief is held: `briefReadyTemplate` in the
- * number's profile language when the template is approved in it (`languages`), else in its default
- * `language`. Without `briefReadyTemplate`, `digestReadyTemplate` as configured. Null: neither is set.
- */
-export function readBriefReadyTemplate(
-  pluginConfig: unknown,
-  profileLanguage: string | undefined,
-): KapsoTemplate | null {
-  const value = readRecord(readRecord(pluginConfig)?.briefReadyTemplate);
-  const name = firstString(value?.name);
-  const language = firstString(value?.language);
-  if (!name || !language) {
-    return readDigestReadyTemplate(pluginConfig);
-  }
-  const wanted = languageFromProfile(profileLanguage);
-  const offered = Array.isArray(value?.languages) ? value.languages : [];
-  const own = offered.find(
-    (code): code is string =>
-      typeof code === "string" && code.split("_")[0]?.toLowerCase() === wanted,
-  );
-  return { name, language: own ?? language };
 }
 
 /** Cloud API recipients are digits with country code, no plus or spaces. */
@@ -125,21 +100,16 @@ export async function sendKapsoTemplate(params: {
   return messageId ? { ok: true, messageId } : { ok: true };
 }
 
-const warnedUnset = { digest: new WeakSet<object>(), brief: new WeakSet<object>() };
+const warnedUnset = new WeakSet<object>();
 
 /** Log once per plugin instance: a missing template is a setup gap, not a per-poll event. */
-export function warnDigestReadyTemplateUnset(
-  api: Pick<OpenClawPluginApi, "logger">,
-  kind: "digest" | "brief" = "digest",
-): void {
-  if (warnedUnset[kind].has(api)) {
+export function warnDigestReadyTemplateUnset(api: Pick<OpenClawPluginApi, "logger">): void {
+  if (warnedUnset.has(api)) {
     return;
   }
-  warnedUnset[kind].add(api);
+  warnedUnset.add(api);
   api.logger.warn(
-    kind === "digest"
-      ? "ada: digest held for a closed WhatsApp window but digestReadyTemplate is not set; the user will not be nudged to reply"
-      : "ada: morning brief held for a closed WhatsApp window but neither briefReadyTemplate nor digestReadyTemplate is set; the user will not be nudged to reply",
+    "ada: digest held for a closed WhatsApp window but digestReadyTemplate is not set; the user will not be nudged to reply",
   );
 }
 

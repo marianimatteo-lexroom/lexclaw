@@ -373,32 +373,6 @@ else
   log "skip plugins.entries.ada.config.digestReadyTemplate: ADA_DIGEST_TEMPLATE_NAME is unset"
 fi
 
-# Utility template sent once a day when the morning brief is owed but the window is closed.
-# ADA_BRIEF_TEMPLATE_LANG is the language it was approved in, or a comma-separated list such as
-# "it,en" when it exists in several: the first is the default and Ada picks the number's own
-# language from the rest. Unset name: not configured, and the digest template is used instead.
-if [ -n "${ADA_BRIEF_TEMPLATE_NAME:-}" ]; then
-  export ADA_BRIEF_TEMPLATE_LANG="${ADA_BRIEF_TEMPLATE_LANG:-it}"
-  BRIEF_TEMPLATE_JSON="$(node -p '
-    const languages = process.env.ADA_BRIEF_TEMPLATE_LANG.split(",").map((v) => v.trim()).filter(Boolean);
-    if (languages.length === 0) {
-      process.stderr.write("no language\n");
-      process.exit(1);
-    }
-    JSON.stringify({
-      name: process.env.ADA_BRIEF_TEMPLATE_NAME.trim(),
-      language: languages[0],
-      ...(languages.length > 1 ? { languages } : {}),
-    });
-  ')" || die "ADA_BRIEF_TEMPLATE_LANG must be a language code or a comma-separated list such as it,en, got '${ADA_BRIEF_TEMPLATE_LANG}'"
-  config_set plugins.entries.ada.config.briefReadyTemplate "${BRIEF_TEMPLATE_JSON}"
-else
-  if [ -n "${ADA_BRIEF_TEMPLATE_LANG:-}" ]; then
-    log "WARNING: ADA_BRIEF_TEMPLATE_LANG is ignored because ADA_BRIEF_TEMPLATE_NAME is unset"
-  fi
-  log "skip plugins.entries.ada.config.briefReadyTemplate: ADA_BRIEF_TEMPLATE_NAME is unset"
-fi
-
 # Deadline intake is off unless ADA_DEADLINE_INTAKE_ENABLED is exactly true, and the
 # value is written on every boot so removing the variable turns the feature off.
 case "$(printf '%s' "${ADA_DEADLINE_INTAKE_ENABLED:-false}" | tr '[:upper:]' '[:lower:]')" in
