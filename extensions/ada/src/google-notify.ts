@@ -18,11 +18,11 @@ type TextSender = (params: {
 export type GoogleConnectedNotice = { ok: true } | { ok: false; error: string };
 
 const GOOGLE_CONNECTED: Record<Language, string> = {
-  it: "Gmail e Calendar sono collegati. Posso inviare email quando me lo chiedi.",
-  en: "Gmail and Calendar are connected. I can send mail when you say so.",
-  es: "Gmail y Calendar están conectados. Puedo enviar correos cuando me lo pidas.",
-  fr: "Gmail et Google Agenda sont connectés. Je peux envoyer des e-mails quand vous me le demandez.",
-  de: "Gmail und Kalender sind verbunden. Ich kann E-Mails senden, wenn Sie es mir sagen.",
+  it: "Gmail e Calendar sono collegati: posso leggerli e, con il tuo ok, inviare email. Vuoi che guardi cosa c'è oggi in agenda e in posta?",
+  en: "Gmail and Calendar are connected: I can read them and, with your yes, send email. Want me to look at today's calendar and inbox?",
+  es: "Gmail y Calendar están conectados: puedo leerlos y, con tu visto bueno, enviar correos. ¿Quieres que mire qué hay hoy en tu agenda y en tu correo?",
+  fr: "Gmail et Google Agenda sont connectés : je peux les lire et, avec votre accord, envoyer des e-mails. Voulez-vous que je regarde ce qu'il y a aujourd'hui à l'agenda et dans votre messagerie ?",
+  de: "Gmail und Kalender sind verbunden: Ich kann sie lesen und mit Ihrem Ja E-Mails senden. Soll ich nachsehen, was heute im Kalender und im Posteingang ansteht?",
 };
 
 /**

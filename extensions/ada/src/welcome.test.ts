@@ -334,8 +334,6 @@ describe("greetingLanguage", () => {
 
 describe("welcome text", () => {
   const LANGUAGES = ["it", "en", "es", "fr", "de"] as const;
-  /** The template's own English sentence describes what Ada can do; it is not an instruction. */
-  const DESCRIPTIVE_OPENING = "connect Gmail and Calendar so she can manage";
 
   it("is signed Ada in every language and never says Vera", () => {
     for (const language of LANGUAGES) {
@@ -348,7 +346,7 @@ describe("welcome text", () => {
 
   it("never teaches a command: no quoted phrase, no keyword, in any language", () => {
     for (const language of LANGUAGES) {
-      const text = welcomeText(language).replace(DESCRIPTIVE_OPENING, "");
+      const text = welcomeText(language);
       expect(text, language).not.toMatch(/«|»/u);
       expect(text, language).not.toMatch(
         /collega Lexroom|collega Gmail|connect Lexroom|connect Gmail|conecta Lexroom|conecta Gmail|connecte Lexroom|connecte Gmail|Lexroom verbinden|Gmail verbinden/iu,
@@ -359,47 +357,67 @@ describe("welcome text", () => {
     }
   });
 
-  it("opens with the ada_welcome template text, without its reply-to-start line", () => {
-    expect(welcomeText("it")).toMatch(
-      /^Ti diamo il benvenuto su Ada, l'assistente legale di Lexroom su WhatsApp\. Puoi farle domande giuridiche, chiederle una ricerca su Lexroom e collegare Gmail e Calendar per gestire posta, appuntamenti e scadenze\.\n\n/u,
+  it("is short and in the first person from the first word, with no third-person introduction", () => {
+    const openings = {
+      it: "Sono Ada, l'assistente legale di Lexroom su WhatsApp. Posso:",
+      en: "I'm Ada, Lexroom's legal assistant on WhatsApp. I can:",
+      es: "Soy Ada, la asistente legal de Lexroom en WhatsApp. Puedo:",
+      fr: "Je suis Ada, l'assistante juridique de Lexroom sur WhatsApp. Je peux :",
+      de: "Ich bin Ada, die juristische Assistentin von Lexroom auf WhatsApp. Ich kann:",
+    } as const;
+    for (const language of LANGUAGES) {
+      const text = welcomeText(language);
+      expect(text.startsWith(openings[language]), language).toBe(true);
+      expect(text, language).not.toMatch(
+        /Ti diamo il benvenuto|Welcome to Ada|Te damos la bienvenida|Bienvenue sur Ada|Willkommen bei Ada|farle|ask her|hacerle|lui poser|ihr Rechtsfragen/iu,
+      );
+      expect(text.length, language).toBeLessThan(650);
+    }
+  });
+
+  it("lists what Ada can do: legal questions and Lexroom research, mail and calendar, Granola, deadline reminders", () => {
+    for (const language of LANGUAGES) {
+      const bullets = welcomeText(language)
+        .split("\n\n")[0]!
+        .split("\n")
+        .filter((line) => line.startsWith("•"));
+      expect(bullets, language).toHaveLength(4);
+      expect(bullets[0], language).toContain("Lexroom");
+      expect(bullets[1], language).toMatch(/Gmail/u);
+      expect(bullets[1], language).toMatch(/Outlook/u);
+      expect(bullets[2], language).toContain("Granola");
+      expect(bullets[3], language).toMatch(/udienz|hearing|audiencia|audience|Termin/u);
+    }
+  });
+
+  it("keeps the lawyer and privacy disclaimer and says accounts are connected only when needed", () => {
+    const [, notes] = welcomeText("it").split("\n\n");
+    expect(notes).toBe(
+      "I tuoi account li collego solo quando serve, e le mie risposte non sostituiscono quelle di un avvocato. Le chat di ognuno restano private.",
     );
-    expect(welcomeText("en")).toMatch(
-      /^Welcome to Ada, Lexroom's legal assistant on WhatsApp\. You can ask her legal questions, have her run research on Lexroom, and connect Gmail and Calendar so she can manage your email, meetings and deadlines\.\n\n/u,
+    expect(welcomeText("en").split("\n\n")[1]).toBe(
+      "I only connect your accounts when it's needed, and my answers don't replace a lawyer. Everyone's chats stay private.",
     );
     for (const language of LANGUAGES) {
-      expect(welcomeText(language), language).not.toMatch(
-        /Rispondi a questo messaggio|Reply to this message|Cosa posso fare|What I can do/iu,
+      expect(welcomeText(language).split("\n\n")[1], language).toMatch(
+        /avvocato|lawyer|abogado|avocat|Anwalt/u,
       );
     }
   });
 
-  it("keeps the example questions and the lawyer and privacy disclaimer after the opening", () => {
+  it("ends with one question that starts the conversation, and asks nothing else", () => {
+    const questions = {
+      it: "Su cosa stai lavorando adesso?",
+      en: "What's on your plate right now?",
+      es: "¿En qué estás trabajando ahora mismo?",
+      fr: "Sur quoi travaillez-vous en ce moment ?",
+      de: "Woran arbeiten Sie gerade?",
+    } as const;
     for (const language of LANGUAGES) {
-      const [, examples, , disclaimer] = welcomeText(language).split("\n\n");
-      expect(
-        examples?.split("\n").filter((line) => line.startsWith("•")),
-        language,
-      ).toHaveLength(3);
-      expect(disclaimer, language).toMatch(/avvocato|lawyer|abogado|avocat|Anwalt/u);
+      const text = welcomeText(language);
+      expect(text.endsWith(`\n\n${questions[language]}`), language).toBe(true);
+      expect(text.match(/\?/gu), language).toHaveLength(1);
     }
-  });
-
-  it("says Ada will ask whether to connect their own account when she needs it, and send the link", () => {
-    expect(welcomeText("it")).toContain(
-      "serve il tuo account Lexroom: quando mi servirà ti chiederò se vuoi collegarlo e ti manderò il link.",
-    );
-    expect(welcomeText("en")).toContain(
-      "I'll ask whether you want to connect it and send you the link",
-    );
-    expect(welcomeText("es")).toContain(
-      "te preguntaré si quieres conectarla y te enviaré el enlace",
-    );
-    expect(welcomeText("fr")).toContain(
-      "je vous demanderai si vous voulez le connecter et je vous enverrai le lien",
-    );
-    expect(welcomeText("de")).toContain(
-      "frage ich Sie, ob ich es verbinden soll, und sende Ihnen den Link",
-    );
   });
 
   it("fits one WhatsApp message", () => {

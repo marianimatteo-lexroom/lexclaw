@@ -22,7 +22,9 @@ export type ConnectOfferKind =
   | "lexroom_reconnect"
   | "google"
   | "connect_reminder"
-  | "digest";
+  | "digest"
+  | "first_look"
+  | "research_result";
 
 export type ConnectOffer = { kind: ConnectOfferKind; detail?: string };
 
@@ -94,7 +96,7 @@ export const CONNECT_FEATURE_NAMES: Record<ConnectFeature, { account: string; ca
 };
 
 const NAMES: Record<
-  Exclude<ConnectOfferKind, "digest" | "connect_reminder">,
+  Exclude<ConnectOfferKind, "digest" | "connect_reminder" | "first_look" | "research_result">,
   { account: string; call: string }
 > = {
   lexroom: { account: "their Lexroom account", call: "ada_lexroom_connect" },
@@ -115,6 +117,22 @@ function reminderLine(detail: string | undefined): string {
   return `- Your last reply may have ended with a line saying that connecting ${account} was not finished, and offering a new link; ignore this if it did not. If their message says yes in any form, call ${call} and send the link. If it says no in any form, drop it and call ada_set_preference with key ${connectDeclinedKey(feature)} and one short sentence saying they declined, then do not bring it up again.`;
 }
 
+/** What a first look does for each account that Ada's connected message offers one for. */
+const FIRST_LOOKS: Record<string, string> = {
+  google: "today's calendar and inbox: call ada_read_calendar and ada_read_inbox",
+  outlook: "today's calendar and inbox: call ada_outlook_read_calendar and ada_outlook_read_inbox",
+  granola: "the notes of their latest meeting: call ada_granola_tools, then ada_granola_call",
+  lexroom:
+    "a first research: take their reply, or the legal question they asked earlier, and call ada_research",
+};
+
+function firstLookLine(detail: string | undefined): string {
+  const look = detail === undefined ? undefined : FIRST_LOOKS[detail];
+  return look
+    ? `- You sent them a message confirming an account is connected, ending with a question offering a first look. Doing it means ${look}. If their message says yes in any form, do it now and keep the answer short. If it says no, drop it.`
+    : "";
+}
+
 /** The note for the model; it is only a reminder of a question already asked. */
 export function connectOfferNote(offers: readonly ConnectOffer[]): string | undefined {
   if (offers.length === 0) {
@@ -131,9 +149,13 @@ export function connectOfferNote(offers: readonly ConnectOffer[]): string | unde
           .join("\n")
       : kind === "connect_reminder"
         ? reminderLine(detail)
-        : kind === "lexroom_nudge"
-          ? `- Your last reply may have opened with an offer to connect ${NAMES[kind].account}, with its link or an offer to send it; ignore this if it did not. If their message says yes in any form and you did not send the link, call ${NAMES[kind].call} and send it. If it says no in any form, drop it and call ada_set_preference with key ${LEXROOM_OFFER_DECLINED_KEY} and one short sentence saying they declined connecting Lexroom, then do not bring it up again.`
-          : `- You asked whether they want to connect ${NAMES[kind].account}. If their message says yes in any form, call ${NAMES[kind].call} and send the link. If it says no, drop it and do not ask again.`,
+        : kind === "first_look"
+          ? firstLookLine(detail)
+          : kind === "research_result"
+            ? `- You sent them the result of a Lexroom research${detail ? ` on "${detail}"` : ""} as a message of its own (it is not in the conversation), ending with an offer to turn it into a draft. If their message says yes in any form, start that draft: ask in one short question for what is missing, and call ada_draft with confirmed true only after they agree. If they ask a follow-up about the result, run ada_research again. If it is about something else, answer that.`
+            : kind === "lexroom_nudge"
+              ? `- Your last reply may have opened with an offer to connect ${NAMES[kind].account}, with its link or an offer to send it; ignore this if it did not. If their message says yes in any form and you did not send the link, call ${NAMES[kind].call} and send it. If it says no in any form, drop it and call ada_set_preference with key ${LEXROOM_OFFER_DECLINED_KEY} and one short sentence saying they declined connecting Lexroom, then do not bring it up again.`
+              : `- You asked whether they want to connect ${NAMES[kind].account}. If their message says yes in any form, call ${NAMES[kind].call} and send the link. If it says no, drop it and do not ask again.`,
   );
   if (lines.every((line) => !line)) {
     return undefined;

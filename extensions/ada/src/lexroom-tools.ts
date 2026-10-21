@@ -66,11 +66,11 @@ async function openStore(api: StoreApi, owner: string): Promise<LexroomAccountSt
 }
 
 const LEXROOM_CONNECTED: Record<Language, string> = {
-  it: "Lexroom è collegato. Posso fare ricerche e redigere bozze quando me lo chiedi.",
-  en: "Lexroom is connected. I can run research and drafts when you ask.",
-  es: "Lexroom está conectado. Puedo hacer investigaciones y borradores cuando me lo pidas.",
-  fr: "Lexroom est connecté. Je peux faire des recherches et des brouillons quand vous me le demandez.",
-  de: "Lexroom ist verbunden. Ich kann Recherchen und Entwürfe erstellen, wenn Sie mich darum bitten.",
+  it: "Lexroom è collegato. Posso fare ricerche e redigere bozze: su cosa vuoi che inizi?",
+  en: "Lexroom is connected. I can run research and drafts: what should I start with?",
+  es: "Lexroom está conectado. Puedo hacer investigaciones y borradores: ¿por dónde quieres que empiece?",
+  fr: "Lexroom est connecté. Je peux faire des recherches et des brouillons : par quoi dois-je commencer ?",
+  de: "Lexroom ist verbunden. Ich kann Recherchen und Entwürfe erstellen: Womit soll ich anfangen?",
 };
 
 export function lexroomConnectedText(language: Language): string {

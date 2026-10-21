@@ -12,7 +12,7 @@ import {
   parseIsoDate,
   zonedTimeToUtcMs,
 } from "./deadline-time.js";
-import type { DigestDeadlineInput, DigestPlan, DigestSignal } from "./digest.js";
+import type { DigestDeadlineInput, DigestPhrase, DigestPlan, DigestSignal } from "./digest.js";
 import {
   listMessageIds,
   listUpcomingEvents,
@@ -371,6 +371,13 @@ export async function prepareDeadlineIntake(params: {
       const movedUnannounced = item.movedFromMs !== null && item.offeredCount === 0;
       const label = matterLabelOf(item.matterId, params.aliases);
       const summary = `${typeLabel(item)} ${deadlineDueLabel(item)}: ${item.title}`;
+      const phrase = (flags: { confirm?: true; moved?: true } = {}): DigestPhrase => ({
+        id: "tracked_deadline",
+        type: item.type,
+        due: deadlineDueLabel(item),
+        title: item.title,
+        ...flags,
+      });
       const base = {
         matterId: item.matterId,
         matterLabel: label,
@@ -385,11 +392,12 @@ export async function prepareDeadlineIntake(params: {
           if (freshIds.has(item.id) || params.forceMorning) {
             signals.push(
               near
-                ? { ...base, kind: "deadline", summary }
+                ? { ...base, kind: "deadline", summary, phrase: phrase({ confirm: true }) }
                 : {
                     ...base,
                     kind: "decision_waiting",
                     summary: `Confirm tracking ${summary}`,
+                    phrase: phrase({ confirm: true }),
                     needsDecision: true,
                   },
             );
@@ -398,16 +406,23 @@ export async function prepareDeadlineIntake(params: {
       } else if (reminder || movedUnannounced || daysLeft <= TRACKED_HORIZON_DAYS) {
         listed = true;
         if (reminder) {
-          signals.push({ ...base, kind: "deadline", summary, tracked: "reminder" });
+          signals.push({
+            ...base,
+            kind: "deadline",
+            summary,
+            phrase: phrase(),
+            tracked: "reminder",
+          });
         } else if (movedUnannounced && (freshIds.has(item.id) || params.forceMorning)) {
           signals.push({
             ...base,
             kind: "deadline",
             summary: `${summary} (moved)`,
+            phrase: phrase({ moved: true }),
             tracked: "moved",
           });
         } else if (near && params.forceMorning) {
-          signals.push({ ...base, kind: "deadline", summary });
+          signals.push({ ...base, kind: "deadline", summary, phrase: phrase() });
         }
       }
 

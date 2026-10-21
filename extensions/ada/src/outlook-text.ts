@@ -2,11 +2,11 @@ import type { Language } from "./research-link-outbound.js";
 
 /** Messages Ada's code sends about Outlook without a model turn, in the person's latest language. */
 const CONNECTED: Record<Language, string> = {
-  it: "Outlook è collegato. Posso leggere la tua posta e il tuo calendario, e inviare email o creare eventi solo dopo la tua conferma.",
-  en: "Outlook is connected. I can read your mail and calendar, and I only send mail or create events after you confirm.",
-  es: "Outlook está conectado. Puedo leer tu correo y tu calendario, y solo envío correos o creo eventos después de tu confirmación.",
-  fr: "Outlook est connecté. Je peux lire votre messagerie et votre agenda, et je n'envoie un e-mail ou ne crée un événement qu'après votre confirmation.",
-  de: "Outlook ist verbunden. Ich kann Ihre E-Mails und Ihren Kalender lesen und sende E-Mails oder lege Termine nur nach Ihrer Bestätigung an.",
+  it: "Outlook è collegato. Posso leggere la tua posta e il tuo calendario, e inviare email o creare eventi solo dopo la tua conferma. Vuoi che guardi cosa c'è oggi in agenda e in posta?",
+  en: "Outlook is connected. I can read your mail and calendar, and I only send mail or create events after you confirm. Want me to look at today's calendar and inbox?",
+  es: "Outlook está conectado. Puedo leer tu correo y tu calendario, y solo envío correos o creo eventos después de tu confirmación. ¿Quieres que mire qué hay hoy en tu agenda y en tu correo?",
+  fr: "Outlook est connecté. Je peux lire votre messagerie et votre agenda, et je n'envoie un e-mail ou ne crée un événement qu'après votre confirmation. Voulez-vous que je regarde ce qu'il y a aujourd'hui à l'agenda et dans votre messagerie ?",
+  de: "Outlook ist verbunden. Ich kann Ihre E-Mails und Ihren Kalender lesen und sende E-Mails oder lege Termine nur nach Ihrer Bestätigung an. Soll ich nachsehen, was heute im Kalender und im Posteingang ansteht?",
 };
 
 const RECONNECT: Record<Language, (url: string) => string> = {

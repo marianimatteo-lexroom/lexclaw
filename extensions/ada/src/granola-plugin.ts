@@ -5,6 +5,7 @@ import {
   adaGranolaDisconnectDefinition,
   adaGranolaToolsDefinition,
 } from "./account-tool-definitions.js";
+import { noteConnectOffer } from "./connect-offers.js";
 import { writeAdaConnectPage } from "./google-callback.js";
 import { sendAdaWhatsAppText } from "./google-notify.js";
 import { openAdaGranolaAccountDbFromApi } from "./granola-account.js";
@@ -69,11 +70,15 @@ export function registerAdaGranolaCallback(api: OpenClawPluginApi): void {
           log: api.logger,
           notifyConnected: async (owner) => {
             await openWakeWindow(api, owner);
-            return await sendAdaWhatsAppText({
+            const sent = await sendAdaWhatsAppText({
               api,
               to: `+${owner}`,
               text: granolaConnectedText(await resolveLanguage("", undefined, owner)),
             });
+            if (sent.ok) {
+              noteConnectOffer(owner, "first_look", Date.now(), "granola");
+            }
+            return sent;
           },
         });
       } catch (error) {

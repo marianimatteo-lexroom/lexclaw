@@ -355,9 +355,9 @@ config_set_env plugins.entries.ada.config.googleNotifyServiceAccount ADA_GOOGLE_
 config_set_env plugins.entries.ada.config.googleNotifyToken ADA_GOOGLE_NOTIFY_TOKEN secret
 config_set_env plugins.entries.ada.config.statusToken ADA_STATUS_TOKEN secret
 
-# Utility template sent once when a digest is held because the WhatsApp window is
-# closed. Both fields are required by the plugin schema, so the language defaults
-# here. Unset name: not configured, and a value already on the volume stays put.
+# Marketing template (ada_digest_ready) sent once when a digest or the morning brief is held
+# because the WhatsApp window is closed. Both fields are required by the plugin schema, so the
+# language defaults here. Unset name: not configured, and a value already on the volume stays put.
 if [ -n "${ADA_DIGEST_TEMPLATE_NAME:-}" ]; then
   export ADA_DIGEST_TEMPLATE_LANG="${ADA_DIGEST_TEMPLATE_LANG:-it}"
   config_set plugins.entries.ada.config.digestReadyTemplate "$(node -p '
@@ -371,6 +371,24 @@ else
     log "WARNING: ADA_DIGEST_TEMPLATE_LANG is ignored because ADA_DIGEST_TEMPLATE_NAME is unset"
   fi
   log "skip plugins.entries.ada.config.digestReadyTemplate: ADA_DIGEST_TEMPLATE_NAME is unset"
+fi
+
+# Utility template (ada_request_ready) sent when a result the person asked for, such as a Lexroom
+# research, is held because the window is closed. Same rules as above. Unset: those results use
+# the digest template, as before.
+if [ -n "${ADA_REQUEST_TEMPLATE_NAME:-}" ]; then
+  export ADA_REQUEST_TEMPLATE_LANG="${ADA_REQUEST_TEMPLATE_LANG:-it}"
+  config_set plugins.entries.ada.config.requestReadyTemplate "$(node -p '
+    JSON.stringify({
+      name: process.env.ADA_REQUEST_TEMPLATE_NAME.trim(),
+      language: process.env.ADA_REQUEST_TEMPLATE_LANG.trim(),
+    })
+  ')"
+else
+  if [ -n "${ADA_REQUEST_TEMPLATE_LANG:-}" ]; then
+    log "WARNING: ADA_REQUEST_TEMPLATE_LANG is ignored because ADA_REQUEST_TEMPLATE_NAME is unset"
+  fi
+  log "skip plugins.entries.ada.config.requestReadyTemplate: ADA_REQUEST_TEMPLATE_NAME is unset"
 fi
 
 # Deadline intake is off unless ADA_DEADLINE_INTAKE_ENABLED is exactly true, and the

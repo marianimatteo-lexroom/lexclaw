@@ -41,7 +41,7 @@ describe("sendGoogleConnectedNotice", () => {
     recordInboundLanguage(OWNER, "Give me a new link");
     expect(readAdaWhatsAppTarget(config)).toBe("+390000000000");
     expect(await confirmation()).toBe(
-      "Gmail and Calendar are connected. I can send mail when you say so.",
+      "Gmail and Calendar are connected: I can read them and, with your yes, send email. Want me to look at today's calendar and inbox?",
     );
   });
 

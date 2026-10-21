@@ -1,5 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { TSchema } from "typebox";
+import { noteConnectOffer } from "./connect-offers.js";
 import { writeAdaConnectPage } from "./google-callback.js";
 import { sendAdaWhatsAppText } from "./google-notify.js";
 import { registerAdaHttpRoute } from "./http-paths.js";
@@ -110,7 +111,11 @@ export function registerAdaOutlookCallback(api: OpenClawPluginApi): void {
           log: api.logger,
           notifyConnected: async (owner) => {
             await openWakeWindow(api, owner);
-            return await textOwner(owner, outlookConnectedText);
+            const sent = await textOwner(owner, outlookConnectedText);
+            if (sent.ok) {
+              noteConnectOffer(owner, "first_look", Date.now(), "outlook");
+            }
+            return sent;
           },
           notifyAdminConsent: async (owner) => {
             await openWakeWindow(api, owner);

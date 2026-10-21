@@ -103,11 +103,11 @@ const PLAN: Extract<DigestPlan, { deliver: true }> = {
 };
 
 describe("the digest as a pending question", () => {
-  it("lists the next steps and every numbered item with what its line offered", () => {
+  it("lists the closing question, the draft that may follow and every numbered item", () => {
     expect(digestOfferDetail(PLAN)).toBe(
       [
-        "  - a Lexroom research for Rossi SRL; a yes starts it",
-        "  - a draft for Rossi SRL, only after the research and with their ok",
+        "  - the closing question: a Lexroom research for Rossi SRL; a yes starts it",
+        "  - not offered in the message: after a research, a draft for Rossi SRL, only with their ok",
         "  - item 1: Bianchi, hearing 2026-11-12 09:30; offered: start the Lexroom research, or skip it",
         "  - item 2: Verdi, hearing 2026-11-12 09:30; offered: send the stored brief again, or skip it",
       ].join("\n"),

@@ -131,7 +131,7 @@ describe("ada_research tells the requester and sends the result", () => {
     finish.resolve(answerStream("r-push", "Quaranta giorni [1]"));
     await vi.waitFor(() => expect(wa.to(NUMBER_A)).toHaveLength(2));
     expect(wa.to(NUMBER_A)[1]).toBe(
-      "Quaranta giorni [1]\n\nContinua su Lexroom: https://app.lexroom.ai/research/r-push",
+      "Quaranta giorni [1]\n\nVuoi che ne tragga una bozza?\n\nContinua su Lexroom: https://app.lexroom.ai/research/r-push",
     );
     if (!started.ok) {
       throw new Error("expected a job");

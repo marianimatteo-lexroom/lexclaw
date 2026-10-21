@@ -13,7 +13,6 @@ type DeliverablePlan = Extract<DigestPlan, { deliver: true }>;
 type Words = {
   intro: string;
   deadlines: string;
-  steps: string;
   hearing: string;
   deadline: string;
   by: (when: string) => string;
@@ -21,13 +20,20 @@ type Words = {
   today: string;
   tomorrow: string;
   passed: string;
-  reply: (no: number) => string;
-  briefReady: (no: number) => string;
-  watched: string;
   moved: string;
   unsure: string;
-  research: (label: string, summary: string) => string;
-  draft: (label: string) => string;
+  /** Short tags on a deadline line. */
+  toConfirm: string;
+  researchReady: string;
+  movedTag: string;
+  /** Said once, after the question, when more than one item is open. */
+  orPick: string;
+  /** The one closing question: what Ada proposes to do first. */
+  askResearch: (label: string) => string;
+  askBrief: (label: string) => string;
+  calendarMoved: (title: string) => string;
+  calendarDue: (title: string) => string;
+  newEmail: string;
   connect: (url: string) => string;
   connectSend: (url: string) => string;
   connectExpired: (url: string) => string;
@@ -45,7 +51,6 @@ const WORDS: Record<Language, Words> = {
   it: {
     intro: "Buongiorno. Questo non può aspettare:",
     deadlines: "Udienze e scadenze:",
-    steps: "Posso fare subito:",
     hearing: "udienza",
     deadline: "scadenza",
     by: (when) => `entro ${when}`,
@@ -53,15 +58,17 @@ const WORDS: Record<Language, Words> = {
     today: "oggi",
     tomorrow: "domani",
     passed: "già passata",
-    reply: (no) =>
-      `Rispondimi con ${no} se vuoi che avvii la ricerca su Lexroom, o dimmi se preferisci saltare la ${no}.`,
-    briefReady: (no) => `La ricerca è pronta: dimmi se vuoi che ti rimandi il brief della ${no}.`,
-    watched: "È nella tua lista di controllo.",
     moved: "La data è cambiata.",
     unsure: "Non sono sicura della data: controlla l'atto.",
-    research: (label, summary) =>
-      `1. Una ricerca su Lexroom per ${label}: ${summary}. Dimmi di sì e la avvio.`,
-    draft: (label) => `2. Una bozza per ${label}, solo dopo la ricerca e con il tuo ok.`,
+    toConfirm: "da confermare",
+    researchReady: "ricerca già pronta",
+    movedTag: "data cambiata",
+    askResearch: (label) => `Partirei dalla ricerca su Lexroom per ${label}: la avvio?`,
+    askBrief: (label) => `Ti rimando la ricerca già pronta per ${label}?`,
+    orPick: "Se preferisci un'altra voce, o saltarla, dimmelo.",
+    calendarMoved: (title) => `${title}: anticipato`,
+    calendarDue: (title) => `${title}: in scadenza`,
+    newEmail: "Nuova email",
     connect: (url) =>
       `Collega Gmail e Google Calendar così posso prepararti il riepilogo del mattino e inviare le email che mi confermi.\nApri questo link per collegare il tuo account Google:\n${url}`,
     connectSend: (url) =>
@@ -81,7 +88,6 @@ const WORDS: Record<Language, Words> = {
   en: {
     intro: "Good morning. This one should not wait:",
     deadlines: "Hearings and deadlines:",
-    steps: "I can do right now:",
     hearing: "hearing",
     deadline: "deadline",
     by: (when) => `by ${when}`,
@@ -89,16 +95,17 @@ const WORDS: Record<Language, Words> = {
     today: "today",
     tomorrow: "tomorrow",
     passed: "already passed",
-    reply: (no) =>
-      `Reply with ${no} if you want me to run the Lexroom research, or tell me if you would rather skip ${no}.`,
-    briefReady: (no) =>
-      `The research is ready: tell me if you want me to send the brief for ${no} again.`,
-    watched: "It is on your watch list.",
     moved: "The date moved.",
     unsure: "I am not sure of the date: please check the notice.",
-    research: (label, summary) =>
-      `1. Lexroom research for ${label}: ${summary}. Say yes and I will start it.`,
-    draft: (label) => `2. A draft for ${label}, only after the research and with your yes.`,
+    toConfirm: "to be confirmed",
+    researchReady: "research already done",
+    movedTag: "date changed",
+    askResearch: (label) => `I'd start with the Lexroom research for ${label}. Shall I run it?`,
+    askBrief: (label) => `Shall I send you the research already done for ${label}?`,
+    orPick: "Tell me if you would rather take another item, or skip it.",
+    calendarMoved: (title) => `${title}: moved earlier`,
+    calendarDue: (title) => `${title}: due`,
+    newEmail: "New email",
     connect: (url) =>
       `Connect Gmail and Google Calendar so I can prepare your morning digest and send the emails you confirm.\nOpen this link to connect your Google account:\n${url}`,
     connectSend: (url) =>
@@ -118,7 +125,6 @@ const WORDS: Record<Language, Words> = {
   es: {
     intro: "Buenos días. Esto no puede esperar:",
     deadlines: "Audiencias y plazos:",
-    steps: "Puedo hacer ahora:",
     hearing: "audiencia",
     deadline: "plazo",
     by: (when) => `hasta el ${when}`,
@@ -126,17 +132,17 @@ const WORDS: Record<Language, Words> = {
     today: "hoy",
     tomorrow: "mañana",
     passed: "ya pasó",
-    reply: (no) =>
-      `Respóndeme con ${no} si quieres que inicie la investigación en Lexroom, o dime si prefieres omitir la ${no}.`,
-    briefReady: (no) =>
-      `La investigación está lista: dime si quieres que te reenvíe el brief de la ${no}.`,
-    watched: "Está en tu lista de seguimiento.",
     moved: "La fecha cambió.",
     unsure: "No estoy segura de la fecha: revisa la notificación.",
-    research: (label, summary) =>
-      `1. Una investigación en Lexroom para ${label}: ${summary}. Dime que sí y la inicio.`,
-    draft: (label) =>
-      `2. Un borrador para ${label}, solo después de la investigación y con tu visto bueno.`,
+    toConfirm: "por confirmar",
+    researchReady: "investigación ya lista",
+    movedTag: "fecha cambiada",
+    askResearch: (label) => `Empezaría por la investigación en Lexroom para ${label}: ¿la inicio?`,
+    askBrief: (label) => `¿Te reenvío la investigación que ya está lista para ${label}?`,
+    orPick: "Si prefieres otro punto, o omitirlo, dímelo.",
+    calendarMoved: (title) => `${title}: adelantado`,
+    calendarDue: (title) => `${title}: vence`,
+    newEmail: "Correo nuevo",
     connect: (url) =>
       `Conecta Gmail y Google Calendar para que pueda preparar tu resumen de la mañana y enviar los correos que me confirmes.\nAbre este enlace para conectar tu cuenta de Google:\n${url}`,
     connectSend: (url) =>
@@ -156,7 +162,6 @@ const WORDS: Record<Language, Words> = {
   fr: {
     intro: "Bonjour. Ceci ne peut pas attendre :",
     deadlines: "Audiences et échéances :",
-    steps: "Je peux faire tout de suite :",
     hearing: "audience",
     deadline: "échéance",
     by: (when) => `d'ici le ${when}`,
@@ -164,17 +169,18 @@ const WORDS: Record<Language, Words> = {
     today: "aujourd'hui",
     tomorrow: "demain",
     passed: "déjà passée",
-    reply: (no) =>
-      `Répondez-moi avec ${no} si vous voulez que je lance la recherche sur Lexroom, ou dites-moi si vous préférez écarter la ${no}.`,
-    briefReady: (no) =>
-      `La recherche est prête : dites-moi si vous voulez que je vous renvoie le brief de la ${no}.`,
-    watched: "Elle est dans votre liste de suivi.",
     moved: "La date a changé.",
     unsure: "Je ne suis pas sûre de la date : vérifiez l'acte.",
-    research: (label, summary) =>
-      `1. Une recherche sur Lexroom pour ${label} : ${summary}. Dites oui et je la lance.`,
-    draft: (label) =>
-      `2. Un projet pour ${label}, seulement après la recherche et avec votre accord.`,
+    toConfirm: "à confirmer",
+    researchReady: "recherche déjà prête",
+    movedTag: "date modifiée",
+    askResearch: (label) =>
+      `Je commencerais par la recherche sur Lexroom pour ${label} : je la lance ?`,
+    askBrief: (label) => `Je vous renvoie la recherche déjà prête pour ${label} ?`,
+    orPick: "Si vous préférez un autre point, ou l'écarter, dites-le-moi.",
+    calendarMoved: (title) => `${title} : avancé`,
+    calendarDue: (title) => `${title} : échéance`,
+    newEmail: "Nouvel e-mail",
     connect: (url) =>
       `Connectez Gmail et Google Agenda pour que je puisse préparer votre résumé du matin et envoyer les e-mails que vous confirmez.\nOuvrez ce lien pour connecter votre compte Google :\n${url}`,
     connectSend: (url) =>
@@ -194,7 +200,6 @@ const WORDS: Record<Language, Words> = {
   de: {
     intro: "Guten Morgen. Das kann nicht warten:",
     deadlines: "Termine und Fristen:",
-    steps: "Ich kann sofort:",
     hearing: "Termin",
     deadline: "Frist",
     by: (when) => `bis ${when}`,
@@ -202,16 +207,20 @@ const WORDS: Record<Language, Words> = {
     today: "heute",
     tomorrow: "morgen",
     passed: "bereits vorbei",
-    reply: (no) =>
-      `Antworten Sie mir mit ${no}, wenn ich die Lexroom-Recherche starten soll, oder sagen Sie mir, wenn Sie ${no} lieber überspringen möchten.`,
-    briefReady: (no) =>
-      `Die Recherche ist fertig: Sagen Sie mir, wenn ich Ihnen die Zusammenfassung zu ${no} erneut senden soll.`,
-    watched: "Sie steht auf Ihrer Beobachtungsliste.",
     moved: "Das Datum hat sich geändert.",
     unsure: "Ich bin mir beim Datum nicht sicher: Bitte prüfen Sie die Mitteilung.",
-    research: (label, summary) =>
-      `1. Eine Lexroom-Recherche für ${label}: ${summary}. Sagen Sie ja, dann starte ich sie.`,
-    draft: (label) => `2. Ein Entwurf für ${label}, erst nach der Recherche und mit Ihrem Ja.`,
+    toConfirm: "noch zu bestätigen",
+    researchReady: "Recherche liegt vor",
+    movedTag: "Datum geändert",
+    askResearch: (label) =>
+      `Ich würde mit der Lexroom-Recherche zu ${label} beginnen: Soll ich sie starten?`,
+    askBrief: (label) =>
+      `Soll ich Ihnen die bereits fertige Recherche zu ${label} noch einmal senden?`,
+    orPick:
+      "Wenn Sie lieber einen anderen Punkt nehmen oder ihn überspringen möchten, sagen Sie es mir.",
+    calendarMoved: (title) => `${title}: vorverlegt`,
+    calendarDue: (title) => `${title}: fällig`,
+    newEmail: "Neue E-Mail",
     connect: (url) =>
       `Verbinden Sie Gmail und Google Kalender, damit ich Ihre Morgenübersicht vorbereiten und E-Mails senden kann, die Sie bestätigen.\nÖffnen Sie diesen Link, um Ihr Google-Konto zu verbinden:\n${url}`,
     connectSend: (url) =>
@@ -252,14 +261,48 @@ function whenLabel(iso: string, language: Language, timeZone: string): string {
   }).format(at);
 }
 
+function capitalized(text: string): string {
+  return `${text.charAt(0).toLocaleUpperCase()}${text.slice(1)}`;
+}
+
+/** What an item says, in the person's language: a stored plan without `phrase` keeps its summary. */
+function itemText(item: RankedDigestItem, words: Words): { text: string; tags: string[] } {
+  const phrase = item.phrase;
+  if (!phrase) {
+    return { text: item.summary, tags: [] };
+  }
+  switch (phrase.id) {
+    case "calendar_moved":
+      return { text: words.calendarMoved(phrase.text), tags: [] };
+    case "calendar_due":
+      return { text: words.calendarDue(phrase.text), tags: [] };
+    case "new_email":
+      return { text: words.newEmail, tags: [] };
+    case "tracked_deadline": {
+      const kind = phrase.type === "hearing" ? words.hearing : words.deadline;
+      return {
+        text: `${kind} ${phrase.due}: ${phrase.title}`,
+        tags: [
+          ...(phrase.confirm ? [words.toConfirm] : []),
+          ...(phrase.moved ? [words.movedTag] : []),
+        ],
+      };
+    }
+  }
+}
+
 function itemLine(
   item: RankedDigestItem,
   words: Words,
   language: Language,
   timeZone: string,
 ): string {
-  const due = item.dueAt ? ` (${words.by(whenLabel(item.dueAt, language, timeZone))})` : "";
-  return `• ${item.matterLabel}: ${item.summary}${due}`;
+  const { text, tags } = itemText(item, words);
+  const details = [
+    ...tags,
+    ...(item.dueAt ? [words.by(whenLabel(item.dueAt, language, timeZone))] : []),
+  ];
+  return `• ${item.matterLabel}: ${text}${details.length ? ` (${details.join(", ")})` : ""}`;
 }
 
 function daysLabel(days: number, words: Words): string {
@@ -284,22 +327,25 @@ function deadlineLine(line: DigestDeadlineLine, words: Words): string {
     parts.push(words.unsure);
   }
   if (line.status === "candidate") {
-    parts.push(words.reply(line.no));
-  } else {
-    parts.push(words.watched);
-    parts.push(line.briefReady ? words.briefReady(line.no) : words.reply(line.no));
+    parts.push(`${capitalized(words.toConfirm)}.`);
+  } else if (line.briefReady) {
+    parts.push(`${capitalized(words.researchReady)}.`);
   }
   return parts.join(" ");
 }
 
-/** The one WhatsApp message for a ranked plan: items, deadline lines, then the two next steps. */
+/**
+ * The one WhatsApp message for a ranked plan: the items, the numbered deadlines, then a single
+ * closing question that proposes the first step. How to answer is not spelled out per line: the
+ * model reads a natural reply against the note `digestOfferDetail` leaves for it.
+ */
 export function renderDigestText(
   plan: DeliverablePlan,
   language: Language,
   timeZone: string,
 ): string {
   const words = WORDS[language];
-  const [research, draft] = plan.nextSteps;
+  const [research] = plan.nextSteps;
   const blocks = [
     `${words.intro}\n${plan.items.map((item) => itemLine(item, words, language, timeZone)).join("\n")}`,
   ];
@@ -308,9 +354,17 @@ export function renderDigestText(
       `${words.deadlines}\n${plan.deadlines.map((line) => deadlineLine(line, words)).join("\n")}`,
     );
   }
-  blocks.push(
-    `${words.steps}\n${words.research(research.matterLabel, plan.items.find((item) => item.matterId === research.matterId)?.summary ?? research.instruction)}\n${words.draft(draft.matterLabel)}`,
+  const stored = plan.deadlines?.find(
+    (line) => line.matterId === research.matterId && line.status === "tracked" && line.briefReady,
   );
+  const open = new Set([
+    ...plan.items.map((item) => item.matterId),
+    ...(plan.deadlines ?? []).map((line) => line.matterId),
+  ]);
+  const ask = stored
+    ? words.askBrief(research.matterLabel)
+    : words.askResearch(research.matterLabel);
+  blocks.push(open.size > 1 ? `${ask} ${words.orPick}` : ask);
   return blocks.join("\n\n");
 }
 
@@ -358,15 +412,15 @@ const OFFER_DEADLINES_MAX = 10;
 
 /**
  * What the digest above offered, for the note the model reads when the person answers it, since
- * the model never sees the digest itself: the two next steps and every numbered item with the
- * action its line invited.
+ * the model never sees the digest itself: the research the closing question proposed, the draft
+ * that may follow it, and every numbered item with the action it can take.
  */
 export function digestOfferDetail(plan: DeliverablePlan): string {
   const label = (text: string) => text.trim().slice(0, OFFER_LABEL_MAX);
   const [research, draft] = plan.nextSteps;
   const lines = [
-    `  - a Lexroom research for ${label(research.matterLabel)}; a yes starts it`,
-    `  - a draft for ${label(draft.matterLabel)}, only after the research and with their ok`,
+    `  - the closing question: a Lexroom research for ${label(research.matterLabel)}; a yes starts it`,
+    `  - not offered in the message: after a research, a draft for ${label(draft.matterLabel)}, only with their ok`,
   ];
   for (const line of (plan.deadlines ?? []).slice(0, OFFER_DEADLINES_MAX)) {
     const offered =

@@ -11,7 +11,7 @@ import { openAdaMemoryIfExistsFromApi } from "./memory.js";
 import { researchLinkLine, resolveLanguage, type Language } from "./research-link-outbound.js";
 import { buildResearchPdf, type ResearchPdf } from "./research-pdf.js";
 import { normalizeWhatsAppNumber } from "./whatsapp-number.js";
-import { readDigestReadyTemplate, sendDigestReadyNotice } from "./whatsapp-template.js";
+import { sendRequestReadyNotice } from "./whatsapp-template.js";
 
 /**
  * A research takes a minute or two, so Ada does not hold the chat turn for it. When the lawyer
@@ -55,6 +55,8 @@ export type PushDeps = {
   readProfileLanguage?: () => Promise<string | undefined>;
   /** The delivered message asked the person whether to (re)connect Lexroom; remember it for their next turn. */
   offerConnect?: (kind: ConnectOfferKind) => void;
+  /** A finished research reached the person with a next-step question; remember what it answered. */
+  noteResult?: (query: string) => void;
   log: LexroomLog;
   now?: () => number;
   retryDelayMs?: number;
@@ -63,6 +65,8 @@ export type PushDeps = {
 type Strings = {
   ack: string;
   sources: string;
+  /** The one closing question of a finished research. */
+  next: string;
   failed: string;
   timeout: string;
   notConnected: string;
@@ -75,6 +79,7 @@ const STRINGS: Record<Language, Strings> = {
   it: {
     ack: "Ho avviato la ricerca su Lexroom. Va avanti in background e ci vorrà circa un minuto o due: ti scrivo io appena è pronta.",
     sources: "Fonti",
+    next: "Vuoi che ne tragga una bozza?",
     failed: "La ricerca su Lexroom non è andata a buon fine.",
     timeout: "Lexroom non ha risposto in tempo e la richiesta è stata interrotta.",
     notConnected:
@@ -88,6 +93,7 @@ const STRINGS: Record<Language, Strings> = {
   en: {
     ack: "I've started the research on Lexroom. It runs in the background and takes a minute or two: I'll message you as soon as it's ready.",
     sources: "Sources",
+    next: "Want me to turn this into a draft?",
     failed: "The Lexroom research did not complete.",
     timeout: "Lexroom did not respond in time and the request was abandoned.",
     notConnected:
@@ -101,6 +107,7 @@ const STRINGS: Record<Language, Strings> = {
   es: {
     ack: "He iniciado la investigación en Lexroom. Sigue en segundo plano y tarda uno o dos minutos: te escribo en cuanto esté lista.",
     sources: "Fuentes",
+    next: "¿Quieres que prepare un borrador a partir de esto?",
     failed: "La investigación en Lexroom no se completó.",
     timeout: "Lexroom no respondió a tiempo y la solicitud se interrumpió.",
     notConnected:
@@ -114,6 +121,7 @@ const STRINGS: Record<Language, Strings> = {
   fr: {
     ack: "J'ai lancé la recherche sur Lexroom. Elle tourne en arrière-plan et prend une à deux minutes : je vous écris dès qu'elle est prête.",
     sources: "Sources",
+    next: "Voulez-vous que j'en tire un brouillon ?",
     failed: "La recherche sur Lexroom n'a pas abouti.",
     timeout: "Lexroom n'a pas répondu à temps et la demande a été interrompue.",
     notConnected:
@@ -127,6 +135,7 @@ const STRINGS: Record<Language, Strings> = {
   de: {
     ack: "Ich habe die Recherche in Lexroom gestartet. Sie läuft im Hintergrund und dauert ein bis zwei Minuten: Ich melde mich, sobald sie fertig ist.",
     sources: "Quellen",
+    next: "Soll ich daraus einen Entwurf erstellen?",
     failed: "Die Lexroom-Recherche ist nicht abgeschlossen worden.",
     timeout: "Lexroom hat nicht rechtzeitig geantwortet und die Anfrage wurde abgebrochen.",
     notConnected:
@@ -177,27 +186,25 @@ function cutAtBoundary(text: string, max: number): string {
 }
 
 /**
- * The one message that carries a research answer: the answer, the cited sources, then the link
- * line, always last and always whole. When it does not fit in `limit`, the answer is cut to make
- * room; the sources stay only if they take up to half of what is left, since the PDF lists them.
+ * The one message that carries a research answer: the answer, the cited sources, the closing
+ * next-step question, then the link line, always last. The question and the link are always
+ * whole. When it does not fit in `limit`, the answer is cut to make room; the sources stay only
+ * if they take up to half of what is left, since the PDF lists them.
  */
 export function fitResearchText(
-  parts: { answer: string; sources: string; link: string },
+  parts: { answer: string; sources: string; nextStep?: string; link: string },
   limit = RESEARCH_TEXT_LIMIT,
 ): string {
   const join = (...texts: string[]) => texts.filter(Boolean).join("\n\n");
-  const whole = join(parts.answer, parts.sources, parts.link);
+  const closing = join(parts.nextStep ?? "", parts.link);
+  const whole = join(parts.answer, parts.sources, closing);
   if (whole.length <= limit) {
     return whole;
   }
-  const room = limit - (parts.link ? parts.link.length + 2 : 0);
+  const room = limit - (closing ? closing.length + 2 : 0);
   const keepSources = parts.sources.length + 2 <= room / 2;
   const answerRoom = keepSources ? room - parts.sources.length - 2 : room;
-  return join(
-    cutAtBoundary(parts.answer, answerRoom),
-    keepSources ? parts.sources : "",
-    parts.link,
-  );
+  return join(cutAtBoundary(parts.answer, answerRoom), keepSources ? parts.sources : "", closing);
 }
 
 /**
@@ -228,6 +235,7 @@ export async function researchMessage(
       sources: result.sources.length
         ? `*${STRINGS[language].sources}*\n${formatSources(result.sources)}`
         : "",
+      nextStep: STRINGS[language].next,
       link: result.researchUrl ? researchLinkLine(language, result.researchUrl) : "",
     });
   }
@@ -255,6 +263,8 @@ type Held = {
   document?: ResearchPdf;
   heldAtMs: number;
   offer?: ConnectOfferKind;
+  /** The question of a finished research, so its delivery can be noted. */
+  resultQuery?: string;
 };
 
 /** Held results by recipient number, oldest first. */
@@ -412,6 +422,9 @@ export async function pushResearchResult(
       if (offer) {
         deps.offerConnect?.(offer);
       }
+      if (params.result.ok) {
+        deps.noteResult?.(params.query);
+      }
       deps.log("result.pushed", {
         job: params.jobId,
         outcome,
@@ -435,6 +448,7 @@ export async function pushResearchResult(
     text,
     ...(document ? { document } : {}),
     ...(offer ? { offer } : {}),
+    ...(params.result.ok ? { resultQuery: params.query } : {}),
     heldAtMs: now(),
   });
   while (queue.length > MAX_HELD) {
@@ -477,6 +491,9 @@ export async function releaseHeldResearch(deps: PushDeps): Promise<number> {
     released += 1;
     if (next.offer) {
       deps.offerConnect?.(next.offer);
+    }
+    if (next.resultQuery !== undefined) {
+      deps.noteResult?.(next.resultQuery);
     }
     deps.log("result.pushed", {
       job: next.jobId,
@@ -525,15 +542,18 @@ export function livePushDeps(
       return seen === null ? null : whatsappWindowOpen(seen, Date.now());
     },
     nudge: async () => {
-      const template = readDigestReadyTemplate(api.pluginConfig);
-      if (!template) {
-        return "unset";
-      }
-      const result = await sendDigestReadyNotice({ api, template, to });
-      return result.ok ? "sent" : "failed";
+      const result = await sendRequestReadyNotice({ api, to });
+      return result === null ? "unset" : result.ok ? "sent" : "failed";
     },
     readProfileLanguage: async () => (await (await memory())?.readProfile())?.language,
     offerConnect: (kind) => noteConnectOffer(recipient, kind),
+    noteResult: (query) =>
+      noteConnectOffer(
+        recipient,
+        "research_result",
+        Date.now(),
+        query.replace(/\s+/gu, " ").trim().slice(0, 120),
+      ),
     log,
   };
 }

@@ -170,7 +170,7 @@ describe("ada_research for whoever asked on WhatsApp", () => {
     await vi.waitFor(() => expect(sent).toHaveLength(2));
     expect(sent[1]).toEqual({
       to: "+390000000001",
-      text: "Il termine è di quaranta giorni dalla notifica [1].\n\n*Fonti*\n[1] Cass. civ. 1/2024\n\nContinua su Lexroom: https://app.lexroom.ai/research/res-e2e",
+      text: "Il termine è di quaranta giorni dalla notifica [1].\n\n*Fonti*\n[1] Cass. civ. 1/2024\n\nVuoi che ne tragga una bozza?\n\nContinua su Lexroom: https://app.lexroom.ai/research/res-e2e",
     });
 
     // A model that polls anyway gets no answer to say a second time, and no link to append.
