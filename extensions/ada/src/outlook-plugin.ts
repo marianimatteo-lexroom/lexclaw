@@ -1,6 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { TSchema } from "typebox";
-import { noteConnectOffer } from "./connect-offers.js";
+import { markRequestConnect, noteConnectOffer, takeRequestConnect } from "./connect-offers.js";
 import { writeAdaConnectPage } from "./google-callback.js";
 import { sendAdaWhatsAppText } from "./google-notify.js";
 import { registerAdaHttpRoute } from "./http-paths.js";
@@ -56,8 +56,13 @@ function outlookTool<P extends TSchema>(definition: Definition<P>, run: OwnerToo
 
 /** The model-facing tools that connect, read and write one person's own Outlook mail and calendar. */
 export const adaOutlookTools = {
-  connect: outlookTool(adaOutlookConnectDefinition, (args, { owner, api, config, signal }) =>
-    executeAdaOutlookConnect(owner, outlookConnectConfigFrom(config), api, args, signal),
+  connect: outlookTool(adaOutlookConnectDefinition, async (args, { owner, api, config, signal }) =>
+    markRequestConnect(
+      owner,
+      "outlook",
+      args.forPendingRequest,
+      await executeAdaOutlookConnect(owner, outlookConnectConfigFrom(config), api, args, signal),
+    ),
   ),
   readInbox: outlookTool(adaOutlookReadInboxDefinition, (args, { owner, api, signal }) =>
     executeAdaOutlookReadInbox(owner, api, args, signal),
@@ -111,8 +116,11 @@ export function registerAdaOutlookCallback(api: OpenClawPluginApi): void {
           log: api.logger,
           notifyConnected: async (owner) => {
             await openWakeWindow(api, owner);
-            const sent = await textOwner(owner, outlookConnectedText);
-            if (sent.ok) {
+            const firstLook = !takeRequestConnect(owner, "outlook");
+            const sent = await textOwner(owner, (language) =>
+              outlookConnectedText(language, firstLook),
+            );
+            if (sent.ok && firstLook) {
               noteConnectOffer(owner, "first_look", Date.now(), "outlook");
             }
             return sent;

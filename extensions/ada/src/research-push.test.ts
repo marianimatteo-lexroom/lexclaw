@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { takeConnectOffers } from "./connect-offers.js";
 import type { LexroomFailure, ResearchOutcome } from "./lexroom-client.js";
 import { extractPdfText } from "./pdf-text.js";
 import { clearInboundLanguages, recordInboundLanguage } from "./research-link-outbound.js";
@@ -613,6 +614,40 @@ describe("the live window check", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("remembers every result released together for the next turn, not only the last", async () => {
+    const owner = "390000000088";
+    const sendText = vi.fn(async (_params: { to: string; text: string }) => undefined);
+    const live = {
+      ...api,
+      runtime: { channel: { outbound: { loadAdapter: async () => ({ sendText }) } } },
+    } as unknown as Parameters<typeof livePushDeps>[0];
+    for (const [jobId, query, matterId, researchId] of [
+      ["rj1", "recesso locazione", "m-1", "res-1"],
+      ["rj2", "caparra", "m-2", "res-2"],
+    ] as const) {
+      await pushResearchResult(
+        {
+          jobId,
+          startedAtMs: 0,
+          query,
+          matterId,
+          result: outcome({
+            researchId,
+            researchUrl: `https://app.lexroom.ai/research/${researchId}`,
+          }),
+        },
+        makeDeps({ windowOpen: async () => false, recipient: owner, now: Date.now }).deps,
+      );
+    }
+    expect(await releaseHeldResearch(livePushDeps(live, vi.fn(), owner))).toBe(2);
+    const [offer] = takeConnectOffers(owner, { inboundAtMs: Date.now() + 1_000 });
+    expect(offer?.kind).toBe("research_result");
+    expect(JSON.parse(offer?.detail ?? "[]")).toEqual([
+      { query: "recesso locazione", matterId: "m-1", researchId: "res-1" },
+      { query: "caparra", matterId: "m-2", researchId: "res-2" },
+    ]);
   });
 
   it("releases the held results of the sender who wrote, and only theirs", async () => {

@@ -1,12 +1,28 @@
 import type { Language } from "./research-link-outbound.js";
 
 /** Messages Ada's code sends about Outlook without a model turn, in the person's latest language. */
-const CONNECTED: Record<Language, string> = {
-  it: "Outlook è collegato. Posso leggere la tua posta e il tuo calendario, e inviare email o creare eventi solo dopo la tua conferma. Vuoi che guardi cosa c'è oggi in agenda e in posta?",
-  en: "Outlook is connected. I can read your mail and calendar, and I only send mail or create events after you confirm. Want me to look at today's calendar and inbox?",
-  es: "Outlook está conectado. Puedo leer tu correo y tu calendario, y solo envío correos o creo eventos después de tu confirmación. ¿Quieres que mire qué hay hoy en tu agenda y en tu correo?",
-  fr: "Outlook est connecté. Je peux lire votre messagerie et votre agenda, et je n'envoie un e-mail ou ne crée un événement qu'après votre confirmation. Voulez-vous que je regarde ce qu'il y a aujourd'hui à l'agenda et dans votre messagerie ?",
-  de: "Outlook ist verbunden. Ich kann Ihre E-Mails und Ihren Kalender lesen und sende E-Mails oder lege Termine nur nach Ihrer Bestätigung an. Soll ich nachsehen, was heute im Kalender und im Posteingang ansteht?",
+const CONNECTED: Record<Language, { base: string; firstLook: string }> = {
+  it: {
+    base: "Outlook è collegato. Posso leggere la tua posta e il tuo calendario, e inviare email o creare eventi solo dopo la tua conferma.",
+    firstLook: "Vuoi che guardi cosa c'è oggi in agenda e in posta?",
+  },
+  en: {
+    base: "Outlook is connected. I can read your mail and calendar, and I only send mail or create events after you confirm.",
+    firstLook: "Want me to look at today's calendar and inbox?",
+  },
+  es: {
+    base: "Outlook está conectado. Puedo leer tu correo y tu calendario, y solo envío correos o creo eventos después de tu confirmación.",
+    firstLook: "¿Quieres que mire qué hay hoy en tu agenda y en tu correo?",
+  },
+  fr: {
+    base: "Outlook est connecté. Je peux lire votre messagerie et votre agenda, et je n'envoie un e-mail ou ne crée un événement qu'après votre confirmation.",
+    firstLook:
+      "Voulez-vous que je regarde ce qu'il y a aujourd'hui à l'agenda et dans votre messagerie ?",
+  },
+  de: {
+    base: "Outlook ist verbunden. Ich kann Ihre E-Mails und Ihren Kalender lesen und sende E-Mails oder lege Termine nur nach Ihrer Bestätigung an.",
+    firstLook: "Soll ich nachsehen, was heute im Kalender und im Posteingang ansteht?",
+  },
 };
 
 const RECONNECT: Record<Language, (url: string) => string> = {
@@ -30,7 +46,11 @@ const ADMIN_CONSENT: Record<Language, string> = {
   de: "Outlook konnte nicht verbunden werden: Ihre Organisation verlangt, dass der IT-Administrator Ihres Unternehmens die Ada-App zuerst in Microsoft genehmigt. Bitten Sie ihn darum und schreiben Sie mir, sobald das erledigt ist, dann versuchen wir es erneut. Solange sie nicht genehmigt ist, würde ein neuer Link nicht helfen.",
 };
 
-export const outlookConnectedText = (language: Language): string => CONNECTED[language];
+/** `firstLook` false: the connect was for a request in progress, which carries on instead. */
+export const outlookConnectedText = (language: Language, firstLook = true): string =>
+  firstLook
+    ? `${CONNECTED[language].base} ${CONNECTED[language].firstLook}`
+    : CONNECTED[language].base;
 
 export const outlookReconnectText = (language: Language, url: string): string =>
   RECONNECT[language](url);

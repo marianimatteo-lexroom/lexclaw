@@ -2,7 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { whatsappWindowOpen } from "./collector.js";
 import {
   noteConnectOffer,
-  researchResultDetail,
+  noteResearchResult,
   type ConnectOfferKind,
   type ResearchResultNote,
 } from "./connect-offers.js";
@@ -567,8 +567,7 @@ export function livePushDeps(
     },
     readProfileLanguage: async () => (await (await memory())?.readProfile())?.language,
     offerConnect: (kind) => noteConnectOffer(recipient, kind),
-    noteResult: (note) =>
-      noteConnectOffer(recipient, "research_result", Date.now(), researchResultDetail(note)),
+    noteResult: (note) => noteResearchResult(recipient, note),
     log,
   };
 }

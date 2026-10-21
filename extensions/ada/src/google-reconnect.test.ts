@@ -165,8 +165,8 @@ describe("a Google sign-in Google no longer accepts is not a connection", () => 
     expect(result).toMatchObject({ ok: true, connected: false });
     expect(clearAccount).not.toHaveBeenCalled();
     // The permission upgrade is for a send or a calendar change in progress: no first look after it.
-    expect(takeRequestConnect(OWNER, NOW.getTime())).toBe(true);
-    expect(takeRequestConnect(OWNER, NOW.getTime())).toBe(false);
+    expect(takeRequestConnect(OWNER, "google", NOW.getTime())).toBe(true);
+    expect(takeRequestConnect(OWNER, "google", NOW.getTime())).toBe(false);
   });
 
   it("marks no request in progress for a plain connect or a reconnect after a dead sign-in", async () => {
@@ -177,13 +177,13 @@ describe("a Google sign-in Google no longer accepts is not a connection", () => 
       ok: true,
       connected: false,
     });
-    expect(takeRequestConnect(OWNER, NOW.getTime())).toBe(false);
+    expect(takeRequestConnect(OWNER, "google", NOW.getTime())).toBe(false);
 
     stores.account = savedAccount();
     await executeAdaGoogleConnect(OWNER, CONFIG, api, NOW, {
       fetchImpl: tokenEndpoint(invalidGrant()),
     });
-    expect(takeRequestConnect(OWNER, NOW.getTime())).toBe(false);
+    expect(takeRequestConnect(OWNER, "google", NOW.getTime())).toBe(false);
   });
 });
 

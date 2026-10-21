@@ -109,7 +109,7 @@ export async function executeAdaGoogleConnect(
     });
     if (account && prepared.ok && !prepared.connected) {
       // A saved account that lacks a permission is being upgraded for a send or a calendar change.
-      noteRequestConnect(owner, now.getTime());
+      noteRequestConnect(owner, "google", now.getTime());
     }
     return prepared;
   } catch (error) {

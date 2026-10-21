@@ -177,10 +177,9 @@ describe("ada_research for whoever asked on WhatsApp", () => {
     // The next turn's note carries the matter and the Lexroom research, so a yes builds on it.
     const [offer] = takeConnectOffers("390000000001", { inboundAtMs: Number.MAX_SAFE_INTEGER });
     expect(offer?.kind).toBe("research_result");
-    expect(JSON.parse(offer?.detail ?? "{}")).toMatchObject({
-      matterId: "matter-a",
-      researchId: "res-e2e",
-    });
+    expect(JSON.parse(offer?.detail ?? "[]")).toMatchObject([
+      { matterId: "matter-a", researchId: "res-e2e" },
+    ]);
 
     // A model that polls anyway gets no answer to say a second time, and no link to append.
     const polled = await ada.callTool("ada_research_status", {

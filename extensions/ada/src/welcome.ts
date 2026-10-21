@@ -1,5 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { readAdaEnv } from "./ada-env.js";
+import { noteConnectOffer } from "./connect-offers.js";
 import { readDeadlineIntakeConfig } from "./deadline-intake.js";
 import {
   ADA_WHATSAPP_CHANNEL,
@@ -106,6 +107,8 @@ export type WelcomeFeatures = {
   outlook: boolean;
   /** Deadline intake, and with it the hearing and deadline reminders, is on. */
   reminders: boolean;
+  /** End with the closing question: only when the welcome is the whole answer to a bare greeting. */
+  question: boolean;
 };
 
 export function welcomeText(language: Language, features: WelcomeFeatures): string {
@@ -119,7 +122,7 @@ export function welcomeText(language: Language, features: WelcomeFeatures): stri
   return [
     `${copy.intro}\n${bullets.map((bullet) => `• ${bullet}`).join("\n")}`,
     copy.privacy,
-    copy.question,
+    ...(features.question ? [copy.question] : []),
   ].join("\n\n");
 }
 
@@ -269,6 +272,7 @@ export function registerWelcomeHook(
         text: welcomeText(language, {
           outlook: outlookEnabled(),
           reminders: readDeadlineIntakeConfig(api.pluginConfig).enabled,
+          question: greeting !== undefined,
         }),
       });
       if (!sent.ok) {
@@ -282,6 +286,7 @@ export function registerWelcomeHook(
       if (greeting === undefined) {
         return undefined;
       }
+      noteConnectOffer(number, "welcome_question");
       options.onGreetingAnswered?.(ctx.sessionKey ?? event.sessionKey);
       return { handled: true };
     } catch (error) {

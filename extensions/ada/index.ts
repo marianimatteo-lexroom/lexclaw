@@ -30,6 +30,7 @@ import { registerAnnouncementRelease } from "./src/announcements.js";
 import { buildInjectedBrief } from "./src/brief.js";
 import {
   connectOfferNote,
+  markRequestConnect,
   noteConnectOffer,
   takeConnectOffers,
   takeRequestConnect,
@@ -332,18 +333,34 @@ const tools = defineToolPlugin({
       optional: true,
       factory: ownerToolFactory(
         adaLexroomConnectDefinition,
-        (args, { owner, api, config, signal }) =>
-          executeAdaLexroomConnect(owner, lexroomConnectConfigFrom(config), api, new Date(), {
-            force: args.force === true,
-            signal,
-          }),
+        async (args, { owner, api, config, signal }) =>
+          markRequestConnect(
+            owner,
+            "lexroom",
+            args.forPendingRequest,
+            await executeAdaLexroomConnect(
+              owner,
+              lexroomConnectConfigFrom(config),
+              api,
+              new Date(),
+              {
+                force: args.force === true,
+                signal,
+              },
+            ),
+          ),
       ),
     }),
     tool({
       ...adaGoogleConnectDefinition,
       optional: true,
-      factory: ownerToolFactory(adaGoogleConnectDefinition, (_args, { owner, api, config }) =>
-        executeAdaGoogleConnect(owner, config, api),
+      factory: ownerToolFactory(adaGoogleConnectDefinition, async (args, { owner, api, config }) =>
+        markRequestConnect(
+          owner,
+          "google",
+          args.forPendingRequest,
+          await executeAdaGoogleConnect(owner, config, api),
+        ),
       ),
     }),
     tool({
@@ -652,7 +669,7 @@ const entry = definePluginEntry({
             releaseMailbox: (owner, email) => releaseMailboxFromOtherOwners(api, owner, email),
             notifyConnected: async (owner, email) => {
               await openWakeWindow(api, owner);
-              const firstLook = !takeRequestConnect(owner);
+              const firstLook = !takeRequestConnect(owner, "google");
               const sent = await sendGoogleConnectedNotice({
                 config: api.config,
                 owner,
@@ -733,13 +750,15 @@ const entry = definePluginEntry({
             openStore: (owner) => openAdaLexroomAccountFromApi(api, owner),
             log: api.logger,
             notifyConnected: async (owner, email) => {
+              const firstLook = !takeRequestConnect(owner, "lexroom");
               const sent = await sendLexroomConnectedNotice({
                 config: api.config,
                 owner,
                 email,
+                firstLook,
                 loadAdapter: (channelId) => api.runtime.channel.outbound.loadAdapter(channelId),
               });
-              if (sent.ok) {
+              if (sent.ok && firstLook) {
                 noteConnectOffer(owner, "first_look", Date.now(), "lexroom");
               }
               return sent;

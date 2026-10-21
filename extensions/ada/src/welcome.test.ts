@@ -3,6 +3,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { takeConnectOffers } from "./connect-offers.js";
 import type { MemoryStore } from "./memory.js";
 import { createSqliteWorkerBackend } from "./memory.worker.js";
 import { greetingLanguage, registerWelcomeHook, welcomeEnabled, welcomeText } from "./welcome.js";
@@ -20,8 +21,9 @@ const ANNA = "393331111111";
 const BRUNO = "393332222222";
 const DEFAULT_TO = `+${LAWYER}`;
 const NOW = 1_800_000_000_000;
-const ALL = { outlook: true, reminders: true };
-const NONE = { outlook: false, reminders: false };
+const ALL = { outlook: true, reminders: true, question: true };
+const NONE = { outlook: false, reminders: false, question: true };
+const NO_QUESTION = { outlook: false, reminders: false, question: false };
 
 type BackendCommand = { type: string; input: unknown };
 type Backend = ReturnType<typeof createSqliteWorkerBackend>;
@@ -131,6 +133,12 @@ describe("first-message welcome", () => {
 
     expect(ada.textsTo(ANNA).map((entry) => entry.text)).toEqual([welcomeText("it", NONE)]);
     expect(ada.answered).toHaveBeenCalledTimes(1);
+    // Their reply to the closing question reaches the model with a note saying what it answers.
+    expect(
+      takeConnectOffers(ANNA, { inboundAtMs: NOW + 1_000, nowMs: NOW + 1_000 }).map(
+        (offer) => offer.kind,
+      ),
+    ).toEqual(["welcome_question"]);
     void ada.backend.close();
   });
 
@@ -139,8 +147,10 @@ describe("first-message welcome", () => {
 
     expect(await ada.inbound({ text: "Entro quanto devo impugnare una multa?" })).toBeUndefined();
 
-    expect(ada.textsTo(ANNA).map((entry) => entry.text)).toEqual([welcomeText("it", NONE)]);
+    expect(ada.textsTo(ANNA).map((entry) => entry.text)).toEqual([welcomeText("it", NO_QUESTION)]);
+    expect(ada.textsTo(ANNA)[0]?.text).not.toContain("?");
     expect(ada.answered).not.toHaveBeenCalled();
+    expect(takeConnectOffers(ANNA, { inboundAtMs: NOW + 1_000, nowMs: NOW + 1_000 })).toEqual([]);
     void ada.backend.close();
   });
 
@@ -309,8 +319,8 @@ describe("first-message welcome", () => {
     expect(ada.sent.map((entry) => entry.text)).toEqual([
       welcomeText("en", NONE),
       welcomeText("es", NONE),
-      welcomeText("en", NONE),
-      welcomeText("it", NONE),
+      welcomeText("en", NO_QUESTION),
+      welcomeText("it", NO_QUESTION),
     ]);
     void ada.backend.close();
   });
@@ -401,20 +411,16 @@ describe("welcome text", () => {
 
   it("leaves out Outlook and the reminder bullet when they are not available, in every language", () => {
     for (const language of LANGUAGES) {
-      const bullets = (features: { outlook: boolean; reminders: boolean }) =>
+      const bullets = (features: { outlook: boolean; reminders: boolean; question: boolean }) =>
         welcomeText(language, features)
           .split("\n\n")[0]!
           .split("\n")
           .filter((line) => line.startsWith("•"));
       expect(bullets(ALL), language).toHaveLength(4);
-      expect(bullets({ outlook: false, reminders: true }).join("\n"), language).not.toContain(
-        "Outlook",
-      );
-      expect(bullets({ outlook: false, reminders: true }), language).toHaveLength(4);
-      expect(bullets({ outlook: true, reminders: false }), language).toHaveLength(3);
-      expect(bullets({ outlook: true, reminders: false }).join("\n"), language).toContain(
-        "Outlook",
-      );
+      expect(bullets({ ...ALL, outlook: false }).join("\n"), language).not.toContain("Outlook");
+      expect(bullets({ ...ALL, outlook: false }), language).toHaveLength(4);
+      expect(bullets({ ...ALL, reminders: false }), language).toHaveLength(3);
+      expect(bullets({ ...ALL, reminders: false }).join("\n"), language).toContain("Outlook");
       const none = welcomeText(language, NONE);
       expect(none, language).not.toContain("Outlook");
       expect(bullets(NONE), language).toHaveLength(3);
@@ -449,6 +455,16 @@ describe("welcome text", () => {
     for (const language of LANGUAGES) {
       expect(welcomeText(language, ALL).split("\n\n")[1], language).toMatch(
         /avvocato|lawyer|abogado|avocat|Anwalt/u,
+      );
+    }
+  });
+
+  it("leaves the question out when a model reply follows, and still ends with the privacy line", () => {
+    for (const language of LANGUAGES) {
+      const text = welcomeText(language, { ...ALL, question: false });
+      expect(text, language).not.toContain("?");
+      expect(text, language).toBe(
+        welcomeText(language, ALL).split("\n\n").slice(0, -1).join("\n\n"),
       );
     }
   });

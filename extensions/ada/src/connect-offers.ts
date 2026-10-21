@@ -25,7 +25,8 @@ export type ConnectOfferKind =
   | "connect_reminder"
   | "digest"
   | "first_look"
-  | "research_result";
+  | "research_result"
+  | "welcome_question";
 
 export type ConnectOffer = { kind: ConnectOfferKind; detail?: string };
 
@@ -33,30 +34,57 @@ export type ConnectOffer = { kind: ConnectOfferKind; detail?: string };
 export type ResearchResultNote = { query: string; matterId?: string; researchId?: string };
 
 const RESULT_QUERY_MAX = 120;
+/** How many delivered results one number's note keeps: the most recent. */
+const RESULT_NOTES_MAX = 5;
 
-/** The detail of a `research_result` offer: the note as one string, in this process only. */
-export function researchResultDetail(note: ResearchResultNote): string {
-  return JSON.stringify({
-    ...note,
-    query: note.query.replace(/\s+/gu, " ").trim().slice(0, RESULT_QUERY_MAX),
-  });
+/** The detail of a `research_result` offer: the notes as one string, in this process only. */
+export function researchResultDetail(notes: readonly ResearchResultNote[]): string {
+  return JSON.stringify(
+    notes.slice(-RESULT_NOTES_MAX).map(({ query, matterId, researchId }) => ({
+      query: query.replace(/\s+/gu, " ").trim().slice(0, RESULT_QUERY_MAX),
+      ...(matterId ? { matterId } : {}),
+      ...(researchId ? { researchId } : {}),
+    })),
+  );
 }
 
-function researchResultLine(detail: string | undefined): string {
-  let note: Partial<ResearchResultNote> = {};
+function readResearchResults(detail: string | undefined): Partial<ResearchResultNote>[] {
   try {
-    const parsed: unknown = detail ? JSON.parse(detail) : {};
-    note =
-      typeof parsed === "object" && parsed !== null ? (parsed as Partial<ResearchResultNote>) : {};
+    const parsed: unknown = detail ? JSON.parse(detail) : [];
+    const list = Array.isArray(parsed) ? parsed : [parsed];
+    return list.filter(
+      (item): item is Partial<ResearchResultNote> => typeof item === "object" && item !== null,
+    );
   } catch {
-    note = {};
+    return [];
   }
+}
+
+function researchIds(note: Partial<ResearchResultNote>): string {
   const ids = [
     note.matterId ? `matterId ${JSON.stringify(note.matterId)}` : "",
     note.researchId ? `parentResearchId ${JSON.stringify(note.researchId)}` : "",
   ].filter(Boolean);
-  const withIds = ids.length ? ` with ${ids.join(" and ")}` : "";
-  return `- You sent them the result of a Lexroom research${note.query ? ` on ${JSON.stringify(note.query)}` : ""} as a message of its own, ending with an offer to turn it into a draft. That text is not in the conversation and you cannot read it, so never claim to know what it said. If their message says yes in any form, start that draft: ask in one short question for what is missing, and call ada_draft${withIds}, with confirmed true only after they agree. If they ask a follow-up about the result, either ask what they need to know, or, for a new question on the same matter, call ada_research${withIds}; never research without a question from them. If their message is about something else, answer that.`;
+  return ids.length ? ` with ${ids.join(" and ")}` : "";
+}
+
+function researchResultLine(detail: string | undefined): string {
+  const notes = readResearchResults(detail);
+  const [only] = notes;
+  const many = notes.length > 1;
+  const sent = many
+    ? `the results of ${notes.length} Lexroom researches, each as a message of its own and each ending with an offer to turn it into a draft:\n${notes
+        .map(
+          (note, index) =>
+            `  ${index + 1}. ${note.query ? JSON.stringify(note.query) : "(no question recorded)"}${researchIds(note)}`,
+        )
+        .join("\n")}`
+    : `the result of a Lexroom research${only?.query ? ` on ${JSON.stringify(only.query)}` : ""} as a message of its own, ending with an offer to turn it into a draft`;
+  const which = many
+    ? " If a bare yes or a follow-up could mean more than one of them, ask which one first, then use the ids of that one."
+    : "";
+  const withIds = many ? " with the ids of that research" : researchIds(only ?? {});
+  return `- You sent them ${sent}. That text is not in the conversation and you cannot read it, so never claim to know what it said.${which} If their message says yes in any form, start that draft: ask in one short question for what is missing, and call ada_draft${withIds}, with confirmed true only after they agree. If they ask a follow-up about a result, either ask what they need to know, or, for a new question on the same matter, call ada_research${withIds}; never research without a question from them. If their message is about something else, answer that.`;
 }
 
 type Offer = { at: number; detail?: string; consumedByRunId?: string };
@@ -80,6 +108,29 @@ export function noteConnectOffer(
   if (offers.size > MAX_OWNERS) {
     offers.delete(offers.keys().next().value ?? owner);
   }
+}
+
+/**
+ * A delivered research joins the results `owner` has not yet answered, newest last and capped, so
+ * several released together are all remembered. A run that already read the earlier ones starts
+ * the list afresh.
+ */
+export function noteResearchResult(
+  owner: string,
+  note: ResearchResultNote,
+  nowMs = Date.now(),
+): void {
+  const earlier = offers.get(owner)?.get("research_result");
+  const kept =
+    earlier && earlier.consumedByRunId === undefined && nowMs - earlier.at <= OFFER_TTL_MS
+      ? readResearchResults(earlier.detail)
+      : [];
+  noteConnectOffer(
+    owner,
+    "research_result",
+    nowMs,
+    researchResultDetail([...(kept as ResearchResultNote[]), note]),
+  );
 }
 
 /**
@@ -127,7 +178,10 @@ export const CONNECT_FEATURE_NAMES: Record<ConnectFeature, { account: string; ca
 };
 
 const NAMES: Record<
-  Exclude<ConnectOfferKind, "digest" | "connect_reminder" | "first_look" | "research_result">,
+  Exclude<
+    ConnectOfferKind,
+    "digest" | "connect_reminder" | "first_look" | "research_result" | "welcome_question"
+  >,
   { account: string; call: string }
 > = {
   lexroom: { account: "their Lexroom account", call: "ada_lexroom_connect" },
@@ -151,24 +205,55 @@ function reminderLine(detail: string | undefined): string {
 const REQUEST_CONNECT_TTL_MS = 35 * 60 * 1000;
 const requestConnects = new Map<string, number>();
 
+export type RequestConnectFeature = "google" | "outlook" | "lexroom";
+
 /**
- * A connect link was issued for a request already in progress (an account that lacks the
- * permission a mail or a calendar change needs), so the confirmation that follows continues that
- * request instead of offering a first look. Kept in this process only, for the life of the link.
+ * A connect link was issued for a request already in progress (the model says so, or an account
+ * lacks the permission a mail or a calendar change needs), so the confirmation that follows
+ * continues that request instead of offering a first look. Kept in this process only, for the
+ * life of the link.
  */
-export function noteRequestConnect(owner: string, nowMs = Date.now()): void {
-  requestConnects.delete(owner);
-  requestConnects.set(owner, nowMs);
+export function noteRequestConnect(
+  owner: string,
+  feature: RequestConnectFeature,
+  nowMs = Date.now(),
+): void {
+  const key = `${owner}:${feature}`;
+  requestConnects.delete(key);
+  requestConnects.set(key, nowMs);
   if (requestConnects.size > MAX_OWNERS) {
-    requestConnects.delete(requestConnects.keys().next().value ?? owner);
+    requestConnects.delete(requestConnects.keys().next().value ?? key);
   }
 }
 
 /** Whether the connect that just finished was for a request in progress; reads it once. */
-export function takeRequestConnect(owner: string, nowMs = Date.now()): boolean {
-  const at = requestConnects.get(owner);
-  requestConnects.delete(owner);
+export function takeRequestConnect(
+  owner: string,
+  feature: RequestConnectFeature,
+  nowMs = Date.now(),
+): boolean {
+  const key = `${owner}:${feature}`;
+  const at = requestConnects.get(key);
+  requestConnects.delete(key);
   return at !== undefined && nowMs - at <= REQUEST_CONNECT_TTL_MS;
+}
+
+/**
+ * The connect tools' `forPendingRequest` argument: when the model connects an account to carry out
+ * something the person already asked for, a link in the result marks the connect as request-driven.
+ * The result is returned unchanged.
+ */
+export function markRequestConnect<T>(
+  owner: string,
+  feature: RequestConnectFeature,
+  forPendingRequest: boolean | undefined,
+  result: T,
+): T {
+  const issued = result as { ok?: unknown; connected?: unknown } | null;
+  if (forPendingRequest === true && issued?.ok === true && issued.connected === false) {
+    noteRequestConnect(owner, feature);
+  }
+  return result;
 }
 
 /** What a first look does for each account that Ada's connected message offers one for. */
@@ -205,11 +290,13 @@ export function connectOfferNote(offers: readonly ConnectOffer[]): string | unde
         ? reminderLine(detail)
         : kind === "first_look"
           ? firstLookLine(detail)
-          : kind === "research_result"
-            ? researchResultLine(detail)
-            : kind === "lexroom_nudge"
-              ? `- Your last reply may have opened with an offer to connect ${NAMES[kind].account}, with its link or an offer to send it; ignore this if it did not. If their message says yes in any form and you did not send the link, call ${NAMES[kind].call} and send it. If it says no in any form, drop it and call ada_set_preference with key ${LEXROOM_OFFER_DECLINED_KEY} and one short sentence saying they declined connecting Lexroom, then do not bring it up again.`
-              : `- You asked whether they want to connect ${NAMES[kind].account}. If their message says yes in any form, call ${NAMES[kind].call} and send the link. If it says no, drop it and do not ask again.`,
+          : kind === "welcome_question"
+            ? "- You welcomed them and asked what they are working on; that welcome is not in the conversation. Read their message as the answer: help with what they say, and do not repeat the welcome or the question."
+            : kind === "research_result"
+              ? researchResultLine(detail)
+              : kind === "lexroom_nudge"
+                ? `- Your last reply may have opened with an offer to connect ${NAMES[kind].account}, with its link or an offer to send it; ignore this if it did not. If their message says yes in any form and you did not send the link, call ${NAMES[kind].call} and send it. If it says no in any form, drop it and call ada_set_preference with key ${LEXROOM_OFFER_DECLINED_KEY} and one short sentence saying they declined connecting Lexroom, then do not bring it up again.`
+                : `- You asked whether they want to connect ${NAMES[kind].account}. If their message says yes in any form, call ${NAMES[kind].call} and send the link. If it says no, drop it and do not ask again.`,
   );
   if (lines.every((line) => !line)) {
     return undefined;
