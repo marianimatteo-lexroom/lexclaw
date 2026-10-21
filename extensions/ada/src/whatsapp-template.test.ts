@@ -286,6 +286,15 @@ describe("sendRequestReadyNotice", () => {
     expect(await run({}, none)).toBeNull();
     expect(none).not.toHaveBeenCalled();
   });
+
+  it("returns the refusal, not null, when the request template fails and there is no digest template", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(400));
+    expect(await run({ requestReadyTemplate: BOTH.requestReadyTemplate }, fetchImpl)).toEqual({
+      ok: false,
+      error: "kapso template returned HTTP 400",
+    });
+    expect(sentTemplates(fetchImpl)).toEqual(["ada_request_ready"]);
+  });
 });
 
 describe("warnDigestReadyTemplateUnset", () => {

@@ -105,7 +105,7 @@ describe("the assistant's name", () => {
     for (const language of LANGUAGES) {
       messages.push(
         researchAckText(language),
-        welcomeText(language),
+        welcomeText(language, { outlook: true, reminders: true }),
         renderGoogleConnectText(language, "https://example.com/connect"),
         renderGoogleConnectText(language, "https://example.com/connect", "expired"),
         renderGoogleConnectText(language, "https://example.com/connect", "send"),

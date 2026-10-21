@@ -607,6 +607,9 @@ describe("the live window check", () => {
       expect(await withTemplates({ digestReadyTemplate: digest }).nudge()).toBe("sent");
       expect(await withTemplates({}).nudge()).toBe("unset");
       expect(names()).toEqual(["ada_request_ready", "ada_digest_ready"]);
+
+      fetchImpl.mockImplementation(async () => new Response("{}", { status: 400 }));
+      expect(await withTemplates({ requestReadyTemplate: request }).nudge()).toBe("failed");
     } finally {
       vi.unstubAllGlobals();
     }

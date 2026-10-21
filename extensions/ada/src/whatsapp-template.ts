@@ -168,7 +168,8 @@ export async function sendDigestReadyNotice(params: {
 /**
  * Tell one number that a result they asked for is waiting, so a reply can reopen their window.
  * It uses the UTILITY `requestReadyTemplate`, and falls back to the digest template, the earlier
- * behavior, when that one is not configured or Kapso refuses it. Null: neither is configured.
+ * behavior, when that one is not configured or Kapso refuses it. When Kapso refuses it and there
+ * is no digest template, the refusal is returned. Null: neither template is configured.
  */
 export async function sendRequestReadyNotice(params: {
   api: Pick<OpenClawPluginApi, "config" | "logger" | "pluginConfig">;
@@ -176,15 +177,17 @@ export async function sendRequestReadyNotice(params: {
   fetchImpl?: typeof fetch;
 }): Promise<KapsoTemplateResult | null> {
   const request = readRequestReadyTemplate(params.api.pluginConfig);
+  let refused: KapsoTemplateResult | undefined;
   if (request) {
     const sent = await sendReadyNotice({ ...params, template: request }, "request-ready");
     if (sent.ok) {
       return sent;
     }
+    refused = sent;
   }
   const digest = readDigestReadyTemplate(params.api.pluginConfig);
   if (!digest) {
-    return null;
+    return refused ?? null;
   }
   return await sendReadyNotice({ ...params, template: digest }, "digest-ready");
 }

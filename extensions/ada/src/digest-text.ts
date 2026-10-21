@@ -334,6 +334,14 @@ function deadlineLine(line: DigestDeadlineLine, words: Words): string {
   return parts.join(" ");
 }
 
+/** The deadline line of the top research target when its brief is already stored: the closing question resends it. */
+function storedBriefLine(plan: DeliverablePlan): DigestDeadlineLine | undefined {
+  const [research] = plan.nextSteps;
+  return plan.deadlines?.find(
+    (line) => line.matterId === research.matterId && line.status === "tracked" && line.briefReady,
+  );
+}
+
 /**
  * The one WhatsApp message for a ranked plan: the items, the numbered deadlines, then a single
  * closing question that proposes the first step. How to answer is not spelled out per line: the
@@ -354,9 +362,7 @@ export function renderDigestText(
       `${words.deadlines}\n${plan.deadlines.map((line) => deadlineLine(line, words)).join("\n")}`,
     );
   }
-  const stored = plan.deadlines?.find(
-    (line) => line.matterId === research.matterId && line.status === "tracked" && line.briefReady,
-  );
+  const stored = storedBriefLine(plan);
   const open = new Set([
     ...plan.items.map((item) => item.matterId),
     ...(plan.deadlines ?? []).map((line) => line.matterId),
@@ -418,15 +424,20 @@ const OFFER_DEADLINES_MAX = 10;
 export function digestOfferDetail(plan: DeliverablePlan): string {
   const label = (text: string) => text.trim().slice(0, OFFER_LABEL_MAX);
   const [research, draft] = plan.nextSteps;
+  const stored = storedBriefLine(plan);
   const lines = [
-    `  - the closing question: a Lexroom research for ${label(research.matterLabel)}; a yes starts it`,
+    stored
+      ? `  - the closing question: sending the stored brief of ${label(research.matterLabel)} again; a bare yes means ada_deadline_reply with brief for item ${stored.no}, not a new research`
+      : `  - the closing question: a Lexroom research for ${label(research.matterLabel)}; a bare yes starts it`,
     `  - not offered in the message: after a research, a draft for ${label(draft.matterLabel)}, only with their ok`,
   ];
   for (const line of (plan.deadlines ?? []).slice(0, OFFER_DEADLINES_MAX)) {
     const offered =
-      line.status === "tracked" && line.briefReady
-        ? "send the stored brief again"
-        : "start the Lexroom research";
+      line.status === "candidate"
+        ? "marked to be confirmed: confirming it means ada_deadline_reply with track (confirm tracking only, no research); research only when they ask for it"
+        : line.briefReady
+          ? "send the stored brief again (ada_deadline_reply with brief)"
+          : "start the Lexroom research (ada_deadline_reply with research)";
     lines.push(
       `  - item ${line.no}: ${label(line.matterLabel)}, ${line.type} ${line.due}; offered: ${offered}, or skip it`,
     );

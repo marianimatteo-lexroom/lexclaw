@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { connectOfferNote } from "./connect-offers.js";
+import { connectOfferNote, noteConnectOffer, takeConnectOffers } from "./connect-offers.js";
 import { googleConnectedText } from "./google-notify.js";
 import { granolaConnectedText } from "./granola-text.js";
 import { lexroomConnectedText } from "./lexroom-tools.js";
@@ -42,5 +42,15 @@ describe("a connected confirmation", () => {
     const result = connectOfferNote([{ kind: "research_result", detail: "recesso locazione" }]);
     expect(result).toContain('Lexroom research on "recesso locazione"');
     expect(result).toContain("ada_draft");
+    expect(result).not.toContain("run ada_research again");
+    expect(result).toContain("start a new research only when they ask a new question");
+  });
+
+  it("keeps only the latest connect's first look when two connect close together", () => {
+    const owner = "393339990001";
+    noteConnectOffer(owner, "first_look", 1_000, "google");
+    noteConnectOffer(owner, "first_look", 2_000, "granola");
+    const taken = takeConnectOffers(owner, { inboundAtMs: 3_000, nowMs: 3_000 });
+    expect(taken).toEqual([{ kind: "first_look", detail: "granola" }]);
   });
 });

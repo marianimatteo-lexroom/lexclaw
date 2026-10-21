@@ -1,5 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { readAdaEnv } from "./ada-env.js";
+import { readDeadlineIntakeConfig } from "./deadline-intake.js";
 import {
   ADA_WHATSAPP_CHANNEL,
   isConfiguredLawyerSender,
@@ -7,6 +8,7 @@ import {
 } from "./google-notify.js";
 import { logInboundSkip, maskNumber } from "./inbound-log.js";
 import { openAdaRegistryFromApi } from "./memory.js";
+import { outlookEnabled } from "./outlook-oauth.js";
 import { detectLanguage, type Language } from "./research-link-outbound.js";
 import { senderNumber } from "./research-push.js";
 import { normalizeWhatsAppNumber } from "./whatsapp-number.js";
@@ -22,42 +24,103 @@ import { normalizeWhatsAppNumber } from "./whatsapp-number.js";
  * lawyer is never welcomed.
  */
 
-/**
- * Each welcome is short and in the first person: who Ada is, what she can do in four bullets
- * (legal questions and Lexroom research, mail and calendar, Granola notes, deadline reminders),
- * one line on accounts and the standing disclaimer, and one closing question that starts the
- * conversation.
- */
-const WELCOMES: Record<Language, string> = {
-  it: [
-    "Sono Ada, l'assistente legale di Lexroom su WhatsApp. Posso:\n• rispondere a domande giuridiche e fare ricerche su Lexroom\n• leggere la tua posta (Gmail o Outlook) e il calendario\n• consultare le note delle tue riunioni su Granola\n• ricordarti udienze e scadenze",
-    "I tuoi account li collego solo quando serve, e le mie risposte non sostituiscono quelle di un avvocato. Le chat di ognuno restano private.",
-    "Su cosa stai lavorando adesso?",
-  ].join("\n\n"),
-  en: [
-    "I'm Ada, Lexroom's legal assistant on WhatsApp. I can:\n• answer legal questions and run research on Lexroom\n• read your email (Gmail or Outlook) and calendar\n• look through your meeting notes in Granola\n• remind you of hearings and deadlines",
-    "I only connect your accounts when it's needed, and my answers don't replace a lawyer. Everyone's chats stay private.",
-    "What's on your plate right now?",
-  ].join("\n\n"),
-  es: [
-    "Soy Ada, la asistente legal de Lexroom en WhatsApp. Puedo:\n• responder preguntas jurídicas y hacer investigaciones en Lexroom\n• leer tu correo (Gmail u Outlook) y tu calendario\n• consultar las notas de tus reuniones en Granola\n• recordarte audiencias y plazos",
-    "Solo conecto tus cuentas cuando hace falta, y mis respuestas no sustituyen a un abogado. Los chats de cada usuario son privados.",
-    "¿En qué estás trabajando ahora mismo?",
-  ].join("\n\n"),
-  fr: [
-    "Je suis Ada, l'assistante juridique de Lexroom sur WhatsApp. Je peux :\n• répondre à des questions juridiques et faire des recherches sur Lexroom\n• lire votre messagerie (Gmail ou Outlook) et votre agenda\n• consulter les notes de vos réunions dans Granola\n• vous rappeler audiences et échéances",
-    "Je ne connecte vos comptes que lorsque c'est nécessaire, et mes réponses ne remplacent pas un avocat. Les conversations de chaque utilisateur restent privées.",
-    "Sur quoi travaillez-vous en ce moment ?",
-  ].join("\n\n"),
-  de: [
-    "Ich bin Ada, die juristische Assistentin von Lexroom auf WhatsApp. Ich kann:\n• Rechtsfragen beantworten und Recherchen in Lexroom durchführen\n• Ihre E-Mails (Gmail oder Outlook) und Ihren Kalender lesen\n• Ihre Besprechungsnotizen in Granola durchsehen\n• Sie an Termine und Fristen erinnern",
-    "Ihre Konten verbinde ich nur, wenn es nötig ist, und meine Antworten ersetzen keinen Anwalt. Die Chats jedes Nutzers bleiben privat.",
-    "Woran arbeiten Sie gerade?",
-  ].join("\n\n"),
+type WelcomeCopy = {
+  intro: string;
+  legal: string;
+  /** The mail and calendar bullet, with the provider list as its argument. */
+  mail: (providers: string) => string;
+  providers: { gmail: string; gmailOutlook: string };
+  notes: string;
+  reminders: string;
+  privacy: string;
+  question: string;
 };
 
-export function welcomeText(language: Language): string {
-  return WELCOMES[language];
+/**
+ * Each welcome is short and in the first person: who Ada is, what she can do in a few bullets
+ * (legal questions and Lexroom research, mail and calendar, Granola notes, and deadline reminders
+ * when deadline intake is on), one line on accounts and the standing disclaimer, and one closing
+ * question that starts the conversation. Outlook is named only when it is available.
+ */
+const WELCOMES: Record<Language, WelcomeCopy> = {
+  it: {
+    intro: "Sono Ada, l'assistente legale di Lexroom su WhatsApp. Posso:",
+    legal: "rispondere a domande giuridiche e fare ricerche su Lexroom",
+    mail: (providers) => `leggere la tua posta (${providers}) e il calendario`,
+    providers: { gmail: "Gmail", gmailOutlook: "Gmail o Outlook" },
+    notes: "consultare le note delle tue riunioni su Granola",
+    reminders: "ricordarti udienze e scadenze",
+    privacy:
+      "I tuoi account li collego solo quando serve, e le mie risposte non sostituiscono quelle di un avvocato. Le chat di ognuno restano private.",
+    question: "Su cosa stai lavorando adesso?",
+  },
+  en: {
+    intro: "I'm Ada, Lexroom's legal assistant on WhatsApp. I can:",
+    legal: "answer legal questions and run research on Lexroom",
+    mail: (providers) => `read your email (${providers}) and calendar`,
+    providers: { gmail: "Gmail", gmailOutlook: "Gmail or Outlook" },
+    notes: "look through your meeting notes in Granola",
+    reminders: "remind you of hearings and deadlines",
+    privacy:
+      "I only connect your accounts when it's needed, and my answers don't replace a lawyer. Everyone's chats stay private.",
+    question: "What's on your plate right now?",
+  },
+  es: {
+    intro: "Soy Ada, la asistente legal de Lexroom en WhatsApp. Puedo:",
+    legal: "responder preguntas jurídicas y hacer investigaciones en Lexroom",
+    mail: (providers) => `leer tu correo (${providers}) y tu calendario`,
+    providers: { gmail: "Gmail", gmailOutlook: "Gmail u Outlook" },
+    notes: "consultar las notas de tus reuniones en Granola",
+    reminders: "recordarte audiencias y plazos",
+    privacy:
+      "Solo conecto tus cuentas cuando hace falta, y mis respuestas no sustituyen a un abogado. Los chats de cada usuario son privados.",
+    question: "¿En qué estás trabajando ahora mismo?",
+  },
+  fr: {
+    intro: "Je suis Ada, l'assistante juridique de Lexroom sur WhatsApp. Je peux :",
+    legal: "répondre à des questions juridiques et faire des recherches sur Lexroom",
+    mail: (providers) => `lire votre messagerie (${providers}) et votre agenda`,
+    providers: { gmail: "Gmail", gmailOutlook: "Gmail ou Outlook" },
+    notes: "consulter les notes de vos réunions dans Granola",
+    reminders: "vous rappeler audiences et échéances",
+    privacy:
+      "Je ne connecte vos comptes que lorsque c'est nécessaire, et mes réponses ne remplacent pas un avocat. Les conversations de chaque utilisateur restent privées.",
+    question: "Sur quoi travaillez-vous en ce moment ?",
+  },
+  de: {
+    intro: "Ich bin Ada, die juristische Assistentin von Lexroom auf WhatsApp. Ich kann:",
+    legal: "Rechtsfragen beantworten und Recherchen in Lexroom durchführen",
+    mail: (providers) => `Ihre E-Mails (${providers}) und Ihren Kalender lesen`,
+    providers: { gmail: "Gmail", gmailOutlook: "Gmail oder Outlook" },
+    notes: "Ihre Besprechungsnotizen in Granola durchsehen",
+    reminders: "Sie an Termine und Fristen erinnern",
+    privacy:
+      "Ihre Konten verbinde ich nur, wenn es nötig ist, und meine Antworten ersetzen keinen Anwalt. Die Chats jedes Nutzers bleiben privat.",
+    question: "Woran arbeiten Sie gerade?",
+  },
+};
+
+/** What this deployment can actually do, so the welcome promises nothing Ada cannot deliver. */
+export type WelcomeFeatures = {
+  /** Outlook can be connected (`outlookEnabled`). */
+  outlook: boolean;
+  /** Deadline intake, and with it the hearing and deadline reminders, is on. */
+  reminders: boolean;
+};
+
+export function welcomeText(language: Language, features: WelcomeFeatures): string {
+  const copy = WELCOMES[language];
+  const bullets = [
+    copy.legal,
+    copy.mail(features.outlook ? copy.providers.gmailOutlook : copy.providers.gmail),
+    copy.notes,
+    ...(features.reminders ? [copy.reminders] : []),
+  ];
+  return [
+    `${copy.intro}\n${bullets.map((bullet) => `• ${bullet}`).join("\n")}`,
+    copy.privacy,
+    copy.question,
+  ].join("\n\n");
 }
 
 /** `ADA_WELCOME_ENABLED=false` (or 0, off, no) turns the welcome off; it is on by default. */
@@ -203,7 +266,10 @@ export function registerWelcomeHook(
       const sent = await sendAdaWhatsAppText({
         api,
         to: `+${number}`,
-        text: welcomeText(language),
+        text: welcomeText(language, {
+          outlook: outlookEnabled(),
+          reminders: readDeadlineIntakeConfig(api.pluginConfig).enabled,
+        }),
       });
       if (!sent.ok) {
         await memory.releaseWelcome(number);
