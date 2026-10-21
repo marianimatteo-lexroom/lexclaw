@@ -7,11 +7,11 @@ import {
   connectOfferNote,
   noteConnectOffer,
   researchResultDetail,
-  markRequestConnect,
   noteRequestConnect,
   noteResearchResult,
   takeConnectOffers,
   takeRequestConnect,
+  withRequestConnect,
 } from "./connect-offers.js";
 import { googleConnectedText } from "./google-notify.js";
 import { granolaConnectedText } from "./granola-text.js";
@@ -127,20 +127,41 @@ describe("a connected confirmation", () => {
     expect(takeRequestConnect(anna, "google", 1_000 + 36 * 60_000)).toBe(false);
   });
 
-  it("marks a connect as request-driven only when the model says so and a link was issued", () => {
+  it("marks a connect as request-driven only when the model says so and a link was issued", async () => {
     const ask = { ok: true, connected: false, ask: { url: "https://x.test/l/1" } };
+    const connected = { ok: true, connected: true, email: "a@b.c" };
     const owner = "393339990012";
     for (const feature of ["google", "outlook", "lexroom"] as const) {
-      expect(markRequestConnect(owner, feature, undefined, ask)).toBe(ask);
+      expect(await withRequestConnect(owner, feature, undefined, async () => ask)).toBe(ask);
       expect(takeRequestConnect(owner, feature)).toBe(false);
-      markRequestConnect(owner, feature, false, ask);
+      await withRequestConnect(owner, feature, false, async () => ask);
       expect(takeRequestConnect(owner, feature)).toBe(false);
-      markRequestConnect(owner, feature, true, { ok: true, connected: true, email: "a@b.c" });
-      markRequestConnect(owner, feature, true, { ok: false, error: "no" });
+      await withRequestConnect(owner, feature, true, async () => connected);
+      await withRequestConnect(owner, feature, true, async () => ({ ok: false, error: "no" }));
       expect(takeRequestConnect(owner, feature)).toBe(false);
-      expect(markRequestConnect(owner, feature, true, ask)).toBe(ask);
+      expect(await withRequestConnect(owner, feature, true, async () => ask)).toBe(ask);
       expect(takeRequestConnect(owner, feature)).toBe(true);
     }
+  });
+
+  it("clears a leftover request flag when a later connect is plain, so it gets the first look", async () => {
+    const ask = { ok: true, connected: false, ask: { url: "https://x.test/l/2" } };
+    const owner = "393339990013";
+    for (const plain of [false, undefined]) {
+      await withRequestConnect(owner, "google", true, async () => ask);
+      await withRequestConnect(owner, "google", plain, async () => ask);
+      expect(takeRequestConnect(owner, "google")).toBe(false);
+    }
+    // Another account's flag is left alone.
+    await withRequestConnect(owner, "outlook", true, async () => ask);
+    await withRequestConnect(owner, "google", undefined, async () => ask);
+    expect(takeRequestConnect(owner, "outlook")).toBe(true);
+    // A flag the tool sets itself while it runs (a permission upgrade) survives a plain call.
+    await withRequestConnect(owner, "google", undefined, async () => {
+      noteRequestConnect(owner, "google");
+      return ask;
+    });
+    expect(takeRequestConnect(owner, "google")).toBe(true);
   });
 
   it("offers forPendingRequest on the Google, Outlook and Lexroom connect tools and says what it is for", () => {

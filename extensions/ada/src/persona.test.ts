@@ -204,6 +204,8 @@ describe("Ada's persona", () => {
     it("offers one next step after a result, ranks what is open, and adds one 'while I have you' line", () => {
       expect(ADA_PERSONA).toMatch(/offer the single most useful next action/u);
       expect(ADA_PERSONA).toMatch(/one offer, never a menu/u);
+      expect(ADA_PERSONA).not.toMatch(/add the deadline/u);
+      expect(ADA_PERSONA).toMatch(/create the calendar event only when a calendar is connected/u);
       expect(ADA_PERSONA).toMatch(/read ada_todo_list and ada_deadline_list first/u);
       expect(ADA_PERSONA).toMatch(/at most five numbered items/u);
       expect(ADA_PERSONA).toMatch(/say plainly when nothing else needs them/u);

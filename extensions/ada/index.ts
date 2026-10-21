@@ -30,7 +30,7 @@ import { registerAnnouncementRelease } from "./src/announcements.js";
 import { buildInjectedBrief } from "./src/brief.js";
 import {
   connectOfferNote,
-  markRequestConnect,
+  withRequestConnect,
   noteConnectOffer,
   takeConnectOffers,
   takeRequestConnect,
@@ -334,20 +334,11 @@ const tools = defineToolPlugin({
       factory: ownerToolFactory(
         adaLexroomConnectDefinition,
         async (args, { owner, api, config, signal }) =>
-          markRequestConnect(
-            owner,
-            "lexroom",
-            args.forPendingRequest,
-            await executeAdaLexroomConnect(
-              owner,
-              lexroomConnectConfigFrom(config),
-              api,
-              new Date(),
-              {
-                force: args.force === true,
-                signal,
-              },
-            ),
+          withRequestConnect(owner, "lexroom", args.forPendingRequest, () =>
+            executeAdaLexroomConnect(owner, lexroomConnectConfigFrom(config), api, new Date(), {
+              force: args.force === true,
+              signal,
+            }),
           ),
       ),
     }),
@@ -355,11 +346,8 @@ const tools = defineToolPlugin({
       ...adaGoogleConnectDefinition,
       optional: true,
       factory: ownerToolFactory(adaGoogleConnectDefinition, async (args, { owner, api, config }) =>
-        markRequestConnect(
-          owner,
-          "google",
-          args.forPendingRequest,
-          await executeAdaGoogleConnect(owner, config, api),
+        withRequestConnect(owner, "google", args.forPendingRequest, () =>
+          executeAdaGoogleConnect(owner, config, api),
         ),
       ),
     }),

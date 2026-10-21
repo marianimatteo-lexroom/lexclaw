@@ -1,6 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { TSchema } from "typebox";
-import { markRequestConnect, noteConnectOffer, takeRequestConnect } from "./connect-offers.js";
+import { noteConnectOffer, takeRequestConnect, withRequestConnect } from "./connect-offers.js";
 import { writeAdaConnectPage } from "./google-callback.js";
 import { sendAdaWhatsAppText } from "./google-notify.js";
 import { registerAdaHttpRoute } from "./http-paths.js";
@@ -57,11 +57,8 @@ function outlookTool<P extends TSchema>(definition: Definition<P>, run: OwnerToo
 /** The model-facing tools that connect, read and write one person's own Outlook mail and calendar. */
 export const adaOutlookTools = {
   connect: outlookTool(adaOutlookConnectDefinition, async (args, { owner, api, config, signal }) =>
-    markRequestConnect(
-      owner,
-      "outlook",
-      args.forPendingRequest,
-      await executeAdaOutlookConnect(owner, outlookConnectConfigFrom(config), api, args, signal),
+    withRequestConnect(owner, "outlook", args.forPendingRequest, () =>
+      executeAdaOutlookConnect(owner, outlookConnectConfigFrom(config), api, args, signal),
     ),
   ),
   readInbox: outlookTool(adaOutlookReadInboxDefinition, (args, { owner, api, signal }) =>

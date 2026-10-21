@@ -246,16 +246,20 @@ export function takeRequestConnect(
 }
 
 /**
- * The connect tools' `forPendingRequest` argument: when the model connects an account to carry out
- * something the person already asked for, a link in the result marks the connect as request-driven.
- * The result is returned unchanged.
+ * Runs a connect tool with its `forPendingRequest` argument. A leftover flag from an earlier link
+ * is cleared first, so a later plain connect gets its first look; the flag is set again only when
+ * the model says the connect carries out something the person already asked for and a link is
+ * issued. A flag the tool sets itself while it runs (a permission upgrade) is kept. The result is
+ * returned unchanged.
  */
-export function markRequestConnect<T>(
+export async function withRequestConnect<T>(
   owner: string,
   feature: RequestConnectFeature,
   forPendingRequest: boolean | undefined,
-  result: T,
-): T {
+  run: () => Promise<T>,
+): Promise<T> {
+  takeRequestConnect(owner, feature);
+  const result = await run();
   const issued = result as { ok?: unknown; connected?: unknown } | null;
   if (forPendingRequest === true && issued?.ok === true && issued.connected === false) {
     noteRequestConnect(owner, feature);
