@@ -250,6 +250,32 @@ const tools = defineToolPlugin({
           },
         ),
       ),
+      briefReadyTemplate: Type.Optional(
+        Type.Object(
+          {
+            name: Type.String({
+              minLength: 1,
+              description: "Approved WhatsApp utility template name, for example ada_brief_ready.",
+            }),
+            language: Type.String({
+              minLength: 1,
+              description:
+                "Default language code, used when the number's own language is not in languages.",
+            }),
+            languages: Type.Optional(
+              Type.Array(Type.String({ minLength: 1 }), {
+                description:
+                  "Every language the template is approved in, for example it and en. The number's profile language is used when listed.",
+              }),
+            ),
+          },
+          {
+            additionalProperties: false,
+            description:
+              "Utility template sent once a day when the morning brief is owed but the WhatsApp 24-hour window is closed. Unset: digestReadyTemplate is used.",
+          },
+        ),
+      ),
     },
     { additionalProperties: false },
   ),

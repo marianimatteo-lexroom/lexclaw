@@ -69,7 +69,7 @@ describe("recordSenderInbound", () => {
     openAdaMemoryIfExistsFromApi.mockImplementation(async (_api: unknown, owner: string) =>
       owner === "390000000002"
         ? null
-        : { readWake: async () => ({ heldPlanJson: null }), writeWake },
+        : { readWake: async () => ({ heldPlanJson: null, heldBriefDay: null }), writeWake },
     );
   });
 

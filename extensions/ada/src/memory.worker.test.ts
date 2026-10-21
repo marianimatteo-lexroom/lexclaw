@@ -199,6 +199,20 @@ describe("ada memory store", () => {
         lastDigestAtMs: null,
         lastMorningBriefAtMs: null,
         heldPlanAtMs: null,
+        heldBriefDay: null,
+      });
+      backend.execute({ type: "writeWake", input: { heldBriefDay: "2026-10-06" } });
+      expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
+        lastCollectAtMs: 5,
+        heldBriefDay: "2026-10-06",
+      });
+      backend.execute({ type: "writeWake", input: { lastCollectAtMs: 6 } });
+      expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
+        heldBriefDay: "2026-10-06",
+      });
+      backend.execute({ type: "writeWake", input: { heldBriefDay: null } });
+      expect(backend.execute({ type: "readWake", input: undefined })).toMatchObject({
+        heldBriefDay: null,
       });
     } finally {
       void backend.close();

@@ -1,8 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CollectResult } from "./collector.js";
-import type { DigestPlan } from "./digest.js";
+import { clearSentDigests } from "./dispatch-digest.js";
 import type { InboxMessage } from "./google-api.js";
 import type { CalendarSnapshotRow, GmailSnapshotRow, WakeState } from "./memory-contract.js";
 import type { MemoryStore } from "./memory.js";
@@ -13,6 +12,7 @@ import {
   registerAdaService,
   runAdaCollectPass,
 } from "./service.js";
+import type { KapsoTemplate } from "./whatsapp-template.js";
 
 const google = vi.hoisted(() => ({
   loadAccessToken: vi.fn(),
@@ -43,42 +43,6 @@ vi.mock("./google-account.js", () => ({
   openAdaGoogleAccountDbFromApi: async () => ({ listOwners: async () => [] }),
 }));
 
-const plan: DigestPlan = {
-  deliver: true,
-  items: [
-    {
-      matterId: "verdi",
-      matterLabel: "Verdi",
-      kind: "deadline",
-      summary: "Hearing today",
-      cost: 100,
-      dueAt: "2026-10-06T14:00:00.000Z",
-    },
-  ],
-  nextSteps: [
-    {
-      action: "research",
-      matterId: "verdi",
-      matterLabel: "Verdi",
-      instruction: "Research",
-    },
-    {
-      action: "draft_if_confirmed",
-      matterId: "verdi",
-      matterLabel: "Verdi",
-      instruction: "Draft",
-    },
-  ],
-};
-
-const deliverable: CollectResult = {
-  plan,
-  signals: [],
-  gmailSnapshot: [],
-  calendarSnapshot: [],
-  urgent: true,
-};
-
 const LAWYER_NUMBER = "+390000000000";
 const OWNER = "390000000000";
 const HOST_CONFIG = { channels: { "kapso-whatsapp": { defaultTo: LAWYER_NUMBER } } };
@@ -102,7 +66,7 @@ const BIANCHI_MAIL: InboxMessage = {
   snippet: "Can you confirm?",
 };
 
-function createMemory(wake: Partial<WakeState> = {}, timezone?: string) {
+function createMemory(wake: Partial<WakeState> = {}, timezone?: string, language?: string) {
   let gmail: GmailSnapshotRow[] = [];
   let calendar: CalendarSnapshotRow[] = [];
   let state: WakeState = {
@@ -117,6 +81,7 @@ function createMemory(wake: Partial<WakeState> = {}, timezone?: string) {
     heldPlanAttempts: 0,
     heldPlanNextAttemptAtMs: null,
     heldPlanTemplateAttemptedAtMs: null,
+    heldBriefDay: null,
     watchExpirationMs: null,
     openTodoIdsJson: null,
     ...wake,
@@ -135,7 +100,7 @@ function createMemory(wake: Partial<WakeState> = {}, timezone?: string) {
       { matterId: "bianchi", alias: "Bianchi", title: "Bianchi" },
     ],
     listTodos: async () => [],
-    readProfile: async () => (timezone ? { timezone } : null),
+    readProfile: async () => (timezone || language ? { timezone, language } : null),
     listPreferences: async () => [],
     readWake: async () => ({ ...state }),
     writeWake: async (patch: Partial<WakeState>) => {
@@ -171,6 +136,7 @@ function pass(
   options: {
     now: Date;
     forceMorning?: boolean;
+    trigger?: Parameters<typeof runAdaCollectPass>[0]["trigger"];
     dispatch: Parameters<typeof runAdaCollectPass>[0]["dispatchDigestTurn"];
     api?: OpenClawPluginApi;
     sendDigestReadyNotice?: Parameters<typeof runAdaCollectPass>[0]["sendDigestReadyNotice"];
@@ -182,7 +148,7 @@ function pass(
     memory,
     now: options.now,
     forceMorning: options.forceMorning ?? false,
-    trigger: "poll",
+    trigger: options.trigger ?? "poll",
     dispatchDigestTurn: options.dispatch,
     sendDigestReadyNotice: options.sendDigestReadyNotice,
   });
@@ -852,5 +818,284 @@ describe("digest-ready template for a held plan", () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
       "https://api.kapso.ai/meta/whatsapp/v23.0/100000000000000/messages",
     );
+  });
+});
+
+describe("morning brief held for a closed WhatsApp window", () => {
+  const warn = vi.fn();
+  const kapso = {
+    channels: {
+      "kapso-whatsapp": {
+        apiKey: "kapso_test_key",
+        phoneNumberId: "100000000000000",
+        defaultTo: LAWYER_NUMBER,
+      },
+    },
+  } as OpenClawPluginApi["config"];
+  const briefTemplate = { name: "ada_brief_ready", language: "it", languages: ["it", "en"] };
+  const sendText = vi.fn(async (_params: { to: string; text: string }) => undefined);
+  const apiWith = (pluginConfig: Record<string, unknown>) =>
+    createTestPluginApi({
+      id: "ada",
+      pluginConfig: { ...(api.pluginConfig as object), ...pluginConfig },
+      config: kapso,
+      logger: { info() {}, warn, error() {}, debug() {} },
+      runtime: {
+        channel: { outbound: { loadAdapter: async () => ({ sendText }) } },
+      } as unknown as OpenClawPluginApi["runtime"],
+    });
+  const briefApi = apiWith({ briefReadyTemplate: briefTemplate });
+  const closedWindow = { lastLawyerInboundAtMs: MORNING.getTime() - 30 * HOUR_MS };
+  const REPLY_AT = new Date("2026-10-06T17:00:00.000Z");
+  const NEXT_MORNING_REPLY_AT = new Date("2026-10-07T08:00:00.000Z");
+
+  function morning(
+    memory: MemoryStore,
+    options: {
+      notice: Parameters<typeof runAdaCollectPass>[0]["sendDigestReadyNotice"];
+      dispatch?: Parameters<typeof runAdaCollectPass>[0]["dispatchDigestTurn"];
+      now?: Date;
+      api?: OpenClawPluginApi;
+    },
+  ) {
+    return pass(memory, {
+      now: options.now ?? MORNING,
+      forceMorning: true,
+      trigger: "morning",
+      dispatch: options.dispatch ?? (async () => ({ ok: true })),
+      api: options.api ?? briefApi,
+      sendDigestReadyNotice: options.notice,
+    });
+  }
+
+  function reply(store: ReturnType<typeof createMemory>, at: Date) {
+    memoryModule.openAdaMemoryFromApi.mockResolvedValue(store.memory);
+    return recordSenderInbound({
+      api: briefApi,
+      atMs: at.getTime(),
+      channelId: "kapso-whatsapp",
+      senders: [LAWYER_NUMBER],
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearSentDigests();
+    google.loadAccessToken.mockResolvedValue({ ok: true, accessToken: "token" });
+    google.watchGmailInbox.mockResolvedValue({ ok: false });
+    setGoogle({});
+  });
+
+  it("holds the brief and sends one nudge template when the window is closed", async () => {
+    const store = createMemory(closedWindow);
+    const notice = vi.fn(async () => ({ ok: true }));
+    const dispatch = vi.fn(async () => ({ ok: true }));
+
+    const result = await morning(store.memory, { notice, dispatch });
+
+    expect(result).toMatchObject({
+      held: true,
+      delivered: false,
+      decision: "hold_brief",
+      reason: "whatsapp_window_closed",
+    });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(notice).toHaveBeenCalledOnce();
+    expect(notice).toHaveBeenCalledWith({ name: "ada_brief_ready", language: "it" });
+    expect(store.wake()).toMatchObject({
+      heldBriefDay: "2026-10-06",
+      lastMorningBriefAtMs: null,
+      heldPlanJson: null,
+    });
+  });
+
+  it("sends no second template for a second pass the same day, and keeps the hold through polls", async () => {
+    const store = createMemory(closedWindow);
+    const notice = vi.fn(async () => ({ ok: true }));
+
+    await morning(store.memory, { notice });
+    await morning(store.memory, { notice, now: new Date(MORNING.getTime() + 2 * HOUR_MS) });
+    await pass(store.memory, { now: POLL_1, dispatch: async () => ({ ok: true }), api: briefApi });
+
+    expect(notice).toHaveBeenCalledOnce();
+    expect(store.wake().heldBriefDay).toBe("2026-10-06");
+  });
+
+  it("sends a new nudge on the next local day's morning pass", async () => {
+    const store = createMemory(closedWindow);
+    const notice = vi.fn(async () => ({ ok: true }));
+
+    await morning(store.memory, { notice });
+    await morning(store.memory, {
+      notice,
+      now: new Date(MORNING.getTime() + 24 * HOUR_MS),
+    });
+
+    expect(notice).toHaveBeenCalledTimes(2);
+    expect(store.wake().heldBriefDay).toBe("2026-10-07");
+  });
+
+  it("delivers the brief once when the number replies the same local day, however late", async () => {
+    const store = createMemory(closedWindow);
+    await morning(store.memory, { notice: vi.fn(async () => ({ ok: true })) });
+
+    await reply(store, REPLY_AT);
+
+    expect(sendText).toHaveBeenCalledOnce();
+    expect(sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: LAWYER_NUMBER,
+        text: expect.stringContaining("Niente di urgente"),
+      }),
+    );
+    expect(store.wake()).toMatchObject({
+      heldBriefDay: null,
+      lastMorningBriefAtMs: REPLY_AT.getTime(),
+      lastLawyerInboundAtMs: REPLY_AT.getTime(),
+    });
+
+    await reply(store, new Date(REPLY_AT.getTime() + 60_000));
+    expect(sendText).toHaveBeenCalledOnce();
+  });
+
+  it("drops a held brief when the number replies on a later day", async () => {
+    const store = createMemory(closedWindow);
+    await morning(store.memory, { notice: vi.fn(async () => ({ ok: true })) });
+    google.listInboxMessages.mockClear();
+
+    await reply(store, NEXT_MORNING_REPLY_AT);
+
+    expect(sendText).not.toHaveBeenCalled();
+    expect(google.listInboxMessages).not.toHaveBeenCalled();
+    expect(store.wake()).toMatchObject({
+      heldBriefDay: null,
+      lastMorningBriefAtMs: null,
+      lastLawyerInboundAtMs: NEXT_MORNING_REPLY_AT.getTime(),
+    });
+  });
+
+  it("keeps the held day when the release fails, so the next message the same day retries", async () => {
+    const store = createMemory(closedWindow);
+    await morning(store.memory, { notice: vi.fn(async () => ({ ok: true })) });
+    await store.memory.writeWake({ lastLawyerInboundAtMs: REPLY_AT.getTime() });
+
+    const failed = await pass(store.memory, {
+      now: REPLY_AT,
+      forceMorning: true,
+      trigger: "inbound",
+      dispatch: async () => ({ ok: false, reason: "send_failed" }),
+      api: briefApi,
+    });
+
+    expect(failed).toMatchObject({ decision: "brief", delivered: false, reason: "send_failed" });
+    expect(store.wake()).toMatchObject({ heldBriefDay: "2026-10-06", lastMorningBriefAtMs: null });
+  });
+
+  it("settles the held day without sending when the day was already briefed", async () => {
+    const store = createMemory({
+      ...closedWindow,
+      heldBriefDay: "2026-10-06",
+      lastMorningBriefAtMs: MORNING.getTime() + HOUR_MS,
+    });
+
+    await reply(store, REPLY_AT);
+
+    expect(sendText).not.toHaveBeenCalled();
+    expect(store.wake().heldBriefDay).toBeNull();
+  });
+
+  it("leaves an open window as it was: the brief goes out at once and no template is sent", async () => {
+    const store = createMemory({ lastLawyerInboundAtMs: MORNING.getTime() - HOUR_MS });
+    const notice = vi.fn(async () => ({ ok: true }));
+    const dispatch = vi.fn(async () => ({ ok: true }));
+
+    const result = await morning(store.memory, { notice, dispatch });
+
+    expect(result).toMatchObject({ decision: "brief", delivered: true });
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(notice).not.toHaveBeenCalled();
+    expect(store.wake()).toMatchObject({
+      heldBriefDay: null,
+      lastMorningBriefAtMs: MORNING.getTime(),
+    });
+  });
+
+  it("sends one template for an urgent plan and a brief on the same day", async () => {
+    const store = createMemory(closedWindow);
+    const notice = vi.fn(async () => ({ ok: true }));
+    const dispatch = vi.fn(async () => ({ ok: true }));
+    await morning(store.memory, { notice, dispatch });
+
+    setGoogle({ events: [HEARING] });
+    const urgent = await pass(store.memory, {
+      now: POLL_1,
+      dispatch,
+      api: briefApi,
+      sendDigestReadyNotice: notice,
+    });
+
+    expect(urgent).toMatchObject({ decision: "hold", held: true });
+    expect(store.wake().heldPlanJson).not.toBeNull();
+    expect(notice).toHaveBeenCalledOnce();
+
+    await reply(store, REPLY_AT);
+    expect(sendText).toHaveBeenCalledOnce();
+    expect(sendText).toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining("Verdi") }),
+    );
+    expect(store.wake()).toMatchObject({ heldBriefDay: null, heldPlanJson: null });
+  });
+
+  it("sends no brief template on a day an urgent held-plan template already went out", async () => {
+    const store = createMemory({
+      ...closedWindow,
+      heldPlanTemplateAttemptedAtMs: MORNING.getTime() - HOUR_MS,
+    });
+    const notice = vi.fn(async () => ({ ok: true }));
+
+    await morning(store.memory, { notice });
+
+    expect(notice).not.toHaveBeenCalled();
+    expect(store.wake().heldBriefDay).toBe("2026-10-06");
+  });
+
+  it("picks the template language from the profile, then the configured default", async () => {
+    const send = async (language?: string) => {
+      const store = createMemory(closedWindow, undefined, language);
+      const notice = vi.fn(async (_template: KapsoTemplate) => ({ ok: true }));
+      await morning(store.memory, { notice });
+      return notice.mock.calls[0]?.[0];
+    };
+
+    expect(await send("English")).toEqual({ name: "ada_brief_ready", language: "en" });
+    expect(await send("it")).toEqual({ name: "ada_brief_ready", language: "it" });
+    expect(await send("fr")).toEqual({ name: "ada_brief_ready", language: "it" });
+    expect(await send(undefined)).toEqual({ name: "ada_brief_ready", language: "it" });
+  });
+
+  it("falls back to digestReadyTemplate, as configured, when briefReadyTemplate is unset", async () => {
+    const store = createMemory(closedWindow, undefined, "en");
+    const notice = vi.fn(async () => ({ ok: true }));
+
+    await morning(store.memory, {
+      notice,
+      api: apiWith({ digestReadyTemplate: { name: "ada_digest_ready", language: "it" } }),
+    });
+
+    expect(notice).toHaveBeenCalledWith({ name: "ada_digest_ready", language: "it" });
+  });
+
+  it("still holds the brief and warns once when no template is configured", async () => {
+    const store = createMemory(closedWindow);
+    const notice = vi.fn(async () => ({ ok: true }));
+    const bare = apiWith({});
+
+    await morning(store.memory, { notice, api: bare });
+    await morning(store.memory, { notice, api: bare, now: new Date(MORNING.getTime() + HOUR_MS) });
+
+    expect(notice).not.toHaveBeenCalled();
+    expect(store.wake().heldBriefDay).toBe("2026-10-06");
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls[0]?.[0]).toContain("briefReadyTemplate");
   });
 });

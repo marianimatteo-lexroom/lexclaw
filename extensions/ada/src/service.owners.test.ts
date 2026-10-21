@@ -64,6 +64,7 @@ function memoryFor() {
     heldPlanAttempts: 0,
     heldPlanNextAttemptAtMs: null,
     heldPlanTemplateAttemptedAtMs: null,
+    heldBriefDay: null,
     watchExpirationMs: null,
     openTodoIdsJson: null,
   };

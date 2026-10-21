@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  readBriefReadyTemplate,
   readDigestReadyTemplate,
   sendDigestReadyNotice,
   sendKapsoTemplate,
@@ -166,6 +167,51 @@ describe("readDigestReadyTemplate", () => {
       readDigestReadyTemplate({ digestReadyTemplate: { name: "ada_digest_ready" } }),
     ).toBeNull();
     expect(readDigestReadyTemplate({ digestReadyTemplate: "ada_digest_ready" })).toBeNull();
+  });
+});
+
+describe("readBriefReadyTemplate", () => {
+  const brief = { name: "ada_brief_ready", language: "it", languages: ["it", "en_US"] };
+
+  it("uses the number's language when the template is approved in it, else the default", () => {
+    const pluginConfig = { briefReadyTemplate: brief };
+    expect(readBriefReadyTemplate(pluginConfig, "English")).toEqual({
+      name: "ada_brief_ready",
+      language: "en_US",
+    });
+    expect(readBriefReadyTemplate(pluginConfig, "it")).toEqual({
+      name: "ada_brief_ready",
+      language: "it",
+    });
+    expect(readBriefReadyTemplate(pluginConfig, "de")).toEqual({
+      name: "ada_brief_ready",
+      language: "it",
+    });
+    expect(readBriefReadyTemplate(pluginConfig, undefined)).toEqual({
+      name: "ada_brief_ready",
+      language: "it",
+    });
+  });
+
+  it("keeps one language when none are listed", () => {
+    expect(
+      readBriefReadyTemplate(
+        { briefReadyTemplate: { name: "ada_brief_ready", language: "en" } },
+        "it",
+      ),
+    ).toEqual({ name: "ada_brief_ready", language: "en" });
+  });
+
+  it("falls back to digestReadyTemplate as configured when briefReadyTemplate is unset or incomplete", () => {
+    const digest = { name: "ada_digest_ready", language: "it" };
+    expect(readBriefReadyTemplate({ digestReadyTemplate: digest }, "en")).toEqual(digest);
+    expect(
+      readBriefReadyTemplate(
+        { digestReadyTemplate: digest, briefReadyTemplate: { name: "ada_brief_ready" } },
+        "en",
+      ),
+    ).toEqual(digest);
+    expect(readBriefReadyTemplate({}, "en")).toBeNull();
   });
 });
 

@@ -327,6 +327,13 @@ config_set 'channels["kapso-whatsapp"].defaultTo' "$(json_of_env KAPSO_DEFAULT_T
 # digest window), but it no longer gates who can chat.
 config_set 'channels["kapso-whatsapp"].dmSecurity' '"open"'
 config_set 'channels["kapso-whatsapp"].allowFrom' '["*"]'
+# The Kapso plugin is webhook-only and has no gateway.startAccount, so the channel never reports
+# running and the health monitor "restarted" it (a no-op) every 10 minutes forever. Opting out is
+# cosmetic, so a config the plugin schema refuses is a warning and never stops the boot.
+log 'config set channels["kapso-whatsapp"].healthMonitor.enabled'
+if ! oc config set 'channels["kapso-whatsapp"].healthMonitor.enabled' false --strict-json >/dev/null; then
+  log "WARNING: could not turn off the health monitor for kapso-whatsapp; its 'restarting (reason: stopped)' log lines will repeat"
+fi
 # With the default "main" scope every DM shares one conversation, so anyone could read what
 # another number said. One isolated session per WhatsApp number keeps chats apart; the lawyer's
 # own chat moves to a session of its own too (the default scope's shared history is not copied).
@@ -364,6 +371,32 @@ else
     log "WARNING: ADA_DIGEST_TEMPLATE_LANG is ignored because ADA_DIGEST_TEMPLATE_NAME is unset"
   fi
   log "skip plugins.entries.ada.config.digestReadyTemplate: ADA_DIGEST_TEMPLATE_NAME is unset"
+fi
+
+# Utility template sent once a day when the morning brief is owed but the window is closed.
+# ADA_BRIEF_TEMPLATE_LANG is the language it was approved in, or a comma-separated list such as
+# "it,en" when it exists in several: the first is the default and Ada picks the number's own
+# language from the rest. Unset name: not configured, and the digest template is used instead.
+if [ -n "${ADA_BRIEF_TEMPLATE_NAME:-}" ]; then
+  export ADA_BRIEF_TEMPLATE_LANG="${ADA_BRIEF_TEMPLATE_LANG:-it}"
+  BRIEF_TEMPLATE_JSON="$(node -p '
+    const languages = process.env.ADA_BRIEF_TEMPLATE_LANG.split(",").map((v) => v.trim()).filter(Boolean);
+    if (languages.length === 0) {
+      process.stderr.write("no language\n");
+      process.exit(1);
+    }
+    JSON.stringify({
+      name: process.env.ADA_BRIEF_TEMPLATE_NAME.trim(),
+      language: languages[0],
+      ...(languages.length > 1 ? { languages } : {}),
+    });
+  ')" || die "ADA_BRIEF_TEMPLATE_LANG must be a language code or a comma-separated list such as it,en, got '${ADA_BRIEF_TEMPLATE_LANG}'"
+  config_set plugins.entries.ada.config.briefReadyTemplate "${BRIEF_TEMPLATE_JSON}"
+else
+  if [ -n "${ADA_BRIEF_TEMPLATE_LANG:-}" ]; then
+    log "WARNING: ADA_BRIEF_TEMPLATE_LANG is ignored because ADA_BRIEF_TEMPLATE_NAME is unset"
+  fi
+  log "skip plugins.entries.ada.config.briefReadyTemplate: ADA_BRIEF_TEMPLATE_NAME is unset"
 fi
 
 # Deadline intake is off unless ADA_DEADLINE_INTAKE_ENABLED is exactly true, and the

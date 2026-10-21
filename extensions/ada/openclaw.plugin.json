@@ -107,6 +107,16 @@
           "name": { "type": "string" },
           "language": { "type": "string" }
         }
+      },
+      "briefReadyTemplate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "language"],
+        "properties": {
+          "name": { "type": "string" },
+          "language": { "type": "string" },
+          "languages": { "type": "array", "items": { "type": "string" } }
+        }
       }
     }
   },
