@@ -29,6 +29,36 @@ export type ConnectOfferKind =
 
 export type ConnectOffer = { kind: ConnectOfferKind; detail?: string };
 
+/** What a delivered research was about, so a "yes, draft it" can build on that research. */
+export type ResearchResultNote = { query: string; matterId?: string; researchId?: string };
+
+const RESULT_QUERY_MAX = 120;
+
+/** The detail of a `research_result` offer: the note as one string, in this process only. */
+export function researchResultDetail(note: ResearchResultNote): string {
+  return JSON.stringify({
+    ...note,
+    query: note.query.replace(/\s+/gu, " ").trim().slice(0, RESULT_QUERY_MAX),
+  });
+}
+
+function researchResultLine(detail: string | undefined): string {
+  let note: Partial<ResearchResultNote> = {};
+  try {
+    const parsed: unknown = detail ? JSON.parse(detail) : {};
+    note =
+      typeof parsed === "object" && parsed !== null ? (parsed as Partial<ResearchResultNote>) : {};
+  } catch {
+    note = {};
+  }
+  const ids = [
+    note.matterId ? `matterId ${JSON.stringify(note.matterId)}` : "",
+    note.researchId ? `parentResearchId ${JSON.stringify(note.researchId)}` : "",
+  ].filter(Boolean);
+  const withIds = ids.length ? ` with ${ids.join(" and ")}` : "";
+  return `- You sent them the result of a Lexroom research${note.query ? ` on ${JSON.stringify(note.query)}` : ""} as a message of its own, ending with an offer to turn it into a draft. That text is not in the conversation and you cannot read it, so never claim to know what it said. If their message says yes in any form, start that draft: ask in one short question for what is missing, and call ada_draft${withIds}, with confirmed true only after they agree. If they ask a follow-up about the result, either ask what they need to know, or, for a new question on the same matter, call ada_research${withIds}; never research without a question from them. If their message is about something else, answer that.`;
+}
+
 type Offer = { at: number; detail?: string; consumedByRunId?: string };
 
 const OFFER_TTL_MS = 72 * 60 * 60 * 1000;
@@ -118,6 +148,29 @@ function reminderLine(detail: string | undefined): string {
   return `- Your last reply may have ended with a line saying that connecting ${account} was not finished, and offering a new link; ignore this if it did not. If their message says yes in any form, call ${call} and send the link. If it says no in any form, drop it and call ada_set_preference with key ${connectDeclinedKey(feature)} and one short sentence saying they declined, then do not bring it up again.`;
 }
 
+const REQUEST_CONNECT_TTL_MS = 35 * 60 * 1000;
+const requestConnects = new Map<string, number>();
+
+/**
+ * A connect link was issued for a request already in progress (an account that lacks the
+ * permission a mail or a calendar change needs), so the confirmation that follows continues that
+ * request instead of offering a first look. Kept in this process only, for the life of the link.
+ */
+export function noteRequestConnect(owner: string, nowMs = Date.now()): void {
+  requestConnects.delete(owner);
+  requestConnects.set(owner, nowMs);
+  if (requestConnects.size > MAX_OWNERS) {
+    requestConnects.delete(requestConnects.keys().next().value ?? owner);
+  }
+}
+
+/** Whether the connect that just finished was for a request in progress; reads it once. */
+export function takeRequestConnect(owner: string, nowMs = Date.now()): boolean {
+  const at = requestConnects.get(owner);
+  requestConnects.delete(owner);
+  return at !== undefined && nowMs - at <= REQUEST_CONNECT_TTL_MS;
+}
+
 /** What a first look does for each account that Ada's connected message offers one for. */
 const FIRST_LOOKS: Record<string, string> = {
   google: "today's calendar and inbox: call ada_read_calendar and ada_read_inbox",
@@ -130,7 +183,7 @@ const FIRST_LOOKS: Record<string, string> = {
 function firstLookLine(detail: string | undefined): string {
   const look = detail === undefined ? undefined : FIRST_LOOKS[detail];
   return look
-    ? `- You sent them a message confirming an account is connected, ending with a question offering a first look. Doing it means ${look}. If their message says yes in any form, do it now and keep the answer short. If it says no, drop it.`
+    ? `- You sent them a message confirming an account is connected, ending with a question offering a first look. Doing it means ${look}. If their message says yes in any form, do it now and keep the answer short. If it says no, drop it. If the conversation shows a request that needed this connection (a mail to send, a calendar change), carry that request out instead and ignore the first look.`
     : "";
 }
 
@@ -153,7 +206,7 @@ export function connectOfferNote(offers: readonly ConnectOffer[]): string | unde
         : kind === "first_look"
           ? firstLookLine(detail)
           : kind === "research_result"
-            ? `- You sent them the result of a Lexroom research${detail ? ` on "${detail}"` : ""} as a message of its own (it is not in the conversation), ending with an offer to turn it into a draft. If their message says yes in any form, start that draft: ask in one short question for what is missing, and call ada_draft with confirmed true only after they agree. If they ask a follow-up about the result, answer from the result in the conversation or from what they say; start a new research only when they ask a new question, as usual. If it is about something else, answer that.`
+            ? researchResultLine(detail)
             : kind === "lexroom_nudge"
               ? `- Your last reply may have opened with an offer to connect ${NAMES[kind].account}, with its link or an offer to send it; ignore this if it did not. If their message says yes in any form and you did not send the link, call ${NAMES[kind].call} and send it. If it says no in any form, drop it and call ada_set_preference with key ${LEXROOM_OFFER_DECLINED_KEY} and one short sentence saying they declined connecting Lexroom, then do not bring it up again.`
               : `- You asked whether they want to connect ${NAMES[kind].account}. If their message says yes in any form, call ${NAMES[kind].call} and send the link. If it says no, drop it and do not ask again.`,

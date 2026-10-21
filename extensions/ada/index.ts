@@ -28,7 +28,12 @@ import {
 import { registerAdaAnnouncementsAdmin } from "./src/announcements-http.js";
 import { registerAnnouncementRelease } from "./src/announcements.js";
 import { buildInjectedBrief } from "./src/brief.js";
-import { connectOfferNote, noteConnectOffer, takeConnectOffers } from "./src/connect-offers.js";
+import {
+  connectOfferNote,
+  noteConnectOffer,
+  takeConnectOffers,
+  takeRequestConnect,
+} from "./src/connect-offers.js";
 import { executeAdaDeadlineList, executeAdaDeadlineReply } from "./src/deadline-tools.js";
 import { planDigest, type DigestSignal } from "./src/digest.js";
 import { createInboundTextGuard, registerInboundDuplicateHooks } from "./src/duplicate-text.js";
@@ -647,13 +652,15 @@ const entry = definePluginEntry({
             releaseMailbox: (owner, email) => releaseMailboxFromOtherOwners(api, owner, email),
             notifyConnected: async (owner, email) => {
               await openWakeWindow(api, owner);
+              const firstLook = !takeRequestConnect(owner);
               const sent = await sendGoogleConnectedNotice({
                 config: api.config,
                 owner,
                 email,
+                firstLook,
                 loadAdapter: (channelId) => api.runtime.channel.outbound.loadAdapter(channelId),
               });
-              if (sent.ok) {
+              if (sent.ok && firstLook) {
                 noteConnectOffer(owner, "first_look", Date.now(), "google");
               }
               return sent;

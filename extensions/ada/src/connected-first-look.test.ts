@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { connectOfferNote, noteConnectOffer, takeConnectOffers } from "./connect-offers.js";
+import {
+  connectOfferNote,
+  noteConnectOffer,
+  researchResultDetail,
+  noteRequestConnect,
+  takeConnectOffers,
+  takeRequestConnect,
+} from "./connect-offers.js";
 import { googleConnectedText } from "./google-notify.js";
 import { granolaConnectedText } from "./granola-text.js";
 import { lexroomConnectedText } from "./lexroom-tools.js";
@@ -39,11 +46,59 @@ describe("a connected confirmation", () => {
       expect(note).toContain(tool);
     }
     expect(connectOfferNote([{ kind: "first_look", detail: "unknown" }])).toBeUndefined();
-    const result = connectOfferNote([{ kind: "research_result", detail: "recesso locazione" }]);
+    const result = connectOfferNote([
+      {
+        kind: "research_result",
+        detail: researchResultDetail({
+          query: "recesso locazione",
+          matterId: "matter-1",
+          researchId: "res-9",
+        }),
+      },
+    ]);
     expect(result).toContain('Lexroom research on "recesso locazione"');
-    expect(result).toContain("ada_draft");
-    expect(result).not.toContain("run ada_research again");
-    expect(result).toContain("start a new research only when they ask a new question");
+    expect(result).toContain(
+      'call ada_draft with matterId "matter-1" and parentResearchId "res-9"',
+    );
+    expect(result).toContain(
+      'call ada_research with matterId "matter-1" and parentResearchId "res-9"',
+    );
+    expect(result).toContain("cannot read it");
+    expect(result).not.toContain("in the conversation or from");
+    expect(result).toContain("never research without a question");
+  });
+
+  it("still reads a research note that has no ids or a plain-text detail", () => {
+    const bare = connectOfferNote([{ kind: "research_result", detail: "caparra" }]) ?? "";
+    expect(bare).toContain("call ada_draft, with confirmed true");
+    expect(connectOfferNote([{ kind: "research_result" }])).toContain("call ada_draft,");
+  });
+
+  it("tells the model a pending request outranks the first look", () => {
+    for (const detail of ["google", "outlook", "granola", "lexroom"]) {
+      expect(connectOfferNote([{ kind: "first_look", detail }])).toContain(
+        "carry that request out instead and ignore the first look",
+      );
+    }
+  });
+
+  it("remembers a connect for a request in progress once, for the life of the link, per number", () => {
+    const [anna, bruno] = ["393339990010", "393339990011"];
+    noteRequestConnect(anna, 1_000);
+    expect(takeRequestConnect(bruno, 2_000)).toBe(false);
+    expect(takeRequestConnect(anna, 2_000)).toBe(true);
+    expect(takeRequestConnect(anna, 2_000)).toBe(false);
+    noteRequestConnect(anna, 1_000);
+    expect(takeRequestConnect(anna, 1_000 + 36 * 60_000)).toBe(false);
+  });
+
+  it("drops the first-look question from the Google confirmation for a request in progress", () => {
+    for (const language of LANGUAGES) {
+      expect(googleConnectedText(language).match(/\?/gu), language).toHaveLength(1);
+      const plain = googleConnectedText(language, false);
+      expect(plain, language).not.toContain("?");
+      expect(googleConnectedText(language).startsWith(plain), language).toBe(true);
+    }
   });
 
   it("keeps only the latest connect's first look when two connect close together", () => {

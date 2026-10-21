@@ -35,6 +35,7 @@ vi.mock("./memory.js", async (importOriginal) => ({
   openAdaMemoryIfExistsFromApi: async () => null,
 }));
 
+import { takeRequestConnect } from "./connect-offers.js";
 import { clearSentDigests } from "./dispatch-digest.js";
 import { clearHeldReconnectNotes } from "./held-reconnect.js";
 import { recordSenderInbound, runAdaCollectPass } from "./service.js";
@@ -163,6 +164,26 @@ describe("a Google sign-in Google no longer accepts is not a connection", () => 
     const result = await executeAdaGoogleConnect(OWNER, CONFIG, api, NOW);
     expect(result).toMatchObject({ ok: true, connected: false });
     expect(clearAccount).not.toHaveBeenCalled();
+    // The permission upgrade is for a send or a calendar change in progress: no first look after it.
+    expect(takeRequestConnect(OWNER, NOW.getTime())).toBe(true);
+    expect(takeRequestConnect(OWNER, NOW.getTime())).toBe(false);
+  });
+
+  it("marks no request in progress for a plain connect or a reconnect after a dead sign-in", async () => {
+    const real = await vi.importActual<typeof import("./google-api.js")>("./google-api.js");
+    google.loadAccessToken.mockImplementation(real.loadAccessToken);
+    stores.account = null;
+    expect(await executeAdaGoogleConnect(OWNER, CONFIG, api, NOW)).toMatchObject({
+      ok: true,
+      connected: false,
+    });
+    expect(takeRequestConnect(OWNER, NOW.getTime())).toBe(false);
+
+    stores.account = savedAccount();
+    await executeAdaGoogleConnect(OWNER, CONFIG, api, NOW, {
+      fetchImpl: tokenEndpoint(invalidGrant()),
+    });
+    expect(takeRequestConnect(OWNER, NOW.getTime())).toBe(false);
   });
 });
 

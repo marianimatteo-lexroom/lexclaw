@@ -518,6 +518,7 @@ export async function startAdaResearch(params: {
           startedAtMs: job.startedAtMs,
           result,
           query: params.args.query,
+          matterId,
         },
         push,
       ),

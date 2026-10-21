@@ -1,6 +1,11 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { whatsappWindowOpen } from "./collector.js";
-import { noteConnectOffer, type ConnectOfferKind } from "./connect-offers.js";
+import {
+  noteConnectOffer,
+  researchResultDetail,
+  type ConnectOfferKind,
+  type ResearchResultNote,
+} from "./connect-offers.js";
 import { ADA_WHATSAPP_CHANNEL, sendAdaWhatsAppText } from "./google-notify.js";
 import { logInboundSkip } from "./inbound-log.js";
 import { sendKapsoPdf } from "./kapso-document.js";
@@ -56,7 +61,7 @@ export type PushDeps = {
   /** The delivered message asked the person whether to (re)connect Lexroom; remember it for their next turn. */
   offerConnect?: (kind: ConnectOfferKind) => void;
   /** A finished research reached the person with a next-step question; remember what it answered. */
-  noteResult?: (query: string) => void;
+  noteResult?: (note: ResearchResultNote) => void;
   log: LexroomLog;
   now?: () => number;
   retryDelayMs?: number;
@@ -263,8 +268,8 @@ type Held = {
   document?: ResearchPdf;
   heldAtMs: number;
   offer?: ConnectOfferKind;
-  /** The question of a finished research, so its delivery can be noted. */
-  resultQuery?: string;
+  /** What a finished research was about, so its delivery can be noted. */
+  resultNote?: ResearchResultNote;
 };
 
 /** Held results by recipient number, oldest first. */
@@ -395,6 +400,20 @@ export async function sendResearchAck(
   return result.ok;
 }
 
+function resultNote(params: {
+  query: string;
+  matterId?: string;
+  result: ResearchOutcome | LexroomFailure;
+}): ResearchResultNote {
+  return {
+    query: params.query,
+    ...(params.matterId ? { matterId: params.matterId } : {}),
+    ...(params.result.ok && params.result.researchId
+      ? { researchId: params.result.researchId }
+      : {}),
+  };
+}
+
 /**
  * Sends the result, or holds it. Returns what became of it so the job can tell a later
  * `ada_research_status` that the lawyer already has (or will get) the answer.
@@ -406,6 +425,7 @@ export async function pushResearchResult(
     result: ResearchOutcome | LexroomFailure;
     /** The question asked; the title of the PDF. */
     query: string;
+    matterId?: string;
   },
   deps: PushDeps,
 ): Promise<"sent" | "held"> {
@@ -423,7 +443,7 @@ export async function pushResearchResult(
         deps.offerConnect?.(offer);
       }
       if (params.result.ok) {
-        deps.noteResult?.(params.query);
+        deps.noteResult?.(resultNote(params));
       }
       deps.log("result.pushed", {
         job: params.jobId,
@@ -448,7 +468,7 @@ export async function pushResearchResult(
     text,
     ...(document ? { document } : {}),
     ...(offer ? { offer } : {}),
-    ...(params.result.ok ? { resultQuery: params.query } : {}),
+    ...(params.result.ok ? { resultNote: resultNote(params) } : {}),
     heldAtMs: now(),
   });
   while (queue.length > MAX_HELD) {
@@ -492,8 +512,8 @@ export async function releaseHeldResearch(deps: PushDeps): Promise<number> {
     if (next.offer) {
       deps.offerConnect?.(next.offer);
     }
-    if (next.resultQuery !== undefined) {
-      deps.noteResult?.(next.resultQuery);
+    if (next.resultNote) {
+      deps.noteResult?.(next.resultNote);
     }
     deps.log("result.pushed", {
       job: next.jobId,
@@ -547,13 +567,8 @@ export function livePushDeps(
     },
     readProfileLanguage: async () => (await (await memory())?.readProfile())?.language,
     offerConnect: (kind) => noteConnectOffer(recipient, kind),
-    noteResult: (query) =>
-      noteConnectOffer(
-        recipient,
-        "research_result",
-        Date.now(),
-        query.replace(/\s+/gu, " ").trim().slice(0, 120),
-      ),
+    noteResult: (note) =>
+      noteConnectOffer(recipient, "research_result", Date.now(), researchResultDetail(note)),
     log,
   };
 }

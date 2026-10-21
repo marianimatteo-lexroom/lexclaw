@@ -650,20 +650,34 @@ describe("noting a delivered research for the next turn", () => {
     const noteResult = vi.fn();
     const live = makeDeps({ noteResult });
     await pushResearchResult(
-      { jobId: "j1", startedAtMs: 0, query: "recesso locazione", result: outcome() },
+      {
+        jobId: "j1",
+        startedAtMs: 0,
+        query: "recesso locazione",
+        matterId: "matter-1",
+        result: outcome(),
+      },
       live.deps,
     );
-    expect(noteResult).toHaveBeenCalledExactlyOnceWith("recesso locazione");
+    expect(noteResult).toHaveBeenCalledExactlyOnceWith({
+      query: "recesso locazione",
+      matterId: "matter-1",
+      researchId: "aaa111",
+    });
 
     const held = makeDeps({ noteResult: vi.fn(), windowOpen: async () => false });
     await pushResearchResult(
-      { jobId: "j2", startedAtMs: 0, query: "caparra", result: outcome() },
+      { jobId: "j2", startedAtMs: 0, query: "caparra", matterId: "matter-2", result: outcome() },
       held.deps,
     );
     expect(held.deps.noteResult).not.toHaveBeenCalled();
     const released = makeDeps({ noteResult: vi.fn() });
     await releaseHeldResearch(released.deps);
-    expect(released.deps.noteResult).toHaveBeenCalledExactlyOnceWith("caparra");
+    expect(released.deps.noteResult).toHaveBeenCalledExactlyOnceWith({
+      query: "caparra",
+      matterId: "matter-2",
+      researchId: "aaa111",
+    });
   });
 
   it("notes nothing for a failed research", async () => {

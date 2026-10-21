@@ -181,6 +181,10 @@ describe("Ada's persona", () => {
       expect(ADA_PERSONA).toMatch(
         /start the work and ask for it in the same message, saying what you are assuming/u,
       );
+      expect(ADA_PERSONA).toMatch(
+        /For ada_research the exception is that you add no message: fold any assumption into the query itself, because code sends the acknowledgement and the result/u,
+      );
+      expect(ADA_PERSONA).not.toMatch(/the court or the date for a research/u);
     });
 
     it("writes drafts in the recipient's language without relaxing the language rule for its own words", () => {
