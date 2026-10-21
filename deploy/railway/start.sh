@@ -327,6 +327,13 @@ config_set 'channels["kapso-whatsapp"].defaultTo' "$(json_of_env KAPSO_DEFAULT_T
 # digest window), but it no longer gates who can chat.
 config_set 'channels["kapso-whatsapp"].dmSecurity' '"open"'
 config_set 'channels["kapso-whatsapp"].allowFrom' '["*"]'
+# The Kapso plugin is webhook-only and has no gateway.startAccount, so the channel never reports
+# running and the health monitor "restarted" it (a no-op) every 10 minutes forever. Opting out is
+# cosmetic, so a config the plugin schema refuses is a warning and never stops the boot.
+log 'config set channels["kapso-whatsapp"].healthMonitor.enabled'
+if ! oc config set 'channels["kapso-whatsapp"].healthMonitor.enabled' false --strict-json >/dev/null; then
+  log "WARNING: could not turn off the health monitor for kapso-whatsapp; its 'restarting (reason: stopped)' log lines will repeat"
+fi
 # With the default "main" scope every DM shares one conversation, so anyone could read what
 # another number said. One isolated session per WhatsApp number keeps chats apart; the lawyer's
 # own chat moves to a session of its own too (the default scope's shared history is not copied).

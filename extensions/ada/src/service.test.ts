@@ -152,13 +152,19 @@ describe("decideDigestDelivery on a quiet morning", () => {
     expect(decideDigestDelivery(base)).toEqual({ action: "brief" });
   });
 
-  it("stays silent when the window is closed: nothing is held and no template is owed", () => {
+  it("holds the brief when the window is closed or has never opened", () => {
     expect(
       decideDigestDelivery({ ...base, lastLawyerInboundAtMs: at.getTime() - 30 * 60 * 60 * 1000 }),
-    ).toEqual({ action: "silent" });
+    ).toEqual({ action: "hold_brief" });
     expect(decideDigestDelivery({ ...base, lastLawyerInboundAtMs: null })).toEqual({
-      action: "silent",
+      action: "hold_brief",
     });
+  });
+
+  it("holds nothing when no brief is owed, even with the window closed", () => {
+    const closed = { ...base, lastLawyerInboundAtMs: at.getTime() - 30 * 60 * 60 * 1000 };
+    expect(decideDigestDelivery({ ...closed, briefedToday: true })).toEqual({ action: "silent" });
+    expect(decideDigestDelivery({ ...closed, morningPass: false })).toEqual({ action: "silent" });
   });
 
   it("stays silent when a brief already went out on this local day", () => {
@@ -214,6 +220,8 @@ describe("runAdaCollectPass", () => {
       lastConnectNudgeAtMs: null,
       heldPlanJson: null,
       heldPlanAtMs: null,
+      heldPlanTemplateAttemptedAtMs: null,
+      heldBriefDay: null,
       watchExpirationMs: null,
       openTodoIdsJson: null,
       ...params.wake,
@@ -638,16 +646,22 @@ describe("runAdaCollectPass", () => {
       expect(t.wake().lastMorningBriefAtMs).toBe(now.getTime());
     });
 
-    it("keeps today's behavior when the window is closed: nothing sent, held, or templated", async () => {
+    it("holds the brief for the day when the window is closed, and sends nothing yet", async () => {
       const t = setup({ wake: { lastLawyerInboundAtMs: now.getTime() - 30 * 60 * 60 * 1000 } });
       await t.run({ trigger: "morning" });
       expect(t.dispatched).toEqual([]);
       expect(t.wake()).toMatchObject({
         lastCollectAtMs: now.getTime(),
         heldPlanJson: null,
+        heldBriefDay: "2026-10-14",
         lastMorningBriefAtMs: null,
       });
-      expect(t.events()[0]).toMatchObject({ decision: "silent", windowOpen: false });
+      expect(t.events()[0]).toMatchObject({
+        decision: "hold_brief",
+        held: true,
+        delivered: false,
+        windowOpen: false,
+      });
     });
 
     it("still holds an urgent plan when the window is closed at the morning pass", async () => {

@@ -87,13 +87,15 @@ type DeliverablePlan = Extract<DigestPlan, { deliver: true }>;
 export type DigestDeliveryDecision =
   | { action: "silent" }
   | { action: "brief" }
+  | { action: "hold_brief" }
   | { action: "batch" }
   | { action: "hold"; plan: DeliverablePlan }
   | { action: "dispatch"; plan: DeliverablePlan };
 
 /**
  * Decide after collectDigest: no model is involved. A quiet morning pass still earns the short
- * brief, but only inside the WhatsApp window and never a second time on the same local day.
+ * brief, but only inside the WhatsApp window and never a second time on the same local day. With
+ * the window closed the brief is held for the number's reply instead of lost.
  */
 export function decideDigestDelivery(params: {
   result: CollectResult;
@@ -109,9 +111,12 @@ export function decideDigestDelivery(params: {
   const plan = params.result.plan;
   if (!plan.deliver) {
     const owed = params.morningPass && !params.briefedToday;
-    return owed && whatsappWindowOpen(params.lastLawyerInboundAtMs, params.now.getTime())
+    if (!owed) {
+      return { action: "silent" };
+    }
+    return whatsappWindowOpen(params.lastLawyerInboundAtMs, params.now.getTime())
       ? { action: "brief" }
-      : { action: "silent" };
+      : { action: "hold_brief" };
   }
   const morning =
     (params.forceMorning && !params.briefedToday) ||
@@ -521,8 +526,10 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
   const day = dayKey(params.now, timeZone);
   // A catch-up that runs once the local morning is over skips the quiet brief for that day;
   // an urgent plan still goes out or is held as usual.
+  // A reply that releases a brief held earlier today is that morning pass, run late.
+  const releasingBrief = params.trigger === "inbound" && wake.heldBriefDay === day;
   const morningPass =
-    params.trigger === "morning" &&
+    (params.trigger === "morning" || releasingBrief) &&
     !preferences.some((preference) => preference.key === QUIET_BRIEF_OFF_KEY) &&
     !(params.catchUp && localParts(nowMs, timeZone).hour >= CATCH_UP_BRIEF_CUTOFF_HOUR);
   // Read from the stored time alone: a quiet-brief preference or a late catch-up changes whether a
@@ -561,6 +568,20 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
       ...keptRows(previousCalendar, (row) => row.eventId),
     ]);
   };
+  /** One nudge template; the caller has already written its claim, and a failure is never retried. */
+  const sendNudge = async (template: KapsoTemplate) => {
+    const send =
+      params.sendDigestReadyNotice ??
+      ((value: KapsoTemplate) =>
+        sendDigestReadyNotice({ api: params.api, template: value, to: `+${params.owner}` }));
+    try {
+      await send(template);
+    } catch (error) {
+      params.api.logger.warn(
+        `ada digest-ready template failed: ${error instanceof Error ? error.message : "unknown"}`,
+      );
+    }
+  };
   const noHeldPlan = {
     heldPlanJson: null,
     heldPlanAtMs: null,
@@ -588,6 +609,8 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
       lastCollectAtMs: nowMs,
       openTodoIdsJson: JSON.stringify(openTodoIds),
       ...noHeldPlan,
+      // A reply that finds nothing owed (briefed already, brief turned off) settles the held day.
+      ...(params.trigger === "inbound" ? { heldBriefDay: null } : {}),
     });
     return {
       collected: true,
@@ -624,7 +647,10 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
       lastCollectAtMs: nowMs,
       openTodoIdsJson: JSON.stringify(openTodoIds),
       ...noHeldPlan,
-      ...(dispatch.ok ? { lastDigestAtMs: nowMs, lastMorningBriefAtMs: nowMs } : {}),
+      // A failed release keeps the held day, so the number's next message the same day tries again.
+      ...(dispatch.ok
+        ? { lastDigestAtMs: nowMs, lastMorningBriefAtMs: nowMs, heldBriefDay: null }
+        : {}),
     });
     return {
       collected: true,
@@ -633,6 +659,39 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
       result,
       ...(dispatch.ok ? {} : { reason: dispatch.reason ?? "dispatch_rejected" }),
       decision: "brief",
+      windowOpen,
+    };
+  }
+
+  if (decision.action === "hold_brief") {
+    // Held for the number's reply, which releases it the same local day. At most one template per
+    // number per local day, claimed (heldBriefDay) with the hold and before the send, so a crash or
+    // a timeout that Kapso actually accepted can never produce a second nudge.
+    const nudgedToday =
+      wake.heldBriefDay === day ||
+      (wake.heldPlanTemplateAttemptedAtMs !== null &&
+        dayKey(new Date(wake.heldPlanTemplateAttemptedAtMs), timeZone) === day);
+    const template = nudgedToday ? null : readDigestReadyTemplate(params.api.pluginConfig);
+    if (!nudgedToday && !template) {
+      warnDigestReadyTemplateUnset(params.api);
+    }
+    // Nothing urgent was dropped, so the baseline advances like in the brief itself.
+    await commitSnapshots();
+    await params.memory.writeWake({
+      lastCollectAtMs: nowMs,
+      openTodoIdsJson: JSON.stringify(openTodoIds),
+      heldBriefDay: day,
+    });
+    if (template) {
+      await sendNudge(template);
+    }
+    return {
+      collected: true,
+      delivered: false,
+      held: true,
+      result,
+      reason: "whatsapp_window_closed",
+      decision: "hold_brief",
       windowOpen,
     };
   }
@@ -656,17 +715,7 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
       ...(needsTemplate && template ? { heldPlanTemplateAttemptedAtMs: nowMs } : {}),
     });
     if (needsTemplate && template) {
-      const send =
-        params.sendDigestReadyNotice ??
-        ((value: KapsoTemplate) =>
-          sendDigestReadyNotice({ api: params.api, template: value, to: `+${params.owner}` }));
-      try {
-        await send(template);
-      } catch (error) {
-        params.api.logger.warn(
-          `ada digest-ready template failed: ${error instanceof Error ? error.message : "unknown"}`,
-        );
-      }
+      await sendNudge(template);
     }
     return {
       collected: true,
@@ -723,6 +772,7 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
       : {}),
     openTodoIdsJson: JSON.stringify(openTodoIds),
     ...noHeldPlan,
+    heldBriefDay: null,
   });
   return {
     collected: true,
@@ -1046,10 +1096,23 @@ export async function recordSenderInbound(params: {
   await runCollectExclusive(
     async () => {
       const wake = await memory.readWake();
-      if (!wake.heldPlanJson) {
+      let briefHeldToday = false;
+      if (wake.heldBriefDay !== null) {
+        const day = dayKey(
+          new Date(params.atMs),
+          effectiveTimeZone((await memory.readProfile())?.timezone),
+        );
+        briefHeldToday = wake.heldBriefDay === day;
+        if (!briefHeldToday) {
+          // A brief held for an earlier day is dropped: a reply now would be a stale one.
+          await memory.writeWake({ heldBriefDay: null });
+        }
+      }
+      if (!wake.heldPlanJson && !briefHeldToday) {
         return;
       }
-      // Re-collect so a stale held plan cannot fire after the calendar moved on.
+      // Re-collect so a stale held plan cannot fire after the calendar moved on. A held brief is
+      // built now, from today's calendar and mail, as the morning pass would have built it.
       await runLoggedCollectPass({
         api: params.api,
         owner,

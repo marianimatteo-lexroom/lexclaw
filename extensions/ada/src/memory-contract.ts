@@ -123,6 +123,11 @@ export type WakeState = {
   heldPlanTemplateAttemptedAtMs: number | null;
   /** When the current held plan was first held; cleared with heldPlanJson. */
   heldPlanAtMs: number | null;
+  /**
+   * The local day (YYYY-MM-DD in the number's zone) whose morning brief is held for a closed
+   * WhatsApp window. Also the claim for that day's one nudge template, written before the send.
+   */
+  heldBriefDay: string | null;
   watchExpirationMs: number | null;
   /** JSON string array of open lawyer todo ids from the last collect. */
   openTodoIdsJson: string | null;
@@ -141,6 +146,7 @@ export const EMPTY_WAKE_STATE: WakeState = {
   heldPlanNextAttemptAtMs: null,
   heldPlanTemplateAttemptedAtMs: null,
   heldPlanAtMs: null,
+  heldBriefDay: null,
   watchExpirationMs: null,
   openTodoIdsJson: null,
 };

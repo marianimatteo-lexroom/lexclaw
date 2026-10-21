@@ -227,6 +227,7 @@ CREATE TABLE IF NOT EXISTS vera_wake_state (
   held_plan_next_attempt_at_ms INTEGER,
   held_plan_template_attempted_at_ms INTEGER,
   held_plan_at_ms INTEGER,
+  held_brief_day TEXT,
   watch_expiration_ms INTEGER,
   open_todo_ids_json TEXT
 ) STRICT;
@@ -379,6 +380,7 @@ type AdaMemoryDatabase = {
     held_plan_next_attempt_at_ms: number | null;
     held_plan_template_attempted_at_ms: number | null;
     held_plan_at_ms: number | null;
+    held_brief_day: string | null;
     watch_expiration_ms: number | null;
     open_todo_ids_json: string | null;
   };
@@ -614,6 +616,7 @@ function emptyWake(): WakeState {
     heldPlanNextAttemptAtMs: null,
     heldPlanTemplateAttemptedAtMs: null,
     heldPlanAtMs: null,
+    heldBriefDay: null,
     watchExpirationMs: null,
     openTodoIdsJson: null,
   };
@@ -1445,6 +1448,7 @@ class AdaMemoryDatabaseStore {
       heldPlanNextAttemptAtMs: row.held_plan_next_attempt_at_ms,
       heldPlanTemplateAttemptedAtMs: row.held_plan_template_attempted_at_ms,
       heldPlanAtMs: row.held_plan_at_ms ?? null,
+      heldBriefDay: row.held_brief_day ?? null,
       watchExpirationMs: row.watch_expiration_ms,
       openTodoIdsJson: row.open_todo_ids_json ?? null,
     };
@@ -1492,6 +1496,8 @@ class AdaMemoryDatabaseStore {
               : current.heldPlanTemplateAttemptedAtMs,
           heldPlanAtMs:
             patch.heldPlanAtMs !== undefined ? patch.heldPlanAtMs : current.heldPlanAtMs,
+          heldBriefDay:
+            patch.heldBriefDay !== undefined ? patch.heldBriefDay : current.heldBriefDay,
           watchExpirationMs:
             patch.watchExpirationMs !== undefined
               ? patch.watchExpirationMs
@@ -1518,6 +1524,7 @@ class AdaMemoryDatabaseStore {
             held_plan_next_attempt_at_ms: next.heldPlanNextAttemptAtMs,
             held_plan_template_attempted_at_ms: next.heldPlanTemplateAttemptedAtMs,
             held_plan_at_ms: next.heldPlanAtMs,
+            held_brief_day: next.heldBriefDay,
             watch_expiration_ms: next.watchExpirationMs,
             open_todo_ids_json: next.openTodoIdsJson,
           }),
@@ -1894,6 +1901,7 @@ function openAdaMemoryDatabase(dbPath: string): AdaMemoryDatabaseStore {
       ["last_morning_brief_at_ms", "INTEGER"],
       ["last_connect_nudge_at_ms", "INTEGER"],
       ["held_plan_at_ms", "INTEGER"],
+      ["held_brief_day", "TEXT"],
     ] as const) {
       if (!wakeColumns.some((existing) => existing.name === column)) {
         db.exec(`ALTER TABLE vera_wake_state ADD COLUMN ${column} ${type}`);

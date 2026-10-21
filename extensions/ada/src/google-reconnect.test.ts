@@ -180,6 +180,7 @@ function memory(lastLawyerInboundAtMs: number | null = NOW.getTime() - HOUR_MS):
     heldPlanAttempts: 0,
     heldPlanNextAttemptAtMs: null,
     heldPlanTemplateAttemptedAtMs: null,
+    heldBriefDay: null,
     watchExpirationMs: null,
     openTodoIdsJson: null,
   };

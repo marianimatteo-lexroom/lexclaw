@@ -133,6 +133,30 @@ describe("deploy/railway/start.sh after the rename to Ada", () => {
     ).toHaveLength(2);
   });
 
+  describe("the Kapso health monitor", () => {
+    const KEY = 'channels["kapso-whatsapp"].healthMonitor.enabled';
+    const ENV = { ADA_PUBLIC_ORIGIN: "https://ada.example.com" };
+
+    it("is turned off on every boot, so the webhook-only channel is not restarted forever", () => {
+      const deploy = boot(ENV, { [KEY]: true });
+      expect(deploy.run().status).toBe(0);
+      expect(deploy.store()[KEY]).toBe(false);
+      expect(deploy.run().status).toBe(0);
+      expect(deploy.calls().filter((call) => call === `config set ${KEY} false`)).toHaveLength(2);
+    });
+
+    it("never stops the boot when the plugin schema refuses the key", () => {
+      const deploy = boot({ ...ENV, STUB_FAIL: `config set ${KEY}` });
+      const result = deploy.run();
+      expect(result.status).toBe(0);
+      expect(`${result.stdout}${result.stderr}`).toContain(
+        "could not turn off the health monitor for kapso-whatsapp",
+      );
+      expect(deploy.store()['channels["kapso-whatsapp"].dmSecurity']).toBe("open");
+      expect(deploy.store()["session.dmScope"]).toBe("per-channel-peer");
+    });
+  });
+
   it("lets ADA_* win over VERA_* when both are set", () => {
     const deploy = boot({
       ADA_PUBLIC_ORIGIN: "https://ada.example.com",
