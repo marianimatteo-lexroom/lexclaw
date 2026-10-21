@@ -107,6 +107,15 @@
           "name": { "type": "string" },
           "language": { "type": "string" }
         }
+      },
+      "requestReadyTemplate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "language"],
+        "properties": {
+          "name": { "type": "string" },
+          "language": { "type": "string" }
+        }
       }
     }
   },

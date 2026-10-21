@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { takeConnectOffers } from "./connect-offers.js";
 import type { LexroomFailure, ResearchOutcome } from "./lexroom-client.js";
 import { extractPdfText } from "./pdf-text.js";
 import { clearInboundLanguages, recordInboundLanguage } from "./research-link-outbound.js";
@@ -75,8 +76,25 @@ beforeEach(() => {
 describe("researchMessage", () => {
   it("is the answer, the cited sources and the link line, last", async () => {
     expect(await researchMessage(outcome(), {})).toBe(
-      `${ITALIAN} [1]\n\n*Fonti*\n[1] Cass. civ. 1/2024 - Suprema Corte di Cassazione, 01/02/2024\n\nContinua su Lexroom: ${URL_A}`,
+      `${ITALIAN} [1]\n\n*Fonti*\n[1] Cass. civ. 1/2024 - Suprema Corte di Cassazione, 01/02/2024\n\nVuoi che ne tragga una bozza?\n\nContinua su Lexroom: ${URL_A}`,
     );
+  });
+
+  it("closes a finished research with one next-step question in the answer's language", async () => {
+    const english = await researchMessage(outcome({ answer: `${ENGLISH} [1]` }), {});
+    expect(english).toContain("\n\nWant me to turn this into a draft?\n\nContinue in Lexroom:");
+    expect(english).not.toContain("Vuoi che");
+    const closing = await Promise.all(
+      [ITALIAN, ENGLISH].map((answer) => researchMessage(outcome({ answer, sources: [] }), {})),
+    );
+    for (const text of closing) {
+      expect(text.match(/\?/gu)).toHaveLength(1);
+    }
+  });
+
+  it("asks nothing after a failed research", async () => {
+    const text = await researchMessage({ ok: false, reason: "timeout", error: "t" } as never, {});
+    expect(text).not.toContain("bozza");
   });
 
   it("follows the answer's language", async () => {
@@ -87,7 +105,7 @@ describe("researchMessage", () => {
 
   it("leaves out what a research does not have", async () => {
     expect(await researchMessage(outcome({ sources: [], researchUrl: undefined }), {})).toBe(
-      `${ITALIAN} [1]`,
+      `${ITALIAN} [1]\n\nVuoi che ne tragga una bozza?`,
     );
   });
 
@@ -116,7 +134,9 @@ describe("researchMessage", () => {
   it("sends an answer that fits unchanged", async () => {
     const answer = `${ITALIAN} [1]`.padEnd(2000, " x").trimEnd();
     const text = await researchMessage(outcome({ answer, sources: [] }), {});
-    expect(text).toBe(`${answer}\n\nContinua su Lexroom: ${URL_A}`);
+    expect(text).toBe(
+      `${answer}\n\nVuoi che ne tragga una bozza?\n\nContinua su Lexroom: ${URL_A}`,
+    );
     expect(text).not.toContain("…");
   });
 
@@ -553,6 +573,83 @@ describe("the live window check", () => {
     expect(await livePushDeps(api, vi.fn(), "390000000043").windowOpen()).toBeNull();
   });
 
+  it("nudges a held result with the utility template, and with the digest template when that is all there is", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ messages: [{ id: "w" }] })));
+    vi.stubGlobal("fetch", fetchImpl);
+    try {
+      const withTemplates = (pluginConfig: unknown) =>
+        livePushDeps(
+          {
+            ...api,
+            config: {
+              channels: {
+                "kapso-whatsapp": {
+                  apiKey: "kapso_test_key",
+                  phoneNumberId: "100000000000000",
+                  baseUrl: "https://api.kapso.ai/meta/whatsapp/",
+                },
+              },
+            },
+            pluginConfig,
+          } as unknown as Parameters<typeof livePushDeps>[0],
+          vi.fn(),
+          A,
+        );
+      const names = () =>
+        fetchImpl.mock.calls.map(
+          (call) => JSON.parse(String((call[1] as RequestInit).body)).template.name,
+        );
+      const digest = { name: "ada_digest_ready", language: "it" };
+      const request = { name: "ada_request_ready", language: "it" };
+
+      expect(
+        await withTemplates({ digestReadyTemplate: digest, requestReadyTemplate: request }).nudge(),
+      ).toBe("sent");
+      expect(await withTemplates({ digestReadyTemplate: digest }).nudge()).toBe("sent");
+      expect(await withTemplates({}).nudge()).toBe("unset");
+      expect(names()).toEqual(["ada_request_ready", "ada_digest_ready"]);
+
+      fetchImpl.mockImplementation(async () => new Response("{}", { status: 400 }));
+      expect(await withTemplates({ requestReadyTemplate: request }).nudge()).toBe("failed");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("remembers every result released together for the next turn, not only the last", async () => {
+    const owner = "390000000088";
+    const sendText = vi.fn(async (_params: { to: string; text: string }) => undefined);
+    const live = {
+      ...api,
+      runtime: { channel: { outbound: { loadAdapter: async () => ({ sendText }) } } },
+    } as unknown as Parameters<typeof livePushDeps>[0];
+    for (const [jobId, query, matterId, researchId] of [
+      ["rj1", "recesso locazione", "m-1", "res-1"],
+      ["rj2", "caparra", "m-2", "res-2"],
+    ] as const) {
+      await pushResearchResult(
+        {
+          jobId,
+          startedAtMs: 0,
+          query,
+          matterId,
+          result: outcome({
+            researchId,
+            researchUrl: `https://app.lexroom.ai/research/${researchId}`,
+          }),
+        },
+        makeDeps({ windowOpen: async () => false, recipient: owner, now: Date.now }).deps,
+      );
+    }
+    expect(await releaseHeldResearch(livePushDeps(live, vi.fn(), owner))).toBe(2);
+    const [offer] = takeConnectOffers(owner, { inboundAtMs: Date.now() + 1_000 });
+    expect(offer?.kind).toBe("research_result");
+    expect(JSON.parse(offer?.detail ?? "[]")).toEqual([
+      { query: "recesso locazione", matterId: "m-1", researchId: "res-1" },
+      { query: "caparra", matterId: "m-2", researchId: "res-2" },
+    ]);
+  });
+
   it("releases the held results of the sender who wrote, and only theirs", async () => {
     const sendText = vi.fn(async (_params: { to: string; text: string }) => undefined);
     const live = {
@@ -580,6 +677,57 @@ describe("the live window check", () => {
     expect(sendText.mock.calls[0]?.[0]).toMatchObject({ to: `+${B}` });
     expect(sendText.mock.calls[0]?.[0].text).toContain(B);
     expect(sendText.mock.calls[0]?.[0].text).not.toContain(A);
+  });
+});
+
+describe("noting a delivered research for the next turn", () => {
+  it("notes the question of a finished research once it reaches the person, live or released", async () => {
+    const noteResult = vi.fn();
+    const live = makeDeps({ noteResult });
+    await pushResearchResult(
+      {
+        jobId: "j1",
+        startedAtMs: 0,
+        query: "recesso locazione",
+        matterId: "matter-1",
+        result: outcome(),
+      },
+      live.deps,
+    );
+    expect(noteResult).toHaveBeenCalledExactlyOnceWith({
+      query: "recesso locazione",
+      matterId: "matter-1",
+      researchId: "aaa111",
+    });
+
+    const held = makeDeps({ noteResult: vi.fn(), windowOpen: async () => false });
+    await pushResearchResult(
+      { jobId: "j2", startedAtMs: 0, query: "caparra", matterId: "matter-2", result: outcome() },
+      held.deps,
+    );
+    expect(held.deps.noteResult).not.toHaveBeenCalled();
+    const released = makeDeps({ noteResult: vi.fn() });
+    await releaseHeldResearch(released.deps);
+    expect(released.deps.noteResult).toHaveBeenCalledExactlyOnceWith({
+      query: "caparra",
+      matterId: "matter-2",
+      researchId: "aaa111",
+    });
+  });
+
+  it("notes nothing for a failed research", async () => {
+    const noteResult = vi.fn();
+    const { deps } = makeDeps({ noteResult });
+    await pushResearchResult(
+      {
+        jobId: "j3",
+        startedAtMs: 0,
+        query: "q",
+        result: { ok: false, reason: "timeout", error: "t" } as LexroomFailure,
+      },
+      deps,
+    );
+    expect(noteResult).not.toHaveBeenCalled();
   });
 });
 

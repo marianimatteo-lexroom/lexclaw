@@ -103,15 +103,35 @@ const PLAN: Extract<DigestPlan, { deliver: true }> = {
 };
 
 describe("the digest as a pending question", () => {
-  it("lists the next steps and every numbered item with what its line offered", () => {
+  it("lists the closing question, the draft that may follow and every numbered item", () => {
     expect(digestOfferDetail(PLAN)).toBe(
       [
-        "  - a Lexroom research for Rossi SRL; a yes starts it",
-        "  - a draft for Rossi SRL, only after the research and with their ok",
-        "  - item 1: Bianchi, hearing 2026-11-12 09:30; offered: start the Lexroom research, or skip it",
-        "  - item 2: Verdi, hearing 2026-11-12 09:30; offered: send the stored brief again, or skip it",
+        "  - the closing question: a Lexroom research for Rossi SRL; a bare yes starts it",
+        "  - not offered in the message: after a research, a draft for Rossi SRL, only with their ok",
+        "  - item 1: Bianchi, hearing 2026-11-12 09:30; offered: marked to be confirmed: confirming it means ada_deadline_reply with track (confirm tracking only, no research); research only when they ask for it, or skip it",
+        "  - item 2: Verdi, hearing 2026-11-12 09:30; offered: send the stored brief again (ada_deadline_reply with brief), or skip it",
       ].join("\n"),
     );
+  });
+
+  it("says a yes resends the stored brief when the top item already has one, as the question does", () => {
+    const stored = {
+      ...PLAN,
+      nextSteps: PLAN.nextSteps.map((step) => ({ ...step, matterId: "m", matterLabel: "Verdi" })),
+    } as typeof PLAN;
+    const detail = digestOfferDetail(stored);
+    expect(detail).toContain(
+      "the closing question: sending the stored brief of Verdi again; a bare yes means ada_deadline_reply with brief for item 2, not a new research",
+    );
+    expect(detail).not.toContain("a bare yes starts it");
+  });
+
+  it("maps a confirmed candidate to tracking only, and research to an explicit ask", () => {
+    const note = connectOfferNote([{ kind: "digest", detail: digestOfferDetail(PLAN) }]) ?? "";
+    expect(note).toContain(
+      "track (an item marked to be confirmed: confirm tracking only, no research)",
+    );
+    expect(note).toContain("research only when they ask for it");
   });
 
   it("is handed to the model with the actions and the instruction to ask which one when unclear", () => {

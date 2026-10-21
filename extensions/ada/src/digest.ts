@@ -15,11 +15,30 @@ export const DIGEST_SIGNAL_KINDS = [
 
 export type DigestSignalKind = (typeof DIGEST_SIGNAL_KINDS)[number];
 
+/**
+ * How a signal reads to the person, kept as data so the digest renders it in their language.
+ * `summary` stays an English line for the model and for plans stored before this field existed.
+ */
+export type DigestPhrase =
+  | { id: "calendar_moved" | "calendar_due"; text: string }
+  | { id: "new_email" }
+  | {
+      id: "tracked_deadline";
+      type: "deadline" | "hearing";
+      /** Local date and time as the deadline lines show it, for example "2026-11-12 09:30". */
+      due: string;
+      title: string;
+      /** Found but not yet confirmed by the person. */
+      confirm?: boolean;
+      moved?: boolean;
+    };
+
 export type DigestSignal = {
   matterId: string;
   matterLabel: string;
   kind: DigestSignalKind;
   summary: string;
+  phrase?: DigestPhrase;
   /** ISO-8601 time the lawyer would miss by waiting. */
   dueAt?: string;
   /** The calendar item moved earlier than it was. */
@@ -38,6 +57,7 @@ export type RankedDigestItem = {
   matterLabel: string;
   kind: DigestSignalKind;
   summary: string;
+  phrase?: DigestPhrase;
   cost: number;
   dueAt?: string;
 };
@@ -246,6 +266,7 @@ export function planDigest(
       matterLabel: signal.matterLabel,
       kind: signal.kind,
       summary: signal.summary,
+      ...(signal.phrase ? { phrase: signal.phrase } : {}),
       cost,
       ...(signal.dueAt ? { dueAt: signal.dueAt } : {}),
     };

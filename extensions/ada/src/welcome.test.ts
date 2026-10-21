@@ -3,6 +3,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { takeConnectOffers } from "./connect-offers.js";
 import type { MemoryStore } from "./memory.js";
 import { createSqliteWorkerBackend } from "./memory.worker.js";
 import { greetingLanguage, registerWelcomeHook, welcomeEnabled, welcomeText } from "./welcome.js";
@@ -20,6 +21,9 @@ const ANNA = "393331111111";
 const BRUNO = "393332222222";
 const DEFAULT_TO = `+${LAWYER}`;
 const NOW = 1_800_000_000_000;
+const ALL = { outlook: true, reminders: true, question: true };
+const NONE = { outlook: false, reminders: false, question: true };
+const NO_QUESTION = { outlook: false, reminders: false, question: false };
 
 type BackendCommand = { type: string; input: unknown };
 type Backend = ReturnType<typeof createSqliteWorkerBackend>;
@@ -46,7 +50,7 @@ type Inbound = {
   group?: boolean;
 };
 
-function setup(options: { databasePath?: string } = {}) {
+function setup(options: { databasePath?: string; pluginConfig?: Record<string, unknown> } = {}) {
   const databasePath =
     options.databasePath ?? path.join(tempDirs.make("ada-welcome-"), "memory.sqlite");
   const opened = openStore(databasePath);
@@ -63,6 +67,7 @@ function setup(options: { databasePath?: string } = {}) {
   let handler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
   const api = createTestPluginApi({
     id: "ada",
+    ...(options.pluginConfig ? { pluginConfig: options.pluginConfig } : {}),
     logger: { info, warn, error: vi.fn(), debug: vi.fn() },
     config: {
       channels: { "kapso-whatsapp": { defaultTo: DEFAULT_TO } },
@@ -108,6 +113,10 @@ beforeEach(() => {
   vi.setSystemTime(NOW);
   vi.stubEnv("ADA_WELCOME_ENABLED", "");
   vi.stubEnv("VERA_WELCOME_ENABLED", "");
+  for (const name of ["MS_CLIENT_ID", "MS_CLIENT_SECRET"]) {
+    vi.stubEnv(`ADA_${name}`, "");
+    vi.stubEnv(`VERA_${name}`, "");
+  }
 });
 
 afterEach(() => {
@@ -122,8 +131,14 @@ describe("first-message welcome", () => {
 
     expect(await ada.inbound({ text: "Ciao Ada" })).toEqual({ handled: true });
 
-    expect(ada.textsTo(ANNA).map((entry) => entry.text)).toEqual([welcomeText("it")]);
+    expect(ada.textsTo(ANNA).map((entry) => entry.text)).toEqual([welcomeText("it", NONE)]);
     expect(ada.answered).toHaveBeenCalledTimes(1);
+    // Their reply to the closing question reaches the model with a note saying what it answers.
+    expect(
+      takeConnectOffers(ANNA, { inboundAtMs: NOW + 1_000, nowMs: NOW + 1_000 }).map(
+        (offer) => offer.kind,
+      ),
+    ).toEqual(["welcome_question"]);
     void ada.backend.close();
   });
 
@@ -132,9 +147,28 @@ describe("first-message welcome", () => {
 
     expect(await ada.inbound({ text: "Entro quanto devo impugnare una multa?" })).toBeUndefined();
 
-    expect(ada.textsTo(ANNA).map((entry) => entry.text)).toEqual([welcomeText("it")]);
+    expect(ada.textsTo(ANNA).map((entry) => entry.text)).toEqual([welcomeText("it", NO_QUESTION)]);
+    expect(ada.textsTo(ANNA)[0]?.text).not.toContain("?");
     expect(ada.answered).not.toHaveBeenCalled();
+    expect(takeConnectOffers(ANNA, { inboundAtMs: NOW + 1_000, nowMs: NOW + 1_000 })).toEqual([]);
     void ada.backend.close();
+  });
+
+  it("names Outlook and deadline reminders only when this deployment has them", async () => {
+    vi.stubEnv("ADA_MS_CLIENT_ID", "client");
+    vi.stubEnv("ADA_MS_CLIENT_SECRET", "secret");
+    const ada = setup({ pluginConfig: { deadlineIntake: { enabled: true } } });
+    await ada.inbound({ text: "Ciao Ada" });
+    expect(ada.textsTo(ANNA).map((entry) => entry.text)).toEqual([welcomeText("it", ALL)]);
+    expect(ada.textsTo(ANNA)[0]?.text).toMatch(/Gmail o Outlook[\s\S]*udienze e scadenze/u);
+    void ada.backend.close();
+
+    vi.stubEnv("ADA_MS_CLIENT_ID", "");
+    vi.stubEnv("ADA_MS_CLIENT_SECRET", "");
+    const bare = setup();
+    await bare.inbound({ text: "Ciao Ada", from: BRUNO });
+    expect(bare.textsTo(BRUNO)[0]?.text).not.toMatch(/Outlook|udienze e scadenze/u);
+    void bare.backend.close();
   });
 
   it("welcomes a number only once", async () => {
@@ -283,10 +317,10 @@ describe("first-message welcome", () => {
     await ada.inbound({ text: "???", from: "393331000004" });
 
     expect(ada.sent.map((entry) => entry.text)).toEqual([
-      welcomeText("en"),
-      welcomeText("es"),
-      welcomeText("en"),
-      welcomeText("it"),
+      welcomeText("en", NONE),
+      welcomeText("es", NONE),
+      welcomeText("en", NO_QUESTION),
+      welcomeText("it", NO_QUESTION),
     ]);
     void ada.backend.close();
   });
@@ -334,12 +368,10 @@ describe("greetingLanguage", () => {
 
 describe("welcome text", () => {
   const LANGUAGES = ["it", "en", "es", "fr", "de"] as const;
-  /** The template's own English sentence describes what Ada can do; it is not an instruction. */
-  const DESCRIPTIVE_OPENING = "connect Gmail and Calendar so she can manage";
 
   it("is signed Ada in every language and never says Vera", () => {
     for (const language of LANGUAGES) {
-      const text = welcomeText(language);
+      const text = welcomeText(language, ALL);
       expect(text, language).toContain("Ada");
       expect(text, language).toContain("Lexroom");
       expect(text, language).not.toMatch(/vera/iu);
@@ -348,7 +380,7 @@ describe("welcome text", () => {
 
   it("never teaches a command: no quoted phrase, no keyword, in any language", () => {
     for (const language of LANGUAGES) {
-      const text = welcomeText(language).replace(DESCRIPTIVE_OPENING, "");
+      const text = welcomeText(language, ALL);
       expect(text, language).not.toMatch(/«|»/u);
       expect(text, language).not.toMatch(
         /collega Lexroom|collega Gmail|connect Lexroom|connect Gmail|conecta Lexroom|conecta Gmail|connecte Lexroom|connecte Gmail|Lexroom verbinden|Gmail verbinden/iu,
@@ -359,52 +391,102 @@ describe("welcome text", () => {
     }
   });
 
-  it("opens with the ada_welcome template text, without its reply-to-start line", () => {
-    expect(welcomeText("it")).toMatch(
-      /^Ti diamo il benvenuto su Ada, l'assistente legale di Lexroom su WhatsApp\. Puoi farle domande giuridiche, chiederle una ricerca su Lexroom e collegare Gmail e Calendar per gestire posta, appuntamenti e scadenze\.\n\n/u,
+  it("is short and in the first person from the first word, with no third-person introduction", () => {
+    const openings = {
+      it: "Sono Ada, l'assistente legale di Lexroom su WhatsApp. Posso:",
+      en: "I'm Ada, Lexroom's legal assistant on WhatsApp. I can:",
+      es: "Soy Ada, la asistente legal de Lexroom en WhatsApp. Puedo:",
+      fr: "Je suis Ada, l'assistante juridique de Lexroom sur WhatsApp. Je peux :",
+      de: "Ich bin Ada, die juristische Assistentin von Lexroom auf WhatsApp. Ich kann:",
+    } as const;
+    for (const language of LANGUAGES) {
+      const text = welcomeText(language, ALL);
+      expect(text.startsWith(openings[language]), language).toBe(true);
+      expect(text, language).not.toMatch(
+        /Ti diamo il benvenuto|Welcome to Ada|Te damos la bienvenida|Bienvenue sur Ada|Willkommen bei Ada|farle|ask her|hacerle|lui poser|ihr Rechtsfragen/iu,
+      );
+      expect(text.length, language).toBeLessThan(650);
+    }
+  });
+
+  it("leaves out Outlook and the reminder bullet when they are not available, in every language", () => {
+    for (const language of LANGUAGES) {
+      const bullets = (features: { outlook: boolean; reminders: boolean; question: boolean }) =>
+        welcomeText(language, features)
+          .split("\n\n")[0]!
+          .split("\n")
+          .filter((line) => line.startsWith("•"));
+      expect(bullets(ALL), language).toHaveLength(4);
+      expect(bullets({ ...ALL, outlook: false }).join("\n"), language).not.toContain("Outlook");
+      expect(bullets({ ...ALL, outlook: false }), language).toHaveLength(4);
+      expect(bullets({ ...ALL, reminders: false }), language).toHaveLength(3);
+      expect(bullets({ ...ALL, reminders: false }).join("\n"), language).toContain("Outlook");
+      const none = welcomeText(language, NONE);
+      expect(none, language).not.toContain("Outlook");
+      expect(bullets(NONE), language).toHaveLength(3);
+      expect(bullets(NONE)[1], language).toContain("Gmail");
+      expect(none.match(/\?/gu), language).toHaveLength(1);
+    }
+  });
+
+  it("lists what Ada can do: legal questions and Lexroom research, mail and calendar, Granola, deadline reminders", () => {
+    for (const language of LANGUAGES) {
+      const bullets = welcomeText(language, ALL)
+        .split("\n\n")[0]!
+        .split("\n")
+        .filter((line) => line.startsWith("•"));
+      expect(bullets, language).toHaveLength(4);
+      expect(bullets[0], language).toContain("Lexroom");
+      expect(bullets[1], language).toMatch(/Gmail/u);
+      expect(bullets[1], language).toMatch(/Outlook/u);
+      expect(bullets[2], language).toContain("Granola");
+      expect(bullets[3], language).toMatch(/udienz|hearing|audiencia|audience|Termin/u);
+    }
+  });
+
+  it("keeps the lawyer and privacy disclaimer and says accounts are connected only when needed", () => {
+    const [, notes] = welcomeText("it", ALL).split("\n\n");
+    expect(notes).toBe(
+      "I tuoi account li collego solo quando serve, e le mie risposte non sostituiscono quelle di un avvocato. Le chat di ognuno restano private.",
     );
-    expect(welcomeText("en")).toMatch(
-      /^Welcome to Ada, Lexroom's legal assistant on WhatsApp\. You can ask her legal questions, have her run research on Lexroom, and connect Gmail and Calendar so she can manage your email, meetings and deadlines\.\n\n/u,
+    expect(welcomeText("en", ALL).split("\n\n")[1]).toBe(
+      "I only connect your accounts when it's needed, and my answers don't replace a lawyer. Everyone's chats stay private.",
     );
     for (const language of LANGUAGES) {
-      expect(welcomeText(language), language).not.toMatch(
-        /Rispondi a questo messaggio|Reply to this message|Cosa posso fare|What I can do/iu,
+      expect(welcomeText(language, ALL).split("\n\n")[1], language).toMatch(
+        /avvocato|lawyer|abogado|avocat|Anwalt/u,
       );
     }
   });
 
-  it("keeps the example questions and the lawyer and privacy disclaimer after the opening", () => {
+  it("leaves the question out when a model reply follows, and still ends with the privacy line", () => {
     for (const language of LANGUAGES) {
-      const [, examples, , disclaimer] = welcomeText(language).split("\n\n");
-      expect(
-        examples?.split("\n").filter((line) => line.startsWith("•")),
-        language,
-      ).toHaveLength(3);
-      expect(disclaimer, language).toMatch(/avvocato|lawyer|abogado|avocat|Anwalt/u);
+      const text = welcomeText(language, { ...ALL, question: false });
+      expect(text, language).not.toContain("?");
+      expect(text, language).toBe(
+        welcomeText(language, ALL).split("\n\n").slice(0, -1).join("\n\n"),
+      );
     }
   });
 
-  it("says Ada will ask whether to connect their own account when she needs it, and send the link", () => {
-    expect(welcomeText("it")).toContain(
-      "serve il tuo account Lexroom: quando mi servirà ti chiederò se vuoi collegarlo e ti manderò il link.",
-    );
-    expect(welcomeText("en")).toContain(
-      "I'll ask whether you want to connect it and send you the link",
-    );
-    expect(welcomeText("es")).toContain(
-      "te preguntaré si quieres conectarla y te enviaré el enlace",
-    );
-    expect(welcomeText("fr")).toContain(
-      "je vous demanderai si vous voulez le connecter et je vous enverrai le lien",
-    );
-    expect(welcomeText("de")).toContain(
-      "frage ich Sie, ob ich es verbinden soll, und sende Ihnen den Link",
-    );
+  it("ends with one question that starts the conversation, and asks nothing else", () => {
+    const questions = {
+      it: "Su cosa stai lavorando adesso?",
+      en: "What's on your plate right now?",
+      es: "¿En qué estás trabajando ahora mismo?",
+      fr: "Sur quoi travaillez-vous en ce moment ?",
+      de: "Woran arbeiten Sie gerade?",
+    } as const;
+    for (const language of LANGUAGES) {
+      const text = welcomeText(language, ALL);
+      expect(text.endsWith(`\n\n${questions[language]}`), language).toBe(true);
+      expect(text.match(/\?/gu), language).toHaveLength(1);
+    }
   });
 
   it("fits one WhatsApp message", () => {
     for (const language of LANGUAGES) {
-      expect(welcomeText(language).length, language).toBeLessThan(1200);
+      expect(welcomeText(language, ALL).length, language).toBeLessThan(1200);
     }
   });
 });

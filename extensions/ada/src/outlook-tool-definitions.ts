@@ -8,9 +8,9 @@ export const adaOutlookConnectDefinition = {
   name: "ada_outlook_connect",
   label: "Connect Outlook",
   description:
-    "Check whether the person asking has connected their own Outlook (Microsoft 365 or Outlook.com mail and calendar), and give them the link to connect it. Call it when they want to connect (they said yes to your question, or asked themselves), not before asking. When it is not connected it returns one WhatsApp ask with a single short Ada-hosted link that opens Microsoft's own sign-in for this person's account and no one else's. When the result has reason admin_consent_required, their organization needs its IT admin to approve the app: tell them so plainly and send no link. Set force true only to get a new link for someone already connected, or after they say the admin approved the app. Does not send the message.",
+    "Check whether the person asking has connected their own Outlook (Microsoft 365 or Outlook.com mail and calendar), and give them the link to connect it. Call it when they want to connect (they said yes to your question, or asked themselves), not before asking. When it is not connected it returns one WhatsApp ask with a single short Ada-hosted link that opens Microsoft's own sign-in for this person's account and no one else's. When the result has reason admin_consent_required, their organization needs its IT admin to approve the app: tell them so plainly and send no link. Set force true only to get a new link for someone already connected, or after they say the admin approved the app. Set forPendingRequest true only when you are connecting it to carry out something they already asked for (for example a mail to send or an event to create), not when they simply asked to connect; Ada then skips her first-look question and you carry on with their request. Does not send the message.",
   parameters: Type.Object(
-    { force: Type.Optional(Type.Boolean()) },
+    { force: Type.Optional(Type.Boolean()), forPendingRequest: Type.Optional(Type.Boolean()) },
     { additionalProperties: false },
   ),
 };

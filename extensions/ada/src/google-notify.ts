@@ -17,20 +17,37 @@ type TextSender = (params: {
 
 export type GoogleConnectedNotice = { ok: true } | { ok: false; error: string };
 
-const GOOGLE_CONNECTED: Record<Language, string> = {
-  it: "Gmail e Calendar sono collegati. Posso inviare email quando me lo chiedi.",
-  en: "Gmail and Calendar are connected. I can send mail when you say so.",
-  es: "Gmail y Calendar están conectados. Puedo enviar correos cuando me lo pidas.",
-  fr: "Gmail et Google Agenda sont connectés. Je peux envoyer des e-mails quand vous me le demandez.",
-  de: "Gmail und Kalender sind verbunden. Ich kann E-Mails senden, wenn Sie es mir sagen.",
+const GOOGLE_CONNECTED: Record<Language, { base: string; firstLook: string }> = {
+  it: {
+    base: "Gmail e Calendar sono collegati: posso leggerli e, con il tuo ok, inviare email.",
+    firstLook: "Vuoi che guardi cosa c'è oggi in agenda e in posta?",
+  },
+  en: {
+    base: "Gmail and Calendar are connected: I can read them and, with your yes, send email.",
+    firstLook: "Want me to look at today's calendar and inbox?",
+  },
+  es: {
+    base: "Gmail y Calendar están conectados: puedo leerlos y, con tu visto bueno, enviar correos.",
+    firstLook: "¿Quieres que mire qué hay hoy en tu agenda y en tu correo?",
+  },
+  fr: {
+    base: "Gmail et Google Agenda sont connectés : je peux les lire et, avec votre accord, envoyer des e-mails.",
+    firstLook:
+      "Voulez-vous que je regarde ce qu'il y a aujourd'hui à l'agenda et dans votre messagerie ?",
+  },
+  de: {
+    base: "Gmail und Kalender sind verbunden: Ich kann sie lesen und mit Ihrem Ja E-Mails senden.",
+    firstLook: "Soll ich nachsehen, was heute im Kalender und im Posteingang ansteht?",
+  },
 };
 
 /**
  * WhatsApp turns a raw email address into a contact card and covers the
  * message, so the confirmation names the products and not the address.
  */
-export function googleConnectedText(language: Language): string {
-  return GOOGLE_CONNECTED[language];
+export function googleConnectedText(language: Language, firstLook = true): string {
+  const text = GOOGLE_CONNECTED[language];
+  return firstLook ? `${text.base} ${text.firstLook}` : text.base;
 }
 
 /** True only when a sender is the lawyer configured as `kapso-whatsapp.defaultTo`. */
@@ -47,6 +64,8 @@ export async function sendGoogleConnectedNotice(params: {
   /** The WhatsApp number that connected the account; the confirmation goes to it alone. */
   owner: string;
   email: string;
+  /** False when the connect was for a pending request, which carries on instead of a first look. */
+  firstLook?: boolean;
   loadAdapter: (channelId: string) => Promise<{ sendText?: TextSender } | null | undefined>;
 }): Promise<GoogleConnectedNotice> {
   const to = `+${params.owner}`;
@@ -67,7 +86,10 @@ export async function sendGoogleConnectedNotice(params: {
     await send({
       cfg: params.config,
       to,
-      text: googleConnectedText(await resolveLanguage("", undefined, params.owner)),
+      text: googleConnectedText(
+        await resolveLanguage("", undefined, params.owner),
+        params.firstLook !== false,
+      ),
     });
   } catch (error) {
     return {

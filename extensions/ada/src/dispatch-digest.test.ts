@@ -94,7 +94,7 @@ describe("dispatchDigest", () => {
     expect(sent[0]).toMatchObject({ to: `+${BRUNO}` });
     expect(sent[0]?.text).toContain("Buongiorno. Questo non può aspettare:");
     expect(sent[0]?.text).toContain("Rossi SRL");
-    expect(sent[0]?.text).toContain("Posso fare subito:");
+    expect(sent[0]?.text).toContain("Partirei dalla ricerca su Lexroom per Rossi SRL: la avvio?");
   });
 
   it("writes the digest and the reconnect note in the language of the latest message, over the profile", async () => {

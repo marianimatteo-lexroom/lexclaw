@@ -1,4 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { noteRequestConnect } from "./connect-offers.js";
 import type {
   GoogleAccountRecord,
   GoogleAccountStamp,
@@ -99,13 +100,18 @@ export async function executeAdaGoogleConnect(
         account = (await store.clearAccountIfStill(account)) ? null : await store.readAccount();
       }
     }
-    return await prepareGoogleConnect({
+    const prepared = await prepareGoogleConnect({
       owner,
       config,
       now,
       account: account ? { email: account.email, scopes: account.scopes } : null,
       savePending: (nonce, expiresAtMs) => store.replacePending(nonce, expiresAtMs),
     });
+    if (account && prepared.ok && !prepared.connected) {
+      // A saved account that lacks a permission is being upgraded for a send or a calendar change.
+      noteRequestConnect(owner, "google", now.getTime());
+    }
+    return prepared;
   } catch (error) {
     api.logger.error(
       `ada google connect failed: ${error instanceof Error ? error.message : "unknown"}`,

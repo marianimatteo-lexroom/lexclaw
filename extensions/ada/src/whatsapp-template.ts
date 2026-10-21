@@ -19,12 +19,30 @@ export type KapsoTemplate = { name: string; language: string };
 
 export type KapsoTemplateResult = { ok: true; messageId?: string } | { ok: false; error: string };
 
-/** Read `digestReadyTemplate` from the plugin config; null means it is unset or incomplete. */
-export function readDigestReadyTemplate(pluginConfig: unknown): KapsoTemplate | null {
-  const value = readRecord(readRecord(pluginConfig)?.digestReadyTemplate);
+function readTemplate(
+  pluginConfig: unknown,
+  key: "digestReadyTemplate" | "requestReadyTemplate",
+): KapsoTemplate | null {
+  const value = readRecord(readRecord(pluginConfig)?.[key]);
   const name = firstString(value?.name);
   const language = firstString(value?.language);
   return name && language ? { name, language } : null;
+}
+
+/**
+ * Read `digestReadyTemplate` from the plugin config; null means it is unset or incomplete. It is
+ * the MARKETING template, for the morning digest and brief that Ada starts on her own.
+ */
+export function readDigestReadyTemplate(pluginConfig: unknown): KapsoTemplate | null {
+  return readTemplate(pluginConfig, "digestReadyTemplate");
+}
+
+/**
+ * Read `requestReadyTemplate`; null means it is unset or incomplete. It is the UTILITY template,
+ * for a result the person asked for, such as a finished Lexroom research.
+ */
+export function readRequestReadyTemplate(pluginConfig: unknown): KapsoTemplate | null {
+  return readTemplate(pluginConfig, "requestReadyTemplate");
 }
 
 /** Cloud API recipients are digits with country code, no plus or spaces. */
@@ -113,6 +131,29 @@ export function warnDigestReadyTemplateUnset(api: Pick<OpenClawPluginApi, "logge
   );
 }
 
+async function sendReadyNotice(
+  params: {
+    api: Pick<OpenClawPluginApi, "config" | "logger">;
+    template: KapsoTemplate;
+    to: string;
+    fetchImpl?: typeof fetch;
+  },
+  label: string,
+): Promise<KapsoTemplateResult> {
+  const result: KapsoTemplateResult = await sendKapsoTemplate({
+    config: params.api.config,
+    to: params.to,
+    template: params.template,
+    fetchImpl: params.fetchImpl,
+  });
+  if (result.ok) {
+    params.api.logger.info(`ada sent the ${label} template to reopen the WhatsApp window`);
+  } else {
+    params.api.logger.warn(`ada ${label} template not sent: ${result.error}`);
+  }
+  return result;
+}
+
 /** Tell one number a digest is waiting so a reply can reopen its 24-hour window. */
 export async function sendDigestReadyNotice(params: {
   api: Pick<OpenClawPluginApi, "config" | "logger">;
@@ -121,16 +162,32 @@ export async function sendDigestReadyNotice(params: {
   to: string;
   fetchImpl?: typeof fetch;
 }): Promise<KapsoTemplateResult> {
-  const result: KapsoTemplateResult = await sendKapsoTemplate({
-    config: params.api.config,
-    to: params.to,
-    template: params.template,
-    fetchImpl: params.fetchImpl,
-  });
-  if (result.ok) {
-    params.api.logger.info("ada sent the digest-ready template to reopen the WhatsApp window");
-  } else {
-    params.api.logger.warn(`ada digest-ready template not sent: ${result.error}`);
+  return await sendReadyNotice(params, "digest-ready");
+}
+
+/**
+ * Tell one number that a result they asked for is waiting, so a reply can reopen their window.
+ * It uses the UTILITY `requestReadyTemplate`, and falls back to the digest template, the earlier
+ * behavior, when that one is not configured or Kapso refuses it. When Kapso refuses it and there
+ * is no digest template, the refusal is returned. Null: neither template is configured.
+ */
+export async function sendRequestReadyNotice(params: {
+  api: Pick<OpenClawPluginApi, "config" | "logger" | "pluginConfig">;
+  to: string;
+  fetchImpl?: typeof fetch;
+}): Promise<KapsoTemplateResult | null> {
+  const request = readRequestReadyTemplate(params.api.pluginConfig);
+  let refused: KapsoTemplateResult | undefined;
+  if (request) {
+    const sent = await sendReadyNotice({ ...params, template: request }, "request-ready");
+    if (sent.ok) {
+      return sent;
+    }
+    refused = sent;
   }
-  return result;
+  const digest = readDigestReadyTemplate(params.api.pluginConfig);
+  if (!digest) {
+    return refused ?? null;
+  }
+  return await sendReadyNotice({ ...params, template: digest }, "digest-ready");
 }

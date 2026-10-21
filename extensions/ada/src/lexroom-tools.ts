@@ -65,16 +65,33 @@ async function openStore(api: StoreApi, owner: string): Promise<LexroomAccountSt
   }
 }
 
-const LEXROOM_CONNECTED: Record<Language, string> = {
-  it: "Lexroom è collegato. Posso fare ricerche e redigere bozze quando me lo chiedi.",
-  en: "Lexroom is connected. I can run research and drafts when you ask.",
-  es: "Lexroom está conectado. Puedo hacer investigaciones y borradores cuando me lo pidas.",
-  fr: "Lexroom est connecté. Je peux faire des recherches et des brouillons quand vous me le demandez.",
-  de: "Lexroom ist verbunden. Ich kann Recherchen und Entwürfe erstellen, wenn Sie mich darum bitten.",
+const LEXROOM_CONNECTED: Record<Language, { base: string; firstLook: string }> = {
+  it: {
+    base: "Lexroom è collegato. Posso fare ricerche e redigere bozze.",
+    firstLook: "Su cosa vuoi che inizi?",
+  },
+  en: {
+    base: "Lexroom is connected. I can run research and drafts.",
+    firstLook: "What should I start with?",
+  },
+  es: {
+    base: "Lexroom está conectado. Puedo hacer investigaciones y borradores.",
+    firstLook: "¿Por dónde quieres que empiece?",
+  },
+  fr: {
+    base: "Lexroom est connecté. Je peux faire des recherches et des brouillons.",
+    firstLook: "Par quoi dois-je commencer ?",
+  },
+  de: {
+    base: "Lexroom ist verbunden. Ich kann Recherchen und Entwürfe erstellen.",
+    firstLook: "Womit soll ich anfangen?",
+  },
 };
 
-export function lexroomConnectedText(language: Language): string {
-  return LEXROOM_CONNECTED[language];
+/** `firstLook` false: the connect was for a request in progress, which carries on instead. */
+export function lexroomConnectedText(language: Language, firstLook = true): string {
+  const text = LEXROOM_CONNECTED[language];
+  return firstLook ? `${text.base} ${text.firstLook}` : text.base;
 }
 
 export async function sendLexroomConnectedNotice(params: {
@@ -82,6 +99,8 @@ export async function sendLexroomConnectedNotice(params: {
   /** The WhatsApp number that connected the account; the confirmation goes to it alone. */
   owner: string;
   email: string;
+  /** False when the connect was for a request in progress, which carries on instead. */
+  firstLook?: boolean;
   loadAdapter: (channelId: string) => Promise<
     | {
         sendText?: (params: {
@@ -121,7 +140,10 @@ export async function sendLexroomConnectedNotice(params: {
     await send({
       cfg: params.config,
       to,
-      text: lexroomConnectedText(await resolveLanguage("", undefined, params.owner)),
+      text: lexroomConnectedText(
+        await resolveLanguage("", undefined, params.owner),
+        params.firstLook !== false,
+      ),
     });
   } catch (error) {
     return {
@@ -518,6 +540,7 @@ export async function startAdaResearch(params: {
           startedAtMs: job.startedAtMs,
           result,
           query: params.args.query,
+          matterId,
         },
         push,
       ),

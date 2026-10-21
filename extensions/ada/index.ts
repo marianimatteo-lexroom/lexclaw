@@ -28,7 +28,13 @@ import {
 import { registerAdaAnnouncementsAdmin } from "./src/announcements-http.js";
 import { registerAnnouncementRelease } from "./src/announcements.js";
 import { buildInjectedBrief } from "./src/brief.js";
-import { connectOfferNote, takeConnectOffers } from "./src/connect-offers.js";
+import {
+  connectOfferNote,
+  withRequestConnect,
+  noteConnectOffer,
+  takeConnectOffers,
+  takeRequestConnect,
+} from "./src/connect-offers.js";
 import { executeAdaDeadlineList, executeAdaDeadlineReply } from "./src/deadline-tools.js";
 import { planDigest, type DigestSignal } from "./src/digest.js";
 import { createInboundTextGuard, registerInboundDuplicateHooks } from "./src/duplicate-text.js";
@@ -236,7 +242,8 @@ const tools = defineToolPlugin({
           {
             name: Type.String({
               minLength: 1,
-              description: "Approved WhatsApp utility template name, for example ada_digest_ready.",
+              description:
+                "Approved WhatsApp marketing template name, for example ada_digest_ready.",
             }),
             language: Type.String({
               minLength: 1,
@@ -246,7 +253,27 @@ const tools = defineToolPlugin({
           {
             additionalProperties: false,
             description:
-              "Utility template sent once when a digest is held because the WhatsApp 24-hour window is closed. Unset: no nudge is sent.",
+              "Marketing template sent once when a digest or brief is held because the WhatsApp 24-hour window is closed. Unset: no nudge is sent.",
+          },
+        ),
+      ),
+      requestReadyTemplate: Type.Optional(
+        Type.Object(
+          {
+            name: Type.String({
+              minLength: 1,
+              description:
+                "Approved WhatsApp utility template name, for example ada_request_ready.",
+            }),
+            language: Type.String({
+              minLength: 1,
+              description: "Language code the template was approved in, for example en or it.",
+            }),
+          },
+          {
+            additionalProperties: false,
+            description:
+              "Utility template sent when a result the person asked for, such as a Lexroom research, is held because the WhatsApp 24-hour window is closed. Unset: the digest template is used instead.",
           },
         ),
       ),
@@ -306,18 +333,22 @@ const tools = defineToolPlugin({
       optional: true,
       factory: ownerToolFactory(
         adaLexroomConnectDefinition,
-        (args, { owner, api, config, signal }) =>
-          executeAdaLexroomConnect(owner, lexroomConnectConfigFrom(config), api, new Date(), {
-            force: args.force === true,
-            signal,
-          }),
+        async (args, { owner, api, config, signal }) =>
+          withRequestConnect(owner, "lexroom", args.forPendingRequest, () =>
+            executeAdaLexroomConnect(owner, lexroomConnectConfigFrom(config), api, new Date(), {
+              force: args.force === true,
+              signal,
+            }),
+          ),
       ),
     }),
     tool({
       ...adaGoogleConnectDefinition,
       optional: true,
-      factory: ownerToolFactory(adaGoogleConnectDefinition, (_args, { owner, api, config }) =>
-        executeAdaGoogleConnect(owner, config, api),
+      factory: ownerToolFactory(adaGoogleConnectDefinition, async (args, { owner, api, config }) =>
+        withRequestConnect(owner, "google", args.forPendingRequest, () =>
+          executeAdaGoogleConnect(owner, config, api),
+        ),
       ),
     }),
     tool({
@@ -626,12 +657,18 @@ const entry = definePluginEntry({
             releaseMailbox: (owner, email) => releaseMailboxFromOtherOwners(api, owner, email),
             notifyConnected: async (owner, email) => {
               await openWakeWindow(api, owner);
-              return await sendGoogleConnectedNotice({
+              const firstLook = !takeRequestConnect(owner, "google");
+              const sent = await sendGoogleConnectedNotice({
                 config: api.config,
                 owner,
                 email,
+                firstLook,
                 loadAdapter: (channelId) => api.runtime.channel.outbound.loadAdapter(channelId),
               });
+              if (sent.ok && firstLook) {
+                noteConnectOffer(owner, "first_look", Date.now(), "google");
+              }
+              return sent;
             },
           });
         } catch (error) {
@@ -700,13 +737,20 @@ const entry = definePluginEntry({
             now: () => new Date(),
             openStore: (owner) => openAdaLexroomAccountFromApi(api, owner),
             log: api.logger,
-            notifyConnected: (owner, email) =>
-              sendLexroomConnectedNotice({
+            notifyConnected: async (owner, email) => {
+              const firstLook = !takeRequestConnect(owner, "lexroom");
+              const sent = await sendLexroomConnectedNotice({
                 config: api.config,
                 owner,
                 email,
+                firstLook,
                 loadAdapter: (channelId) => api.runtime.channel.outbound.loadAdapter(channelId),
-              }),
+              });
+              if (sent.ok && firstLook) {
+                noteConnectOffer(owner, "first_look", Date.now(), "lexroom");
+              }
+              return sent;
+            },
           });
         } catch (error) {
           api.logger.error(

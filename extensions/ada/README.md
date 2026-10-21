@@ -193,7 +193,7 @@ Ada never signs her messages: no "— Ada", "Ada" or "Ada · Lexroom" at the end
 
 ## Reply language
 
-Ada replies in the language of the person's most recent message, in the model's turns and in every message sent by code. The persona (`src/persona.ts`) states this as a hard rule that overrides earlier messages, the profile language, memory, and the language of tool output and digest data. In code, `message_received` records the language of each WhatsApp number's latest message in memory (`recordInboundLanguage` in `src/research-link-outbound.ts`, the same stopword detection extended with hint words for short messages); a message that carries no language ("ok", a link, an emoji) keeps the previous one. The Lexroom and Gmail/Calendar connected confirmations, the research acknowledgement, result framing and failure notes, the morning digest, the Google connect ask and the held reconnect note, and the mailbox-moved note all use it, in Italian, English, Spanish, French and German. A number with no known message (for example after a restart) falls back to its profile language, then Italian. The welcome message, the digest-ready WhatsApp template (approved in one language) and the browser pages shown after connecting are not covered.
+Ada replies in the language of the person's most recent message, in the model's turns and in every message sent by code. The persona (`src/persona.ts`) states this as a hard rule that overrides earlier messages, the profile language, memory, and the language of tool output and digest data. In code, `message_received` records the language of each WhatsApp number's latest message in memory (`recordInboundLanguage` in `src/research-link-outbound.ts`, the same stopword detection extended with hint words for short messages); a message that carries no language ("ok", a link, an emoji) keeps the previous one. The connected confirmations (Lexroom, Gmail/Calendar, Outlook, Granola), the welcome, the research acknowledgement, result framing and failure notes, the morning digest, which also renders its calendar, deadline and new-mail lines in that language, the Google connect ask and the held reconnect note, and the mailbox-moved note all use it, in Italian, English, Spanish, French and German. A number with no known message (for example after a restart) falls back to its profile language, then Italian. The digest-ready and request-ready WhatsApp templates (each approved in one language) and the browser pages shown after connecting are not covered.
 
 ## Preferences and feedback
 
@@ -279,7 +279,7 @@ The body is `id` (a slug), `texts` (`it` and `en` required; `es`, `fr`, `de` opt
 
 ## First-message welcome
 
-The first time a WhatsApp number ever writes to Ada, code sends it one fixed welcome message before any model turn. It opens with the text of the approved Meta template `ada_welcome`, without the template's "reply to start" line because this message is itself a reply: Ada is Lexroom's legal assistant on WhatsApp, and the person can ask legal questions, have her run research on Lexroom, and connect Gmail and Calendar so she can manage email, meetings and deadlines. Then come three example questions (a legal one, a case-law search and a calendar question); one line that research on Lexroom needs the person's own Lexroom account and that Ada will ask whether they want to connect it when she needs it, then send the link (no command or keyword is ever taught); and the standing disclaimer that her answers do not replace a lawyer and that each user's chats and results are private. The text is deterministic (`src/welcome.ts`, Italian, English, Spanish, French and German) and costs no model call. The language is the greeting's own (`hi`, `hola`, `bonjour`, `hallo`), else the message's (the same detection that picks the language of every other message, see Reply language), else Italian.
+The first time a WhatsApp number ever writes to Ada, code sends it one fixed welcome message before any model turn. It is short and in the first person: Ada introduces herself as Lexroom's legal assistant on WhatsApp, lists in bullets what she can do (legal questions and Lexroom research, Gmail mail and calendar, Granola meeting notes). "Gmail or Outlook" appears only when Outlook is configured (`ADA_MS_CLIENT_ID` and `ADA_MS_CLIENT_SECRET`), and the hearing and deadline reminder bullet only when `deadlineIntake.enabled` is true, adds one line that she connects the person's accounts only when needed and that her answers do not replace a lawyer and each user's chats stay private, and, only when the first message was a bare greeting (so the welcome is the whole answer), ends with one question ("What's on your plate right now?" in English); the reply to it reaches the model with an in-memory note saying what it answers. When a model reply follows instead, the welcome has no question. No command or keyword is ever taught. The text is deterministic (`src/welcome.ts`, Italian, English, Spanish, French and German) and costs no model call. The language is the greeting's own (`hi`, `hola`, `bonjour`, `hallo`), else the message's (the same detection that picks the language of every other message, see Reply language), else Italian.
 
 Connecting is a conversation, not a command. When a request needs Lexroom, Gmail or Calendar and the person has not connected it (or the connection expired or was refused), Ada says so in one natural sentence and asks whether they want to connect, for example "Per farlo devo collegarmi al tuo Gmail, ti mando il link?". The model reads the answer in context (sì, ok, certo, vai, yes, 👍, ...); if it is yes she calls `ada_lexroom_connect` or `ada_google_connect` and sends that person's own signed link, if it is no she carries on without it and does not ask again. A person who says on their own that they want to connect, or that they already have Lexroom, gets the link straight away. There is no keyword matcher anywhere. The only state is for questions Ada's code asks in messages the model did not write (a research that failed because Lexroom is not connected or was refused, or the note that a mailbox moved to another number): the question is kept for that number's next turn and handed to the model as a note ("Question you just asked"), read once and forgotten after 72 hours at most, so a bare "sì" is understood. See [Accounts and privacy](#accounts-and-privacy).
 
@@ -383,16 +383,19 @@ Suggested alert: page when no `result:"collected"` line appears for 45 minutes. 
 
 ## Reopening the WhatsApp 24-hour window
 
-WhatsApp only lets Ada send free-form text within 24 hours of the lawyer's last message. When a digest is held because that window is closed, Ada sends one pre-approved utility template through Kapso so the lawyer can reply and release it. The reply is an ordinary inbound message: the existing flow re-collects and delivers the held plan.
+WhatsApp only lets Ada send free-form text within 24 hours of the lawyer's last message. When something is held because that window is closed, Ada sends one pre-approved template through Kapso so the lawyer can reply and release it. The reply is an ordinary inbound message: the existing flow re-collects and delivers the held content. There are two templates, and the category follows the content:
 
-Create and get approved, in the WhatsApp Business Manager that owns the Kapso number:
+- `digestReadyTemplate` (`ada_digest_ready`, category **Marketing**): the morning digest and the quiet brief, which Ada starts on her own.
+- `requestReadyTemplate` (`ada_request_ready`, category **Utility**): a result the person asked for, such as a finished Lexroom research that cannot be delivered because the window closed. Never use it for the digest, the brief or anything promotional, or Meta may recategorize or penalize the template. If it is unset, or Kapso refuses it, those results use `digestReadyTemplate`, as before.
 
-- Category: **Utility**
+Create and get approved, in the WhatsApp Business Manager that owns the Kapso number, one template per entry above:
+
+- Category: **Marketing** for `digestReadyTemplate`, **Utility** for `requestReadyTemplate`
 - Name: any lowercase letters, digits, and underscores, for example `ada_digest_ready`
 - Language: the one you will configure below, for example `en` or `it`
-- Body, with no variables, buttons, header, or footer: `Your Ada digest is ready. Reply to see it.`
+- Body, with no variables, buttons, header, or footer, for example `Your Ada digest is ready. Reply to see it.` The sender fills in no parameters, so a template that declares variables is refused by Kapso.
 
-Then set it in the plugin config:
+Then set them in the plugin config (on Railway, `ADA_DIGEST_TEMPLATE_NAME` / `_LANG` and `ADA_REQUEST_TEMPLATE_NAME` / `_LANG`):
 
 ```json5
 {
@@ -401,6 +404,7 @@ Then set it in the plugin config:
       ada: {
         config: {
           digestReadyTemplate: { name: "ada_digest_ready", language: "en" },
+          requestReadyTemplate: { name: "ada_request_ready", language: "en" },
         },
       },
     },

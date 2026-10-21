@@ -132,6 +132,7 @@ export function collectDigest(input: CollectInput): CollectResult {
       summary: movedCloser
         ? `${event.summary} moved earlier`
         : `${event.summary} is due`,
+      phrase: { id: movedCloser ? "calendar_moved" : "calendar_due", text: event.summary },
       dueAt: new Date(startMs).toISOString(),
       ...(movedCloser ? { movedCloser: true } : {}),
     });
@@ -158,6 +159,7 @@ export function collectDigest(input: CollectInput): CollectResult {
       matterLabel: matterLabel(matterId, input.aliases),
       kind: "overnight_email",
       summary: message.subject || "New email",
+      ...(message.subject ? {} : { phrase: { id: "new_email" as const } }),
       needsDecision: decision,
     });
   }

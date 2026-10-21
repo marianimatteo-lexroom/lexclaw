@@ -18,6 +18,7 @@ vi.mock("./src/service.js", async (importOriginal) => ({
 }));
 
 import plugin from "./index.js";
+import { takeConnectOffers } from "./src/connect-offers.js";
 import { takeResearchLinks } from "./src/research-link-outbound.js";
 import { clearHeldResearch, recordSenderInbound } from "./src/research-push.js";
 
@@ -170,8 +171,15 @@ describe("ada_research for whoever asked on WhatsApp", () => {
     await vi.waitFor(() => expect(sent).toHaveLength(2));
     expect(sent[1]).toEqual({
       to: "+390000000001",
-      text: "Il termine è di quaranta giorni dalla notifica [1].\n\n*Fonti*\n[1] Cass. civ. 1/2024\n\nContinua su Lexroom: https://app.lexroom.ai/research/res-e2e",
+      text: "Il termine è di quaranta giorni dalla notifica [1].\n\n*Fonti*\n[1] Cass. civ. 1/2024\n\nVuoi che ne tragga una bozza?\n\nContinua su Lexroom: https://app.lexroom.ai/research/res-e2e",
     });
+
+    // The next turn's note carries the matter and the Lexroom research, so a yes builds on it.
+    const [offer] = takeConnectOffers("390000000001", { inboundAtMs: Number.MAX_SAFE_INTEGER });
+    expect(offer?.kind).toBe("research_result");
+    expect(JSON.parse(offer?.detail ?? "[]")).toMatchObject([
+      { matterId: "matter-a", researchId: "res-e2e" },
+    ]);
 
     // A model that polls anyway gets no answer to say a second time, and no link to append.
     const polled = await ada.callTool("ada_research_status", {

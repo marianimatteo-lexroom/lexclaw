@@ -151,4 +151,81 @@ describe("Ada's persona", () => {
     expect(ADA_PERSONA).toMatch(/send it to nobody else/u);
     expect(ADA_PERSONA).toMatch(/exception is a language the person asked you to use/u);
   });
+
+  describe("Instinct-style conversation", () => {
+    it("writes short, answer-first messages with bold only for the key fact and no filler or emoji", () => {
+      expect(ADA_PERSONA).toMatch(/Lead with the answer or the outcome in the first line/u);
+      expect(ADA_PERSONA).toMatch(
+        /no greeting, preamble or filler opener or closer in any language/u,
+      );
+      expect(ADA_PERSONA).toMatch(/and no emoji/u);
+      expect(ADA_PERSONA).toMatch(/usually under about 600 characters and one idea each/u);
+      expect(ADA_PERSONA).toMatch(/offer the longer version instead of dumping it/u);
+      expect(ADA_PERSONA).toMatch(/\*bold\* only for the key fact/u);
+      expect(ADA_PERSONA).toMatch(/never headings, tables or bold on every line/u);
+    });
+
+    it("offers numbered options with its own pick and ends with at most one question", () => {
+      expect(ADA_PERSONA).toMatch(/numbered options they can answer with a number/u);
+      expect(ADA_PERSONA).toMatch(/say which one you would pick/u);
+      expect(ADA_PERSONA).toMatch(/End with at most one question or one concrete next step/u);
+    });
+
+    it("shows the exact text and asks yes or no before acting, then confirms in one line without promising what it cannot do", () => {
+      expect(ADA_PERSONA).toMatch(/show the exact text or details and ask one short yes or no/u);
+      expect(ADA_PERSONA).toMatch(/confirm in one line what happened and to whom/u);
+      expect(ADA_PERSONA).toMatch(/promise no follow-up that you have no tool to carry out/u);
+    });
+
+    it("asks for a detail that does not block while it works", () => {
+      expect(ADA_PERSONA).toMatch(
+        /start the work and ask for it in the same message, saying what you are assuming/u,
+      );
+      expect(ADA_PERSONA).toMatch(
+        /For ada_research the exception is that you add no message: fold any assumption into the query itself, because code sends the acknowledgement and the result/u,
+      );
+      expect(ADA_PERSONA).not.toMatch(/the court or the date for a research/u);
+    });
+
+    it("writes drafts in the recipient's language without relaxing the language rule for its own words", () => {
+      expect(ADA_PERSONA).toMatch(/follows the language of its recipient or of the thread/u);
+      expect(ADA_PERSONA).toMatch(
+        /never relaxes the language rule for your own words, so whatever you say to the person around the draft follows their latest message/u,
+      );
+      expect(ADA_PERSONA).toMatch(/you never sign with yours/u);
+    });
+
+    it("corrects its own mistakes and admits limits with a workaround", () => {
+      expect(ADA_PERSONA).toMatch(/say so at the start of your next message/u);
+      expect(ADA_PERSONA).toMatch(/give the best workaround/u);
+      expect(ADA_PERSONA).toMatch(/Never claim to have done something you did not do/u);
+    });
+
+    it("offers one next step after a result, ranks what is open, and adds one 'while I have you' line", () => {
+      expect(ADA_PERSONA).toMatch(/offer the single most useful next action/u);
+      expect(ADA_PERSONA).toMatch(/one offer, never a menu/u);
+      expect(ADA_PERSONA).not.toMatch(/add the deadline/u);
+      expect(ADA_PERSONA).toMatch(/create the calendar event only when a calendar is connected/u);
+      expect(ADA_PERSONA).toMatch(/read ada_todo_list and ada_deadline_list first/u);
+      expect(ADA_PERSONA).toMatch(/at most five numbered items/u);
+      expect(ADA_PERSONA).toMatch(/say plainly when nothing else needs them/u);
+      expect(ADA_PERSONA).toMatch(/answer what they asked first, then add one short line/u);
+      expect(ADA_PERSONA).toMatch(/once a day at most/u);
+    });
+
+    it("saves an inferred preference only after a yes", () => {
+      expect(ADA_PERSONA).toMatch(/propose saving it in one sentence and ask/u);
+      expect(ADA_PERSONA).toMatch(/call ada_set_preference only after a yes/u);
+    });
+
+    it("lets a standing preference win over these defaults, and teaches no phrase to type", () => {
+      expect(ADA_PERSONA).toMatch(/a standing preference of the person wins over them/u);
+      expect(ADA_PERSONA).not.toMatch(/reply with|write to me|say the word|«|»/iu);
+    });
+
+    it("does not sign in the style rules, and keeps Lexroom first", () => {
+      expect(ADA_PERSONA).not.toMatch(/sign off as|sign-off as|firma/iu);
+      expect(ADA_PERSONA).toMatch(/call ada_research before writing any answer/u);
+    });
+  });
 });

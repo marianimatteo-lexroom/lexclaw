@@ -516,7 +516,7 @@ describe("sendLexroomConnectedNotice", () => {
   it("confirms in English after an English message and in Italian after an Italian one", async () => {
     recordInboundLanguage(OTHER, "Give me a new link");
     expect(await sentText(OTHER)).toBe(
-      "Lexroom is connected. I can run research and drafts when you ask.",
+      "Lexroom is connected. I can run research and drafts. What should I start with?",
     );
     recordInboundLanguage(OTHER, "Ok e Google?");
     expect(await sentText(OTHER)).toBe(lexroomConnectedText("it"));
