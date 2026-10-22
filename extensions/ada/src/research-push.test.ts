@@ -930,3 +930,56 @@ describe("the research PDF", () => {
     }
   });
 });
+
+describe("a delivered result is written into the conversation", () => {
+  const mirrorDeps = () => {
+    const mirror = vi.fn(async (_text: string, _jobId: string) => true);
+    return { mirror, ...makeDeps({ mirror }) };
+  };
+
+  it("mirrors exactly the text that went out, once, for a live delivery", async () => {
+    const { deps, sent, mirror } = mirrorDeps();
+    await pushResearchResult(
+      { jobId: "job-1", startedAtMs: 0, result: outcome(), query: "q" },
+      deps,
+    );
+    expect(mirror).toHaveBeenCalledExactlyOnceWith(sent[0], "job-1");
+  });
+
+  it("mirrors nothing while the result is held, and the text once it is released", async () => {
+    const { deps, sent, mirror } = mirrorDeps();
+    deps.windowOpen = async () => false;
+    await pushResearchResult(
+      { jobId: "job-2", startedAtMs: 0, result: outcome(), query: "q" },
+      deps,
+    );
+    expect(mirror).not.toHaveBeenCalled();
+    await releaseHeldResearch(deps);
+    expect(mirror).toHaveBeenCalledExactlyOnceWith(sent[0], "job-2");
+  });
+
+  it("mirrors a text cut to the delivery limit, never the whole long answer", async () => {
+    const { deps, mirror } = mirrorDeps();
+    const answer = Array.from({ length: 200 }, (_, i) => `${ITALIAN} Paragrafo ${i}.`).join("\n\n");
+    await pushResearchResult(
+      { jobId: "job-3", startedAtMs: 0, result: outcome({ answer }), query: "q" },
+      deps,
+    );
+    const [text] = mirror.mock.calls[0] ?? [];
+    expect(text?.length).toBeLessThanOrEqual(RESEARCH_TEXT_LIMIT);
+    expect(RESEARCH_TEXT_LIMIT).toBeLessThanOrEqual(4000);
+  });
+
+  it("is still delivered when the conversation cannot be written", async () => {
+    const mirror = vi.fn(async () => {
+      throw new Error("no session");
+    });
+    const { deps } = makeDeps({ mirror });
+    expect(
+      await pushResearchResult(
+        { jobId: "job-4", startedAtMs: 0, result: outcome(), query: "q" },
+        deps,
+      ),
+    ).toBe("sent");
+  });
+});

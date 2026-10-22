@@ -410,5 +410,7 @@ export async function runProactivePass(params: ProactiveParams): Promise<void> {
 /** The number just wrote, so its window is open: what was held for it goes out now. */
 export async function releaseReadyNotices(params: ProactiveParams): Promise<void> {
   const context = await openContext(params);
+  // A reminder that came due since the last poll goes out with the rest.
+  await guarded(context, "reminders", () => promoteReminders(context));
   await guarded(context, "release", () => deliverReady(context, true));
 }

@@ -120,7 +120,7 @@ function replyLine(watch: ThreadWatch, words: Words): string {
   const reply = watch.reply;
   const head = words.replied(
     senderName(reply?.from || watch.to),
-    clip(reply?.subject || watch.subject, 80),
+    clip(watch.subject || reply?.subject || "", 80),
   );
   return reply?.snippet ? `${head}: ${clip(reply.snippet, SNIPPET_CHARS)}` : head;
 }

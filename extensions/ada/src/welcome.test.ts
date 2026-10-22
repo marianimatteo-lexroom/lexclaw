@@ -9,6 +9,8 @@ import { createSqliteWorkerBackend } from "./memory.worker.js";
 import { greetingLanguage, registerWelcomeHook, welcomeEnabled, welcomeText } from "./welcome.js";
 
 const stores = vi.hoisted(() => ({ open: undefined as undefined | (() => MemoryStore) }));
+const mirror = vi.hoisted(() => vi.fn(async () => true));
+vi.mock("./transcript-mirror.js", () => ({ mirrorToSessionKey: mirror }));
 vi.mock("./memory.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./memory.js")>()),
   openAdaRegistryFromApi: async () => stores.open?.(),
@@ -109,6 +111,7 @@ function setup(options: { databasePath?: string; pluginConfig?: Record<string, u
 }
 
 beforeEach(() => {
+  mirror.mockClear();
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
   vi.stubEnv("ADA_WELCOME_ENABLED", "");
@@ -169,6 +172,33 @@ describe("first-message welcome", () => {
     await bare.inbound({ text: "Ciao Ada", from: BRUNO });
     expect(bare.textsTo(BRUNO)[0]?.text).not.toMatch(/Outlook|udienze e scadenze/u);
     void bare.backend.close();
+  });
+
+  it("writes the welcome into the conversation, so the answer that follows knows it was said", async () => {
+    const ada = setup();
+    const sessionKey = `agent:main:kapso-whatsapp:direct:${ANNA}`;
+    await ada.inbound({ text: "Entro quanto devo impugnare una multa?", sessionKey });
+    expect(mirror).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      sessionKey,
+      welcomeText("it", NO_QUESTION),
+      `ada-welcome:${ANNA}`,
+    );
+    void ada.backend.close();
+  });
+
+  it("writes nothing into a conversation when there is no session, or when the welcome was not sent", async () => {
+    const ada = setup();
+    await ada.inbound({ text: "Ciao Ada" });
+    expect(mirror).not.toHaveBeenCalled();
+    ada.sendText.mockRejectedValueOnce(new Error("kapso down"));
+    await ada.inbound({
+      text: "Ciao Ada",
+      from: BRUNO,
+      sessionKey: `agent:main:kapso-whatsapp:direct:${BRUNO}`,
+    });
+    expect(mirror).not.toHaveBeenCalled();
+    void ada.backend.close();
   });
 
   it("welcomes a number only once", async () => {

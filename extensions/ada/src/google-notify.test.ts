@@ -28,7 +28,11 @@ describe("sendGoogleConnectedNotice", () => {
       email: "anna@example.com",
       loadAdapter: async () => ({ sendText }),
     });
-    expect(result).toMatchObject({ ok: true, text: expect.any(String) });
+    // The text goes back to the caller as well, so it can be written into the conversation.
+    expect(result).toEqual({
+      ok: true,
+      text: (sendText.mock.calls[0] as unknown as [{ text: string }])[0].text,
+    });
     expect(sendText).toHaveBeenCalledExactlyOnceWith({
       cfg: config,
       to: `+${owner}`,

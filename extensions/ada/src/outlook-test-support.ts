@@ -74,6 +74,8 @@ export type MockMail = {
   preview: string;
   body?: string;
   unread?: boolean;
+  /** Defaults to `conv-<id>`: every message is its own conversation unless the test says so. */
+  conversationId?: string;
 };
 
 export type MockEvent = {
@@ -313,6 +315,7 @@ export class MockMicrosoft {
     const mailbox = this.mail.get(user) ?? [];
     const message = (item: MockMail, full: boolean) => ({
       id: item.id,
+      conversationId: item.conversationId ?? `conv-${item.id}`,
       subject: item.subject,
       from: { emailAddress: { name: item.fromName ?? "", address: item.from } },
       receivedDateTime: item.receivedAt,
@@ -335,6 +338,42 @@ export class MockMicrosoft {
       const top = Number(url.searchParams.get("$top") ?? 10);
       const sorted = mailbox.toSorted((a, b) => b.receivedAt.localeCompare(a.receivedAt));
       return json({ value: sorted.slice(0, top).map((item) => message(item, false)) });
+    }
+    if (route === "/me/mailFolders/sentitems/messages" && method === "GET") {
+      return json({
+        value: this.sent
+          .map((item, index) => ({ item, index }))
+          .filter(({ item }) => item.user === user)
+          .toReversed()
+          .map(({ item, index }) => ({
+            id: `sent-${index}`,
+            conversationId: `conv-sent-${index}`,
+            subject: item.subject,
+            toRecipients: [{ emailAddress: { address: item.to } }],
+            sentDateTime: "2099-01-01T00:00:00Z",
+          })),
+      });
+    }
+    const conversation = /^conversationId eq '(.*)'$/u.exec(url.searchParams.get("$filter") ?? "");
+    if (route === "/me/messages" && method === "GET" && conversation) {
+      const wanted = (conversation[1] ?? "").replaceAll("''", "'");
+      return json({
+        value: [
+          ...mailbox
+            .filter((item) => (item.conversationId ?? `conv-${item.id}`) === wanted)
+            .map((item) => message(item, false)),
+          ...this.sent
+            .map((item, index) => ({ item, index }))
+            .filter(({ item, index }) => item.user === user && `conv-sent-${index}` === wanted)
+            .map(({ item, index }) => ({
+              id: `sent-${index}`,
+              subject: item.subject,
+              from: { emailAddress: { address: `${user}@contoso.example` } },
+              sentDateTime: "2099-01-01T00:00:00Z",
+              bodyPreview: item.text,
+            })),
+        ],
+      });
     }
     if (route === "/me/messages" && method === "GET") {
       const search = (url.searchParams.get("$search") ?? "").replaceAll('"', "").toLowerCase();

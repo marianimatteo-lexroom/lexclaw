@@ -2,12 +2,14 @@ import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const readProfile = vi.hoisted(() => vi.fn(async () => null as { timezone?: string } | null));
-vi.mock("./memory.js", () => ({
+vi.mock("./memory.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./memory.js")>()),
   openAdaMemoryFromApi: vi.fn(),
   openAdaMemoryIfExistsFromApi: async () => ({ readProfile }),
   openAdaRegistryFromApi: vi.fn(),
 }));
 
+import { openAdaMemoryFromApi } from "./memory.js";
 import { outlookConnectConfigFrom } from "./outlook-connect.js";
 import { adaOutlookTools } from "./outlook-plugin.js";
 import {
@@ -32,6 +34,10 @@ import {
   executeAdaOutlookSend,
   type OutlookToolDeps,
 } from "./outlook-tools.js";
+import { realStore } from "./preference-test-support.js";
+import { liveThreadReader } from "./proactive-reads.js";
+import { listWatches } from "./proactive-store.js";
+import { findReply } from "./thread-watch.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const NOW = new Date("2026-10-20T09:00:00.000Z");
@@ -247,6 +253,92 @@ describe("sending mail from Outlook needs the person's yes", () => {
         deps,
       ),
     ).toMatchObject({ ok: false, error: expect.stringContaining("could not find") });
+  });
+
+  describe("watching the thread for the reply", () => {
+    it("watches the conversation of a mail it sent, and tells the model it will flag the answer", async () => {
+      const memory = realStore(tempDirs.make("ada-outlook-watch-"), "anna");
+      vi.mocked(openAdaMemoryFromApi).mockResolvedValue(memory);
+      const result = await executeAdaOutlookSend(
+        ANNA,
+        api(),
+        { ...mail, confirmed: true },
+        undefined,
+        deps,
+      );
+      expect(result).toMatchObject({ ok: true, watching: true });
+      expect(await listWatches(memory)).toMatchObject([
+        {
+          id: "outlook:conv-sent-0",
+          provider: "outlook",
+          subject: "Memoria",
+          to: "verdi@studio.example",
+          state: "pending",
+        },
+      ]);
+    });
+
+    it("watches the conversation of a reply, under the subject of the mail answered", async () => {
+      const memory = realStore(tempDirs.make("ada-outlook-watch-"), "anna");
+      vi.mocked(openAdaMemoryFromApi).mockResolvedValue(memory);
+      const result = await executeAdaOutlookReply(
+        ANNA,
+        api(),
+        { messageId: "AAMk-anna-1", text: "Ricevuta, grazie.", confirmed: true },
+        undefined,
+        deps,
+      );
+      expect(result).toMatchObject({ ok: true, watching: true });
+      expect(await listWatches(memory)).toMatchObject([
+        { id: "outlook:conv-AAMk-anna-1", subject: "Memoria Rossi" },
+      ]);
+    });
+
+    it("watches nothing, and does not promise to, for a mail that was not sent", async () => {
+      const memory = realStore(tempDirs.make("ada-outlook-watch-"), "anna");
+      vi.mocked(openAdaMemoryFromApi).mockResolvedValue(memory);
+      await executeAdaOutlookSend(ANNA, api(), { ...mail, confirmed: false }, undefined, deps);
+      await executeAdaOutlookReply(
+        ANNA,
+        api(),
+        { messageId: "nope", text: "x", confirmed: true },
+        undefined,
+        deps,
+      );
+      expect(await listWatches(memory)).toEqual([]);
+    });
+
+    it("sees the reply when it lands: the poll reads the conversation of the sent mail and finds the answer", async () => {
+      const memory = realStore(tempDirs.make("ada-outlook-watch-"), "anna");
+      vi.mocked(openAdaMemoryFromApi).mockResolvedValue(memory);
+      await executeAdaOutlookSend(ANNA, api(), { ...mail, confirmed: true }, undefined, deps);
+      const [watching] = await listWatches(memory);
+      const read = liveThreadReader(api(), ANNA, NOW, {
+        outlookDb: store.db,
+        fetchImpl: mock.fetch,
+        env: OUTLOOK_ENV,
+      });
+      const before = await read(watching as never);
+      expect(before.ok && findReply(watching as never, before.messages)).toBeNull();
+
+      mock.mail.set("anna", [
+        ...(mock.mail.get("anna") ?? []),
+        {
+          id: "AAMk-reply",
+          from: "verdi@studio.example",
+          fromName: "Marco Verdi",
+          subject: "Re: Memoria",
+          receivedAt: "2099-01-01T01:00:00Z",
+          preview: "Grazie, la leggo oggi.",
+          conversationId: "conv-sent-0",
+        },
+      ]);
+      const after = await read(watching as never);
+      expect(after.ok && findReply(watching as never, after.messages)).toMatchObject({
+        from: "Marco Verdi <verdi@studio.example>",
+        snippet: "Grazie, la leggo oggi.",
+      });
+    });
   });
 
   it("saves a draft without sending anything", async () => {

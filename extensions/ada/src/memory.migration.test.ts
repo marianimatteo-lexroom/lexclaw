@@ -4,6 +4,7 @@ import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   adaMemoryExists,
+  listAdaMemoryOwners,
   openAdaMemory,
   openAdaRegistry,
   wrapMemoryWorker,
@@ -145,6 +146,43 @@ describe("memory belongs to one number each", () => {
     expect(await bruno.listTodos()).toEqual([]);
     expect((await lawyer.readWake()).lastCollectAtMs).toBe(77);
     expect((await bruno.readWake()).lastCollectAtMs).toBeNull();
+  });
+
+  it("keeps the reminders and watched threads of one number out of every other number's memory", async () => {
+    const { stateDir } = await legacyVolume();
+    const anna = await openAdaMemory({ ...location(stateDir), owner: ANNA, lawyer: LAWYER });
+    const bruno = await openAdaMemory({ ...location(stateDir), owner: BRUNO, lawyer: LAWYER });
+    await anna.putProactive({
+      kind: "reminder",
+      id: "r1",
+      dueAtMs: 5,
+      status: "pending",
+      data: '{"text":"Anna only","createdAtMs":1}',
+      updatedAtMs: 1,
+    });
+    expect(await anna.listProactive("reminder")).toHaveLength(1);
+    expect(await bruno.listProactive("reminder")).toEqual([]);
+    expect(await bruno.removeProactive("reminder", "r1")).toBe(false);
+    expect(await anna.listProactive("reminder")).toHaveLength(1);
+  });
+
+  it("lists every number that has a memory file of its own, and only those", async () => {
+    const { stateDir } = await legacyVolume();
+    await openAdaMemory({ ...location(stateDir), owner: BRUNO, lawyer: LAWYER });
+    await openAdaMemory({ ...location(stateDir), owner: ANNA, lawyer: LAWYER });
+    fs.writeFileSync(path.join(path.dirname(ownerFile(stateDir, ANNA)), "notes.txt"), "x");
+    const api = {
+      runtimeSource: "/fake/index.ts",
+      runtime: { state: { resolveStateDir: () => stateDir } },
+      config: {},
+    } as never;
+    expect(listAdaMemoryOwners(api)).toEqual([ANNA, BRUNO]);
+    expect(
+      listAdaMemoryOwners({
+        ...(api as object),
+        runtime: { state: { resolveStateDir: () => path.join(stateDir, "nowhere") } },
+      } as never),
+    ).toEqual([]);
   });
 
   it("does not hand the old memory to a different lawyer number later", async () => {

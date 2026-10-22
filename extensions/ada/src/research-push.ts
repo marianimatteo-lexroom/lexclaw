@@ -320,6 +320,11 @@ const sleep = (ms: number) =>
     setTimeout(resolve, ms);
   });
 
+/** Writes a delivered result into the conversation; a failure there never undoes the delivery. */
+async function mirror(deps: PushDeps, text: string, jobId: string): Promise<void> {
+  await deps.mirror?.(text, jobId)?.catch(() => undefined);
+}
+
 /** Sends the text, retrying once after a failure. */
 async function sendText(text: string, deps: PushDeps): Promise<SendResult> {
   const first = await deps.send(text);
@@ -442,7 +447,7 @@ export async function pushResearchResult(
   if (open !== false) {
     const sent = await sendText(text, deps);
     if (sent.ok) {
-      await deps.mirror?.(text, params.jobId);
+      await mirror(deps, text, params.jobId);
       if (offer) {
         deps.offerConnect?.(offer);
       }
@@ -513,7 +518,7 @@ export async function releaseHeldResearch(deps: PushDeps): Promise<number> {
     }
     queue.shift();
     released += 1;
-    await deps.mirror?.(next.text, next.jobId);
+    await mirror(deps, next.text, next.jobId);
     if (next.offer) {
       deps.offerConnect?.(next.offer);
     }

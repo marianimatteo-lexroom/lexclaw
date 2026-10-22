@@ -9,6 +9,7 @@ import {
 import { googleConnectConfigFrom } from "./google-connect.js";
 import { accessForRead } from "./google-tools.js";
 import { maskNumber } from "./inbound-log.js";
+import type { OutlookAccountDb } from "./outlook-account-contract.js";
 import { openAdaOutlookAccountDbFromApi } from "./outlook-account.js";
 import {
   findOutlookSentConversation,
@@ -34,7 +35,12 @@ export type ThreadReader = (
  * Reads a thread from the provider that sent it, with the number's own account. Access is loaded
  * on first use and kept for the pass, so a number with nothing to watch costs no provider call.
  */
-export function liveThreadReader(api: ReaderApi, owner: string, now: Date): ThreadReader {
+export function liveThreadReader(
+  api: ReaderApi,
+  owner: string,
+  now: Date,
+  seams: { outlookDb?: OutlookAccountDb; fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv } = {},
+): ThreadReader {
   let google: Promise<{ accessToken: string } | null> | undefined;
   let outlook: Promise<{ accessToken: string; email: string } | null> | undefined;
   const log = (message: string) => api.logger.warn(`${message} owner=${maskNumber(owner)}`);
@@ -50,13 +56,15 @@ export function liveThreadReader(api: ReaderApi, owner: string, now: Date): Thre
     })());
   const outlookAccess = () =>
     (outlook ??= (async () => {
-      if (!outlookEnabled()) {
+      if (!outlookEnabled(seams.env)) {
         return null;
       }
       const access = await loadOutlookAccess({
-        db: await openAdaOutlookAccountDbFromApi(api),
+        db: seams.outlookDb ?? (await openAdaOutlookAccountDbFromApi(api)),
         owner,
         nowMs: now.getTime(),
+        env: seams.env,
+        fetchImpl: seams.fetchImpl,
         log,
       });
       return access.ok ? { accessToken: access.accessToken, email: access.account.email } : null;
@@ -84,6 +92,7 @@ export function liveThreadReader(api: ReaderApi, owner: string, now: Date): Thre
         subject: watch.subject,
         to: watch.to,
         sinceMs: watch.sentAtMs - OUTLOOK_SENT_SLACK_MS,
+        fetchImpl: seams.fetchImpl,
       });
       if (!found.ok) {
         return { ok: false, gone: false };
@@ -94,6 +103,7 @@ export function liveThreadReader(api: ReaderApi, owner: string, now: Date): Thre
       accessToken: access.accessToken,
       conversationId,
       selfEmail: access.email,
+      fetchImpl: seams.fetchImpl,
     });
     return read.ok ? read : { ok: false, gone: false };
   };
