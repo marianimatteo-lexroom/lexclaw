@@ -20,6 +20,7 @@ import {
   type ProactiveSeams,
 } from "./proactive.js";
 import { clearInboundLanguages, recordInboundLanguage } from "./research-link-outbound.js";
+import { clearHeldResearch, recordSenderInbound } from "./research-push.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const OWNER = "393331111111";
@@ -37,7 +38,7 @@ const api = {
 
 type Harness = ReturnType<typeof setup>;
 
-function setup(options: { windowOpen?: boolean } = {}) {
+function setup(options: { windowOpen?: boolean; unrecorded?: boolean } = {}) {
   const memory = realStore(tempDirs.make("ada-proactive-"), "owner");
   const texts: string[] = [];
   const seams = {
@@ -51,9 +52,13 @@ function setup(options: { windowOpen?: boolean } = {}) {
     readEvents: vi.fn(async () => [] as CalendarEvent[]),
   } satisfies ProactiveSeams;
   const openWindow = options.windowOpen !== false;
-  const ready = memory.writeWake({
-    lastLawyerInboundAtMs: openWindow ? NOW.getTime() - HOUR : NOW.getTime() - 30 * HOUR,
-  });
+  // `unrecorded`: the number's first message arrived before it had a memory file, so only this
+  // process knows it wrote.
+  const ready = options.unrecorded
+    ? Promise.resolve()
+    : memory.writeWake({
+        lastLawyerInboundAtMs: openWindow ? NOW.getTime() - HOUR : NOW.getTime() - 30 * HOUR,
+      });
   const run = async (at: Date = NOW) => {
     await ready;
     await runProactivePass({ api, owner: OWNER, memory, now: at, seams });
@@ -79,6 +84,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   clearInboundLanguages();
+  clearHeldResearch();
 });
 
 describe("reminders", () => {
@@ -96,6 +102,25 @@ describe("reminders", () => {
 
     await t.run(new Date(NOW.getTime() + 15 * MINUTE));
     expect(t.texts).toHaveLength(1);
+  });
+
+  it("delivers a first-message reminder in the window, with no template, though the number had no memory file when it wrote", async () => {
+    const t = setup({ unrecorded: true });
+    recordSenderInbound(OWNER, NOW.getTime() - 50 * MINUTE);
+    await remind(t.memory, "r1", "Call Rossi", NOW.getTime() - MINUTE);
+    await t.run();
+    expect(t.texts).toEqual(["Reminder: Call Rossi"]);
+    expect(t.seams.sendTemplate).not.toHaveBeenCalled();
+    expect(await listReminders(t.memory)).toEqual([]);
+  });
+
+  it("holds it, and uses the template, only once this process's record of the message is a day old too", async () => {
+    const t = setup({ unrecorded: true });
+    recordSenderInbound(OWNER, NOW.getTime() - 30 * HOUR);
+    await remind(t.memory, "r1", "Call Rossi", NOW.getTime() - MINUTE);
+    await t.run();
+    expect(t.texts).toEqual([]);
+    expect(t.seams.sendTemplate).toHaveBeenCalledOnce();
   });
 
   it("says when a late reminder was meant to come", async () => {

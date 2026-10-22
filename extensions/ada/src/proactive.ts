@@ -37,6 +37,7 @@ import {
 } from "./proactive-store.js";
 import { renderReadyNotices, senderName } from "./proactive-text.js";
 import { resolveLanguage } from "./research-link-outbound.js";
+import { lastInboundOf } from "./research-push.js";
 import { effectiveTimeZone } from "./schedule.js";
 import { findReply } from "./thread-watch.js";
 import { mirrorSentText } from "./transcript-mirror.js";
@@ -343,7 +344,13 @@ async function deliverReady(context: Context, windowOpen: boolean): Promise<void
     return;
   }
   const wake = await memory.readWake();
-  if (!(await claimRequestTemplate(memory, wake.lastLawyerInboundAtMs, nowMs))) {
+  if (
+    !(await claimRequestTemplate(
+      memory,
+      lastInboundOf(context.owner, wake.lastLawyerInboundAtMs),
+      nowMs,
+    ))
+  ) {
     return;
   }
   const sent = await context.seams.sendTemplate();
@@ -413,7 +420,10 @@ export async function runProactivePass(params: ProactiveParams): Promise<void> {
     params.memory.readWake(),
     params.memory.listPreferences(),
   ]);
-  const windowOpen = whatsappWindowOpen(wake.lastLawyerInboundAtMs, context.nowMs);
+  const windowOpen = whatsappWindowOpen(
+    lastInboundOf(params.owner, wake.lastLawyerInboundAtMs),
+    context.nowMs,
+  );
   await guarded(context, "reminders", () => promoteReminders(context));
   await guarded(context, "watches", () => pollWatches(context));
   await guarded(context, "prep", () => planPrep(context, preferences));

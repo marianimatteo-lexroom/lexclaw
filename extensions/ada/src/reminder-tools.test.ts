@@ -9,6 +9,7 @@ import {
   executeAdaSetReminder,
   parseReminderTime,
 } from "./reminder-tools.js";
+import { clearHeldResearch, recordSenderInbound } from "./research-push.js";
 
 const stores = vi.hoisted(() => ({ byOwner: new Map<string, unknown>() }));
 vi.mock("./memory.js", async (importOriginal) => ({
@@ -35,6 +36,7 @@ function store(owner: string, timezone?: string): MemoryStore {
 }
 
 beforeEach(() => {
+  clearHeldResearch();
   stores.byOwner.clear();
   vi.clearAllMocks();
 });
@@ -140,6 +142,19 @@ describe("ada_set_reminder", () => {
     expect(await executeAdaListReminders(api, ANNA)).toMatchObject({
       reminders: [{ text: "Anna's" }],
     });
+  });
+});
+
+describe("a first message", () => {
+  it("is kept in the memory file the reminder creates, so the open window survives a restart", async () => {
+    const memory = store(ANNA);
+    recordSenderInbound(ANNA, NOW.getTime() - 5 * 60_000);
+    await executeAdaSetReminder(api, ANNA, { at: "2026-10-27T15:00", text: "Call Rossi" }, NOW);
+    expect((await memory.readWake()).lastLawyerInboundAtMs).toBe(NOW.getTime() - 5 * 60_000);
+    clearHeldResearch();
+    const other = store(BRUNO);
+    await executeAdaSetReminder(api, BRUNO, { at: "2026-10-27T15:00", text: "x" }, NOW);
+    expect((await other.readWake()).lastLawyerInboundAtMs).toBeNull();
   });
 });
 

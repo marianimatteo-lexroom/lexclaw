@@ -311,6 +311,16 @@ function pruneHeld(nowMs: number): void {
   }
 }
 
+/**
+ * When `owner` last wrote: the later of this process's record and the stored one. A number's first
+ * message arrives before it has a memory file, so the stored value alone can still be empty while
+ * the window is open.
+ */
+export function lastInboundOf(owner: string, stored: number | null): number | null {
+  const arrived = lastInboundAtMs.get(owner);
+  return arrived === undefined ? stored : Math.max(arrived, stored ?? 0);
+}
+
 /** Forgets every held result and window. For tests: this state is shared by the whole process. */
 export function clearHeldResearch(): void {
   held.clear();
@@ -563,14 +573,9 @@ export function livePushDeps(
         bytes: document.bytes,
       }),
     windowOpen: async () => {
-      let seen = lastInboundAtMs.get(recipient) ?? null;
-      if (seen === null) {
-        try {
-          seen = (await (await memory())?.readWake())?.lastLawyerInboundAtMs ?? null;
-        } catch {
-          seen = null;
-        }
-      }
+      const stored = await (async () =>
+        (await (await memory())?.readWake())?.lastLawyerInboundAtMs ?? null)().catch(() => null);
+      const seen = lastInboundOf(recipient, stored);
       return seen === null ? null : whatsappWindowOpen(seen, Date.now());
     },
     nudge: () =>
@@ -579,11 +584,13 @@ export function livePushDeps(
       runCollectExclusive(
         async () => {
           const store = await memory().catch(() => null);
-          const lastInbound = store
-            ? (await store.readWake()).lastLawyerInboundAtMs
-            : (lastInboundAtMs.get(recipient) ?? null);
-          // A template only reopens a closed window: with it open the result waits for a retry
-          // or the next message, with no nudge.
+          const lastInbound = lastInboundOf(
+            recipient,
+            store ? (await store.readWake()).lastLawyerInboundAtMs : null,
+          );
+          // A template only reopens a closed window. A result whose text failed inside an open
+          // window is held until the person's next message (in memory only, lost on a restart),
+          // with no nudge and no retry.
           if (whatsappWindowOpen(lastInbound, Date.now())) {
             return "skipped";
           }

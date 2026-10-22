@@ -15,6 +15,7 @@ import {
   removeReminder,
   saveReminder,
 } from "./proactive-store.js";
+import { lastInboundOf } from "./research-push.js";
 import { effectiveTimeZone } from "./schedule.js";
 
 type ReminderApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger" | "config">;
@@ -53,6 +54,14 @@ const TIMING_NOTE =
 
 async function ownerContext(api: ReminderApi, owner: string) {
   const memory = await openAdaMemoryFromApi(api, owner);
+  // A first message arrives before the number has a memory file: keep its arrival now that there is one.
+  const arrivedAtMs = lastInboundOf(owner, null);
+  if (
+    arrivedAtMs !== null &&
+    ((await memory.readWake()).lastLawyerInboundAtMs ?? 0) < arrivedAtMs
+  ) {
+    await memory.writeWake({ lastLawyerInboundAtMs: arrivedAtMs });
+  }
   return { memory, timeZone: effectiveTimeZone((await memory.readProfile())?.timezone) };
 }
 
