@@ -146,6 +146,7 @@ const SENT_ITEMS = {
       sentDateTime: "2026-10-27T08:00:30Z",
     },
     {
+      id: "sent-memoria",
       conversationId: "AAQk-memoria",
       subject: "Memoria",
       toRecipients: [{ emailAddress: { address: "Avv.Verdi@example.com" } }],
@@ -165,7 +166,7 @@ describe("Outlook sent threads", () => {
         sinceMs: SENT_AT - 60_000,
         fetchImpl: fetchImpl as never,
       }),
-    ).toEqual({ ok: true, conversationId: "AAQk-memoria" });
+    ).toMatchObject({ ok: true, conversationId: "AAQk-memoria", messageId: "sent-memoria" });
   });
 
   it("watches that conversation, and falls back to a lookup the poll finishes when Sent Items has no copy yet", async () => {
@@ -188,7 +189,7 @@ describe("Outlook sent threads", () => {
       fetchImpl: missing as never,
     });
     expect(await listWatches(stores.memory as never)).toMatchObject([
-      { id: "outlook:AAQk-memoria", provider: "outlook" },
+      { id: "outlook:AAQk-memoria", provider: "outlook", seenIds: ["sent-memoria"] },
       { id: `outlook:${OUTLOOK_LOOKUP_PREFIX}${SENT_AT + 5000}`, subject: "Contratto" },
     ]);
   });
@@ -204,6 +205,40 @@ describe("Outlook sent threads", () => {
     expect(await listWatches(stores.memory as never)).toMatchObject([
       { id: "outlook:AAQk-memoria", subject: "Memoria" },
     ]);
+  });
+
+  it("counts a message in Sent Items as the person's own even when the sign-in name is not the address on the mail", async () => {
+    const fetchImpl = graphFetch([
+      [
+        /\/me\/messages\?/u,
+        {
+          value: [
+            {
+              id: "m1",
+              subject: "Memoria",
+              from: { emailAddress: { address: "anna@contoso.example", name: "Anna" } },
+              sentDateTime: "2026-10-27T08:00:10Z",
+              parentFolderId: "folder-sent",
+            },
+          ],
+        },
+      ],
+    ]);
+    const read = await readOutlookConversation({
+      accessToken: "t",
+      conversationId: "c",
+      selfEmail: "anna.rossi@contoso.onmicrosoft.com",
+      sentFolderId: "folder-sent",
+      fetchImpl: fetchImpl as never,
+    });
+    expect(read.ok && read.messages.map((entry) => entry.own)).toEqual([true]);
+    const unknown = await readOutlookConversation({
+      accessToken: "t",
+      conversationId: "c",
+      selfEmail: "anna.rossi@contoso.onmicrosoft.com",
+      fetchImpl: fetchImpl as never,
+    });
+    expect(unknown.ok && unknown.messages.map((entry) => entry.own)).toEqual([false]);
   });
 
   it("reads a conversation and tells the person's own messages from the others'", async () => {

@@ -1114,8 +1114,9 @@ export async function recordSenderInbound(params: {
     return;
   }
   await memory.writeWake({ lastLawyerInboundAtMs: params.atMs });
-  // What Ada held for this number while its window was closed goes out now that it is open. It runs
-  // beside the answer to the message that opened the window, never in front of it.
+  // What Ada held for this number while its window was closed is released as soon as this inbound
+  // is recorded, because the window is now open. It is not sequenced with the model's answer to the
+  // same message, so a held notice may arrive before that answer.
   void runCollectExclusive(
     () =>
       releaseReadyNotices({ api: params.api, owner, memory, now: new Date(params.atMs) }).catch(

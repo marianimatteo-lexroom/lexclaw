@@ -316,6 +316,7 @@ export class MockMicrosoft {
     const message = (item: MockMail, full: boolean) => ({
       id: item.id,
       conversationId: item.conversationId ?? `conv-${item.id}`,
+      parentFolderId: "folder-inbox",
       subject: item.subject,
       from: { emailAddress: { name: item.fromName ?? "", address: item.from } },
       receivedDateTime: item.receivedAt,
@@ -338,6 +339,9 @@ export class MockMicrosoft {
       const top = Number(url.searchParams.get("$top") ?? 10);
       const sorted = mailbox.toSorted((a, b) => b.receivedAt.localeCompare(a.receivedAt));
       return json({ value: sorted.slice(0, top).map((item) => message(item, false)) });
+    }
+    if (route === "/me/mailFolders/sentitems" && method === "GET") {
+      return json({ id: "folder-sent" });
     }
     if (route === "/me/mailFolders/sentitems/messages" && method === "GET") {
       return json({
@@ -370,6 +374,7 @@ export class MockMicrosoft {
               subject: item.subject,
               from: { emailAddress: { address: `${user}@contoso.example` } },
               sentDateTime: "2099-01-01T00:00:00Z",
+              parentFolderId: "folder-sent",
               bodyPreview: item.text,
             })),
         ],

@@ -2,11 +2,11 @@ import { createHash } from "node:crypto";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { whatsappWindowOpen } from "./collector.js";
 import { deadlineDueLabel } from "./deadline-intake.js";
-import { diffDaysIso, localIsoDate, localParts } from "./deadline-time.js";
+import { diffDaysIso, localIsoDate, localParts, parseIsoDate } from "./deadline-time.js";
 import { renderCountdownText, type CountdownLine } from "./digest-text.js";
 import { sendAdaWhatsAppText } from "./google-notify.js";
 import { maskNumber } from "./inbound-log.js";
-import { PREP_ON_KEY, PREP_TEMPLATE_ON_KEY, type MemoryTodo } from "./memory-contract.js";
+import { PARKED_TODO_PREFIX, PREP_ON_KEY, type MemoryTodo } from "./memory-contract.js";
 import { matchMatterId } from "./memory-render.js";
 import type { MemoryStore } from "./memory.js";
 import {
@@ -166,9 +166,20 @@ async function pollWatches(context: Context): Promise<void> {
       }
       continue;
     }
-    const reply = findReply(watch, thread.messages);
+    // A watch that waited for Sent Items keeps what the lookup found, so the next poll reads the
+    // conversation itself instead of searching the newest sent mail again.
+    const found = thread.resolved
+      ? {
+          ...watch,
+          threadId: thread.resolved.threadId,
+          seenIds: [...watch.seenIds, thread.resolved.ownId],
+        }
+      : watch;
+    const reply = findReply(found, thread.messages);
     if (reply) {
-      await saveWatch(context.memory, { ...watch, reply, state: "ready" }, context.nowMs);
+      await saveWatch(context.memory, { ...found, reply, state: "ready" }, context.nowMs);
+    } else if (thread.resolved) {
+      await saveWatch(context.memory, found, context.nowMs);
     }
   }
 }
@@ -203,7 +214,12 @@ async function prepFacts(
       .slice(0, 3)
       .map((item) => ({ type: item.type, due: deadlineDueLabel(item), title: item.title })),
     todos: todos
-      .filter((todo: MemoryTodo) => todo.owner === "lawyer" && todo.status !== "done")
+      .filter(
+        (todo: MemoryTodo) =>
+          todo.owner === "lawyer" &&
+          todo.status !== "done" &&
+          !todo.id.startsWith(PARKED_TODO_PREFIX),
+      )
       .slice(0, 3)
       .map((todo) => todo.title),
     mails: mails
@@ -230,10 +246,10 @@ async function planPrep(context: Context, preferences: readonly { key: string }[
   }
   const events = await context.seams.readEvents(context.now, 2);
   const aliases = await context.memory.listMatterAliases();
-  const template = preferences.some((preference) => preference.key === PREP_TEMPLATE_ON_KEY);
   const soon = events
     .flatMap((event) => {
-      const startMs = Date.parse(event.start);
+      // An all-day event has a date and no time, which would read as midnight UTC.
+      const startMs = parseIsoDate(event.start) ? Number.NaN : Date.parse(event.start);
       const until = startMs - context.nowMs;
       return event.status !== "cancelled" && until >= PREP_EARLIEST_MS && until <= PREP_LATEST_MS
         ? [{ event, startMs }]
@@ -256,7 +272,6 @@ async function planPrep(context: Context, preferences: readonly { key: string }[
       startMs,
       matterLabel: aliases.find((entry) => entry.matterId === matterId)?.title ?? matterId,
       facts,
-      template,
       day: context.day,
       state: "ready",
     };
@@ -316,9 +331,8 @@ async function deliverReady(context: Context, windowOpen: boolean): Promise<void
     await context.seams.mirror(text, `ada-proactive:${context.owner}:${nowMs}`);
     return;
   }
-  const mayUseTemplate =
-    reminders.length > 0 || replies.length > 0 || preps.some((prep) => prep.template);
-  if (!mayUseTemplate) {
+  // A recap is never announced with a template: it waits for the next message or goes stale.
+  if (reminders.length === 0 && replies.length === 0) {
     return;
   }
   const wake = await memory.readWake();

@@ -265,11 +265,11 @@ export const BRIEF_SKIP_AGENDA_KEY = "brief_skip_agenda";
 export const BRIEF_SKIP_MAIL_KEY = "brief_skip_mail";
 
 /**
- * The person asked for a recap before their hearings and meetings. The second key also lets
- * Ada use the request-ready template for it while the WhatsApp window is closed.
+ * The person asked for a recap before their hearings and meetings. The recap is sent only inside
+ * the WhatsApp window; with it closed the recap is held for their next message, never announced
+ * with a template.
  */
 export const PREP_ON_KEY = "meeting_prep_on";
-export const PREP_TEMPLATE_ON_KEY = "meeting_prep_template_on";
 
 /** What Ada learned about how the person works, saved only after they said yes to it. */
 export const WORK_PROFILE_KEY = "work_profile";

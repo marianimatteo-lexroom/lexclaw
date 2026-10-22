@@ -174,8 +174,6 @@ export type PrepNotice = {
   startMs: number;
   matterLabel: string;
   facts: PrepFacts;
-  /** The person also allowed the request-ready template for it while the window is closed. */
-  template: boolean;
   /** The local day it was prepared, for the daily cap. */
   day: string;
   state: "ready" | "sent";
@@ -216,7 +214,6 @@ function readPrep(row: ProactiveRow): PrepNotice | null {
       todos: strings(facts.todos, 5),
       mails: strings(facts.mails, 3),
     },
-    template: data.template === true,
     day: text(data.day, 10) ?? "",
     state: row.status === "sent" ? "sent" : "ready",
   };
@@ -236,6 +233,13 @@ export async function savePrep(store: ProactiveStore, prep: PrepNotice, atMs: nu
     data: JSON.stringify(data),
     updatedAtMs: atMs,
   });
+  // Sent recaps only count for their own day's cap: once the event is a day behind they go, so
+  // the oldest rows never crowd new ones out of a listing.
+  for (const row of await store.listProactive(KIND.prep)) {
+    if (row.status === "sent" && row.dueAtMs !== null && atMs - row.dueAtMs > DAY_MS) {
+      await store.removeProactive(KIND.prep, row.id);
+    }
+  }
 }
 
 export const removePrep = (store: ProactiveStore, id: string) =>

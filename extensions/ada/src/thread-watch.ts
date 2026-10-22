@@ -120,6 +120,7 @@ export async function recordOutlookThread(
     threadId:
       sent.repliedTo?.conversationId ??
       (found?.ok ? found.conversationId : `${OUTLOOK_LOOKUP_PREFIX}${sent.atMs}`),
+    ...(found?.ok ? { ownId: found.messageId } : {}),
     subject: sent.repliedTo?.subject ?? sent.subject,
     to: sent.to,
     atMs: sent.atMs,

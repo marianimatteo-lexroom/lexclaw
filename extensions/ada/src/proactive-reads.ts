@@ -15,6 +15,7 @@ import {
   findOutlookSentConversation,
   listOutlookEvents,
   readOutlookConversation,
+  readOutlookSentFolderId,
 } from "./outlook-graph.js";
 import { outlookEnabled } from "./outlook-oauth.js";
 import { loadOutlookAccess } from "./outlook-session.js";
@@ -27,9 +28,15 @@ type ReaderApi = Pick<
 >;
 
 /** What the watch needs from the provider to see a thread; injected by tests. */
-export type ThreadReader = (
-  watch: ThreadWatch,
-) => Promise<{ ok: true; messages: ThreadMessage[] } | { ok: false; gone: boolean }>;
+export type ThreadReader = (watch: ThreadWatch) => Promise<
+  | {
+      ok: true;
+      messages: ThreadMessage[];
+      /** A watch that was waiting for Sent Items now has its conversation and its own message. */
+      resolved?: { threadId: string; ownId: string };
+    }
+  | { ok: false; gone: boolean }
+>;
 
 /**
  * Reads a thread from the provider that sent it, with the number's own account. Access is loaded
@@ -54,6 +61,11 @@ export function liveThreadReader(
       });
       return access.ok ? { accessToken: access.accessToken } : null;
     })());
+  let sentFolderRead: Promise<string | null> | undefined;
+  const sentFolderId = (accessToken: string) =>
+    (sentFolderRead ??= readOutlookSentFolderId({ accessToken, fetchImpl: seams.fetchImpl }).then(
+      (read) => (read.ok ? read.folderId : null),
+    ));
   const outlookAccess = () =>
     (outlook ??= (async () => {
       if (!outlookEnabled(seams.env)) {
@@ -86,6 +98,7 @@ export function liveThreadReader(
       return { ok: false, gone: false };
     }
     let conversationId = watch.threadId;
+    let resolved: { threadId: string; ownId: string } | undefined;
     if (conversationId.startsWith(OUTLOOK_LOOKUP_PREFIX)) {
       const found = await findOutlookSentConversation({
         accessToken: access.accessToken,
@@ -98,14 +111,17 @@ export function liveThreadReader(
         return { ok: false, gone: false };
       }
       conversationId = found.conversationId;
+      resolved = { threadId: found.conversationId, ownId: found.messageId };
     }
+    const sentFolder = await sentFolderId(access.accessToken);
     const read = await readOutlookConversation({
       accessToken: access.accessToken,
       conversationId,
       selfEmail: access.email,
+      ...(sentFolder ? { sentFolderId: sentFolder } : {}),
       fetchImpl: seams.fetchImpl,
     });
-    return read.ok ? read : { ok: false, gone: false };
+    return read.ok ? { ...read, ...(resolved ? { resolved } : {}) } : { ok: false, gone: false };
   };
 }
 

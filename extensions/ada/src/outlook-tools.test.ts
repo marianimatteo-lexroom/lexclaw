@@ -271,6 +271,7 @@ describe("sending mail from Outlook needs the person's yes", () => {
         {
           id: "outlook:conv-sent-0",
           provider: "outlook",
+          seenIds: ["sent-0"],
           subject: "Memoria",
           to: "verdi@studio.example",
           state: "pending",

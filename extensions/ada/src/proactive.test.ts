@@ -1,7 +1,7 @@
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CalendarEvent, ThreadMessage } from "./google-api.js";
-import { PREP_ON_KEY, PREP_TEMPLATE_ON_KEY, type DeadlineCandidate } from "./memory-contract.js";
+import { PREP_ON_KEY, type DeadlineCandidate } from "./memory-contract.js";
 import type { MemoryStore } from "./memory.js";
 import { realStore } from "./preference-test-support.js";
 import {
@@ -292,6 +292,47 @@ describe("sent-thread watch", () => {
     expect(await listWatches(t.memory)).toEqual([]);
   });
 
+  it("keeps what a lookup watch resolved, so the next poll reads the conversation and never searches Sent Items again", async () => {
+    const t = setup();
+    const lookup = watch("lookup:1", { provider: "outlook", id: "outlook:lookup:1", seenIds: [] });
+    await saveWatch(t.memory, lookup, 1);
+    t.seams.readThread.mockResolvedValueOnce({
+      ok: true,
+      messages: [own("conv-9")],
+      resolved: { threadId: "conv-9", ownId: "sent-9" },
+    });
+    await t.run();
+    expect(await listWatches(t.memory)).toMatchObject([
+      { id: "outlook:lookup:1", threadId: "conv-9", seenIds: ["sent-9"], state: "pending" },
+    ]);
+
+    t.seams.readThread.mockResolvedValueOnce({
+      ok: true,
+      messages: [own("conv-9"), answer("conv-9")],
+    });
+    await t.run(new Date(NOW.getTime() + 15 * MINUTE));
+    expect(t.seams.readThread).toHaveBeenLastCalledWith(
+      expect.objectContaining({ threadId: "conv-9" }),
+    );
+    expect(t.texts).toHaveLength(1);
+  });
+
+  it("does not report Ada's own sent message as a reply when a watch resolves", async () => {
+    const t = setup();
+    await saveWatch(
+      t.memory,
+      watch("lookup:2", { provider: "outlook", id: "outlook:lookup:2", seenIds: [] }),
+      1,
+    );
+    t.seams.readThread.mockResolvedValue({
+      ok: true,
+      messages: [{ ...answer("x"), id: "sent-2", from: "anna@contoso.example" }],
+      resolved: { threadId: "conv-2", ownId: "sent-2" },
+    });
+    await t.run();
+    expect(t.texts).toEqual([]);
+  });
+
   it("drops a watch whose thread is gone, and one older than a month", async () => {
     const t = setup();
     await saveWatch(t.memory, watch("gone"), 1);
@@ -443,27 +484,88 @@ describe("prep before a hearing or meeting", () => {
     expect(await listPreps(t.memory)).toHaveLength(PREP_DAILY_CAP);
   });
 
-  it("outside the window holds the recap and sends no template unless the person allowed it", async () => {
+  it("outside the window holds the recap and never sends a template for it, even next to a reminder's", async () => {
     const t = setup({ windowOpen: false });
     await optedIn(t);
     t.seams.readEvents.mockResolvedValue([hearing("e1", NOW.getTime() + 75 * MINUTE)]);
     await t.run();
     expect(t.texts).toEqual([]);
     expect(t.seams.sendTemplate).not.toHaveBeenCalled();
-    expect(await listPreps(t.memory)).toMatchObject([{ state: "ready", template: false }]);
+    expect(await listPreps(t.memory)).toMatchObject([{ state: "ready" }]);
 
     await t.release(new Date(NOW.getTime() + 30 * MINUTE));
     expect(t.texts).toHaveLength(1);
   });
 
-  it("uses the request-ready template for a held recap only when the person also allowed that", async () => {
+  it("sends no template for a held recap, while a reminder held beside it still gets the one template", async () => {
     const t = setup({ windowOpen: false });
-    await optedIn(t, [PREP_ON_KEY, PREP_TEMPLATE_ON_KEY]);
+    await optedIn(t);
     t.seams.readEvents.mockResolvedValue([hearing("e1", NOW.getTime() + 75 * MINUTE)]);
     await t.run();
     await t.run(new Date(NOW.getTime() + 15 * MINUTE));
-    expect(t.texts).toEqual([]);
+    expect(t.seams.sendTemplate).not.toHaveBeenCalled();
+    await remind(t.memory, "r1", "Call Rossi", NOW.getTime() + 20 * MINUTE);
+    await t.run(new Date(NOW.getTime() + 30 * MINUTE));
     expect(t.seams.sendTemplate).toHaveBeenCalledOnce();
+    expect(t.texts).toEqual([]);
+  });
+
+  it("skips an all-day event, which has a date and no time", async () => {
+    const t = setup();
+    await optedIn(t);
+    t.seams.readEvents.mockResolvedValue([
+      { ...hearing("e1", NOW.getTime() + 75 * MINUTE), start: "2026-10-27", end: "2026-10-28" },
+    ]);
+    await t.run();
+    expect(t.texts).toEqual([]);
+    expect(await listPreps(t.memory)).toEqual([]);
+  });
+
+  it("leaves a parked decision out of the recap, so its English title never lands in another language", async () => {
+    const t = setup();
+    await optedIn(t);
+    await t.memory.upsertTodo({
+      id: "parked-deadline-d1",
+      matterId: "rossi",
+      owner: "lawyer",
+      title: "Confirm tracking: Udienza (2026-11-12 09:30)",
+      status: "pending",
+      detail: "",
+      updatedAtMs: 1,
+    });
+    t.seams.readEvents.mockResolvedValue([hearing("e1", NOW.getTime() + 75 * MINUTE)]);
+    await t.run();
+    expect(t.texts[0]).toContain("Collect the signed power of attorney");
+    expect(t.texts[0]).not.toContain("Confirm tracking");
+  });
+
+  it("prunes sent recaps a day after their event, so old rows never crowd new ones out", async () => {
+    const t = setup();
+    await optedIn(t);
+    const day = 24 * HOUR;
+    for (const [id, startMs] of [
+      ["old", NOW.getTime() - 2 * day],
+      ["recent", NOW.getTime() - 2 * HOUR],
+    ] as const) {
+      await t.memory.putProactive({
+        kind: "prep",
+        id,
+        dueAtMs: startMs,
+        status: "sent",
+        data: JSON.stringify({
+          title: "x",
+          startMs,
+          matterLabel: "",
+          facts: {},
+          day: "2026-10-20",
+        }),
+        updatedAtMs: 1,
+      });
+    }
+    t.seams.readEvents.mockResolvedValue([hearing("e1", NOW.getTime() + 75 * MINUTE)]);
+    await t.run();
+    expect((await listPreps(t.memory)).map((prep) => prep.id).includes("old")).toBe(false);
+    expect((await listPreps(t.memory)).map((prep) => prep.id).includes("recent")).toBe(true);
   });
 
   it("drops a held recap once its event has started", async () => {
