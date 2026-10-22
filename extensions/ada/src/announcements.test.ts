@@ -637,11 +637,15 @@ describe("personal announcements", () => {
   it("names a matter from the recipient's own data, in the recipient's language", async () => {
     const deps = makeDeps({ matter: async () => "Rossi SRL", language: async () => "en" });
     const result = await deliverAnnouncement(deps, PERSONAL, recipient(PAOLO), undefined);
+    // The admin view keeps the template; the matter is in the message the number receives.
     expect(result).toMatchObject({
       status: "sent",
-      text: "New: before your next hearing in Rossi SRL I can send you a recap.",
+      text: "New: before your next hearing in {matter} I can send you a recap.",
     });
-    expect(deps.send).toHaveBeenCalledWith(PAOLO, result.text);
+    expect(deps.send).toHaveBeenCalledWith(
+      PAOLO,
+      "New: before your next hearing in Rossi SRL I can send you a recap.",
+    );
     expect(deps.recordInHistory).toHaveBeenCalledWith(
       recipient(PAOLO),
       "recap",
@@ -661,11 +665,39 @@ describe("personal announcements", () => {
       recipient(ANNA),
       recipient("393333333333"),
     ]);
-    expect(results.map(({ outcome }) => outcome.text)).toEqual([
+    // What each number received names its own matter; what the admin gets back names none.
+    expect(deps.send.mock.calls.map(([, text]) => text)).toEqual([
       "Novità: prima della prossima udienza di Rossi SRL posso prepararti un riepilogo.",
       "Novità: prima della prossima udienza di Bianchi posso prepararti un riepilogo.",
       "Novità: ora posso prepararti un riepilogo prima di ogni udienza.",
     ]);
+    const shown = results.map(({ outcome }) => outcome.text);
+    expect(shown).toEqual([
+      "Novità: prima della prossima udienza di {matter} posso prepararti un riepilogo.",
+      "Novità: prima della prossima udienza di {matter} posso prepararti un riepilogo.",
+      "Novità: ora posso prepararti un riepilogo prima di ogni udienza.",
+    ]);
+    expect(JSON.stringify(shown)).not.toMatch(/Rossi|Bianchi/u);
+  });
+
+  it("shows the template, not a matter name, in a dry run and for a number still waiting for its window", async () => {
+    const dry = await deliverToRecipients(
+      makeDeps({ matter: async () => "Rossi SRL" }),
+      PERSONAL,
+      [recipient(PAOLO)],
+      { dryRun: true },
+    );
+    expect(dry[0]?.outcome).toMatchObject({ status: "would_send" });
+    expect(dry[0]?.outcome.text).toContain("{matter}");
+    expect(dry[0]?.outcome.text).not.toContain("Rossi");
+    const waiting = await deliverAnnouncement(
+      makeDeps({ windowOpen: async () => false, matter: async () => "Rossi SRL" }),
+      PERSONAL,
+      recipient(ANNA),
+      undefined,
+    );
+    expect(waiting).toMatchObject({ status: "pending", reason: "window_closed" });
+    expect(waiting.text).not.toContain("Rossi");
   });
 
   it("uses the plain text of a language that has no personal variant", () => {
@@ -685,7 +717,7 @@ describe("personal announcements", () => {
     expect(await deliverAnnouncement(closed, PERSONAL, recipient(PAOLO), undefined)).toMatchObject({
       status: "pending",
       reason: "window_closed",
-      text: expect.stringContaining("Rossi SRL"),
+      text: expect.stringContaining("{matter}"),
     });
     expect(closed.send).not.toHaveBeenCalled();
     const open = makeDeps({ matter: async () => "Rossi SRL" });

@@ -178,7 +178,7 @@ export type AnnouncementOutcome = {
   status: "sent" | "skipped" | "pending" | "would_send";
   reason: string | null;
   language: string | null;
-  /** The message for the number, present while it is still to be sent or was just sent. */
+  /** The message for the number, with a personal matter left as `{matter}`: it is filled only in what the number receives. */
   text: string | null;
   recordedInHistory?: boolean;
 };
@@ -232,17 +232,20 @@ export async function deliverAnnouncement(
   const hasPersonal = `${language}${PERSONAL_SUFFIX}` in announcement.texts;
   const matter = hasPersonal ? ((await deps.matter?.(owner)) ?? null) : null;
   const text = resolveAnnouncementText(announcement, language, matter);
+  // The admin views show the template with the matter left unfilled: a matter name comes from one
+  // number's own data and is filled in only in the message that number receives.
+  const shown = matter ? resolveAnnouncementText(announcement, language, MATTER_PLACEHOLDER) : text;
   const pending = (reason: string): AnnouncementOutcome => ({
     status: "pending",
     reason,
     language,
-    text,
+    text: shown,
   });
   if (!(await deps.windowOpen(owner))) {
     return pending("window_closed");
   }
   if (options.dryRun) {
-    return { status: "would_send", reason: null, language, text };
+    return { status: "would_send", reason: null, language, text: shown };
   }
   const claimed = await registry.claimAnnouncementDelivery({
     announcementId: announcement.id,
@@ -270,7 +273,7 @@ export async function deliverAnnouncement(
       );
       return false;
     });
-  return { status: "sent", reason: null, language, text, recordedInHistory };
+  return { status: "sent", reason: null, language, text: shown, recordedInHistory };
 }
 
 /** The delivery rows by announcement id and number. */

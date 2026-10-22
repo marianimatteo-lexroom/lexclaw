@@ -49,7 +49,7 @@ const localLabel = (ms: number, timeZone: string) =>
 
 /** What the model must tell the person about when a reminder can arrive. */
 const TIMING_NOTE =
-  "Reminders are checked every 15 minutes, so it can arrive up to about 15 minutes after that time. If they have not written to you in the last 24 hours, WhatsApp only allows a short notice and the reminder itself arrives as soon as they reply.";
+  "Reminders are checked every 15 minutes, so it can arrive up to about 15 minutes after that time. If they have not written in the last 24 hours, WhatsApp does not let Ada send the reminder itself: it reaches them when they next write, and Ada may send a short notice to prompt them.";
 
 async function ownerContext(api: ReminderApi, owner: string) {
   const memory = await openAdaMemoryFromApi(api, owner);

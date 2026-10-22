@@ -1,4 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { runCollectExclusive } from "./collect-lock.js";
 import { whatsappWindowOpen } from "./collector.js";
 import {
   noteConnectOffer,
@@ -572,19 +573,28 @@ export function livePushDeps(
       }
       return seen === null ? null : whatsappWindowOpen(seen, Date.now());
     },
-    nudge: async () => {
+    nudge: () =>
       // One request-ready template per closed window, shared with the reminders and watched
-      // replies that may be held for the same number.
-      const store = await memory().catch(() => null);
-      if (store) {
-        const lastInbound = (await store.readWake()).lastLawyerInboundAtMs;
-        if (!(await claimRequestTemplate(store, lastInbound, Date.now()))) {
-          return "skipped";
-        }
-      }
-      const result = await sendRequestReadyNotice({ api, to });
-      return result === null ? "unset" : result.ok ? "sent" : "failed";
-    },
+      // replies held for the same number, so the claim and the send run under their lock.
+      runCollectExclusive(
+        async () => {
+          const store = await memory().catch(() => null);
+          const lastInbound = store
+            ? (await store.readWake()).lastLawyerInboundAtMs
+            : (lastInboundAtMs.get(recipient) ?? null);
+          // A template only reopens a closed window: with it open the result waits for a retry
+          // or the next message, with no nudge.
+          if (whatsappWindowOpen(lastInbound, Date.now())) {
+            return "skipped";
+          }
+          if (store && !(await claimRequestTemplate(store, lastInbound, Date.now()))) {
+            return "skipped";
+          }
+          const result = await sendRequestReadyNotice({ api, to });
+          return result === null ? "unset" : result.ok ? "sent" : "failed";
+        },
+        { key: `proactive:${recipient}` },
+      ),
     readProfileLanguage: async () => (await (await memory())?.readProfile())?.language,
     offerConnect: (kind) => noteConnectOffer(recipient, kind),
     noteResult: (note) => noteResearchResult(recipient, note),
