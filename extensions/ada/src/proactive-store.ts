@@ -61,6 +61,8 @@ export type ThreadWatch = {
   seenIds: string[];
   reply: WatchReply | null;
   state: ProactiveState;
+  /** When the poll last looked at it (the row's update time), so the poll can take the longest-waiting first. */
+  polledAtMs?: number;
 };
 
 export const WATCH_TTL_MS = 30 * DAY_MS;
@@ -97,6 +99,7 @@ function readWatch(row: ProactiveRow): ThreadWatch | null {
           }
         : null,
     state: stateOf(row.status),
+    polledAtMs: row.updatedAtMs,
   };
 }
 
@@ -105,7 +108,7 @@ export async function listWatches(store: ProactiveStore): Promise<ThreadWatch[]>
 }
 
 export async function saveWatch(store: ProactiveStore, watch: ThreadWatch, atMs: number) {
-  const { id, state, ...data } = watch;
+  const { id, state, polledAtMs: _polledAtMs, ...data } = watch;
   await store.putProactive({
     kind: KIND.watch,
     id,
@@ -321,4 +324,23 @@ export async function writeMarker(store: ProactiveStore, marker: Marker, atMs: n
     data: JSON.stringify({ atMs }),
     updatedAtMs: atMs,
   });
+}
+
+/**
+ * Claims the one `ada_request_ready` template a closed window may get, however many things are
+ * waiting and whichever path holds them (a research result, a reminder, a watched reply). True
+ * when no template went out since the number last wrote; the claim is written before the send, so
+ * a send Kapso accepted but reported late is never repeated.
+ */
+export async function claimRequestTemplate(
+  store: ProactiveStore,
+  lastInboundAtMs: number | null,
+  nowMs: number,
+): Promise<boolean> {
+  const last = await readMarker(store, "request_template");
+  if (last !== null && last >= (lastInboundAtMs ?? 0)) {
+    return false;
+  }
+  await writeMarker(store, "request_template", nowMs);
+  return true;
 }

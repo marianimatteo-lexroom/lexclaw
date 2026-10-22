@@ -13,6 +13,7 @@ import { formatSources } from "./lexroom-citations.js";
 import type { LexroomFailure, ResearchOutcome } from "./lexroom-client.js";
 import { lexroomLogger, type LexroomLog } from "./lexroom-log.js";
 import { openAdaMemoryIfExistsFromApi } from "./memory.js";
+import { claimRequestTemplate } from "./proactive-store.js";
 import { researchLinkLine, resolveLanguage, type Language } from "./research-link-outbound.js";
 import { buildResearchPdf, type ResearchPdf } from "./research-pdf.js";
 import { mirrorSentText } from "./transcript-mirror.js";
@@ -57,7 +58,7 @@ export type PushDeps = {
   /** Whether the recipient's 24-hour window is open; null when Ada has no inbound from them. */
   windowOpen: () => Promise<boolean | null>;
   /** The ready-template nudge that asks the recipient to write, or why it was not sent. */
-  nudge: () => Promise<"sent" | "unset" | "failed">;
+  nudge: () => Promise<"sent" | "unset" | "failed" | "skipped">;
   readProfileLanguage?: () => Promise<string | undefined>;
   /** The delivered message asked the person whether to (re)connect Lexroom; remember it for their next turn. */
   offerConnect?: (kind: ConnectOfferKind) => void;
@@ -572,6 +573,15 @@ export function livePushDeps(
       return seen === null ? null : whatsappWindowOpen(seen, Date.now());
     },
     nudge: async () => {
+      // One request-ready template per closed window, shared with the reminders and watched
+      // replies that may be held for the same number.
+      const store = await memory().catch(() => null);
+      if (store) {
+        const lastInbound = (await store.readWake()).lastLawyerInboundAtMs;
+        if (!(await claimRequestTemplate(store, lastInbound, Date.now()))) {
+          return "skipped";
+        }
+      }
       const result = await sendRequestReadyNotice({ api, to });
       return result === null ? "unset" : result.ok ? "sent" : "failed";
     },

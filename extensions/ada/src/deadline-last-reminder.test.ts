@@ -210,11 +210,17 @@ describe("a digest decision nobody answers", () => {
       dueDate: "2026-10-16",
     });
     try {
+      const passes = [];
       for (const day of [0, 1, 2]) {
-        await morning(memory, morningOf(day));
+        passes.push(await morning(memory, morningOf(day)));
       }
       const fourth = await morning(memory, new Date("2026-10-16T05:40:00.000Z"));
       expect(listed(fourth)).toMatchObject([{ status: "candidate" }]);
+      // Near items are exempt: never tagged, never parked.
+      for (const plan of [...passes, fourth]) {
+        expect(listed(plan).some((line) => line.lastReminder)).toBe(false);
+      }
+      expect(await memory.listTodos()).toEqual([]);
     } finally {
       close();
     }

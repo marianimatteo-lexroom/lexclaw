@@ -1,7 +1,10 @@
+import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { takeConnectOffers } from "./connect-offers.js";
 import type { LexroomFailure, ResearchOutcome } from "./lexroom-client.js";
 import { extractPdfText } from "./pdf-text.js";
+import { realStore } from "./preference-test-support.js";
+import { claimRequestTemplate } from "./proactive-store.js";
 import { clearInboundLanguages, recordInboundLanguage } from "./research-link-outbound.js";
 import { buildResearchPdf, type ResearchPdf } from "./research-pdf.js";
 import {
@@ -20,11 +23,18 @@ import {
   type PushDeps,
 } from "./research-push.js";
 
+const memoryStore = vi.hoisted(() => ({ current: null as unknown }));
+vi.mock("./memory.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./memory.js")>()),
+  openAdaMemoryIfExistsFromApi: async () => memoryStore.current,
+}));
+
 vi.mock("./research-pdf.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./research-pdf.js")>();
   return { ...actual, buildResearchPdf: vi.fn(actual.buildResearchPdf) };
 });
 
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const isMediaUpload = (url: Parameters<typeof fetch>[0]) =>
   typeof url === "string" && url.endsWith("/media");
 const jsonBody = (init: RequestInit | undefined) =>
@@ -981,5 +991,47 @@ describe("a delivered result is written into the conversation", () => {
         deps,
       ),
     ).toBe("sent");
+  });
+});
+
+describe("the request-ready template is claimed once per closed window", () => {
+  it("is not sent for a held result when a reminder or watched reply already used this window's template, and is again after the number writes", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ messages: [{ id: "w" }] })));
+    vi.stubGlobal("fetch", fetchImpl);
+    try {
+      const store = realStore(tempDirs.make("ada-research-claim-"), "owner");
+      memoryStore.current = store;
+      await store.writeWake({ lastLawyerInboundAtMs: 1_000 });
+      const A = "390000000001";
+      const deps = livePushDeps(
+        {
+          config: {
+            channels: {
+              "kapso-whatsapp": {
+                apiKey: "kapso_test_key",
+                phoneNumberId: "100000000000000",
+                baseUrl: "https://api.kapso.ai/meta/whatsapp/",
+              },
+            },
+          },
+          pluginConfig: { requestReadyTemplate: { name: "ada_request_ready", language: "it" } },
+          logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+        } as unknown as Parameters<typeof livePushDeps>[0],
+        vi.fn(),
+        A,
+      );
+      // A held reminder already took the template of this closed window.
+      await claimRequestTemplate(store, 1_000, 2_000);
+      expect(await deps.nudge()).toBe("skipped");
+      expect(fetchImpl).not.toHaveBeenCalled();
+
+      await store.writeWake({ lastLawyerInboundAtMs: 5_000 });
+      expect(await deps.nudge()).toBe("sent");
+      expect(await deps.nudge()).toBe("skipped");
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    } finally {
+      memoryStore.current = null;
+      vi.unstubAllGlobals();
+    }
   });
 });

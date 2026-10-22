@@ -43,7 +43,7 @@ const DEFAULT_MIN_CONFIDENCE = 0.6;
 /**
  * An unanswered decision is listed this many times in all: the digest it first appears in, the
  * next digest, and a final one that says it is the last reminder. After that it is parked in open
- * loops. A hearing or deadline within 48 hours keeps being listed: it is an alert, not a nudge.
+ * loops. A hearing or deadline within 48 hours is exempt: it carries no last-reminder tag, is never parked, and keeps being listed as an alert.
  */
 const MAX_OFFERS = 3;
 
@@ -451,7 +451,7 @@ export async function prepareDeadlineIntake(params: {
             confidence: item.confidence,
             source: item.sources[0]?.label ?? "",
             ...(movedUnannounced ? { moved: true } : {}),
-            ...(item.status === "candidate" && item.offeredCount === MAX_OFFERS - 1
+            ...(item.status === "candidate" && item.offeredCount === MAX_OFFERS - 1 && !near
               ? { lastReminder: true }
               : {}),
             briefReady: item.researchStatus === "done",

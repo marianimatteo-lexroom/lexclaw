@@ -114,6 +114,11 @@ export function liveThreadReader(
       resolved = { threadId: found.conversationId, ownId: found.messageId };
     }
     const sentFolder = await sentFolderId(access.accessToken);
+    if (!sentFolder && watch.seenIds.length === 0 && !resolved) {
+      // Without the Sent Items folder and without the id of the mail sent, the person's own message
+      // could be taken for a reply: wait for a pass that can tell.
+      return { ok: false, gone: false };
+    }
     const read = await readOutlookConversation({
       accessToken: access.accessToken,
       conversationId,

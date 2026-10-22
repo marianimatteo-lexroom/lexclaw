@@ -303,7 +303,7 @@ describe("sent-thread watch", () => {
     });
     await t.run();
     expect(await listWatches(t.memory)).toMatchObject([
-      { id: "outlook:lookup:1", threadId: "conv-9", seenIds: ["sent-9"], state: "pending" },
+      { id: "outlook:conv-9", threadId: "conv-9", seenIds: ["sent-9"], state: "pending" },
     ]);
 
     t.seams.readThread.mockResolvedValueOnce({
@@ -331,6 +331,73 @@ describe("sent-thread watch", () => {
     });
     await t.run();
     expect(t.texts).toEqual([]);
+  });
+
+  it("reads the watches looked at longest ago first, so none starves behind newer ones", async () => {
+    const t = setup();
+    for (let index = 0; index < 25; index += 1) {
+      await saveWatch(
+        t.memory,
+        watch(`w${String(index).padStart(2, "0")}`, {
+          sentAtMs: NOW.getTime() - (index + 1) * HOUR,
+        }),
+        1000 + index,
+      );
+    }
+    const seen = () => t.seams.readThread.mock.calls.map(([value]) => value.threadId);
+    await t.run();
+    expect(seen()).toHaveLength(20);
+    expect(seen()).not.toContain("w20");
+    t.seams.readThread.mockClear();
+    await t.run(new Date(NOW.getTime() + 15 * MINUTE));
+    expect(seen().slice(0, 5)).toEqual(["w20", "w21", "w22", "w23", "w24"]);
+  });
+
+  it("expires every watch past its month, even beyond the ones a pass reads", async () => {
+    const t = setup();
+    for (let index = 0; index < 22; index += 1) {
+      await saveWatch(
+        t.memory,
+        watch(`n${index}`, { sentAtMs: NOW.getTime() - HOUR - index }),
+        2000 + index,
+      );
+    }
+    await saveWatch(t.memory, watch("ancient", { sentAtMs: NOW.getTime() - 40 * 24 * HOUR }), 1);
+    await t.run();
+    expect((await listWatches(t.memory)).map((entry) => entry.threadId)).not.toContain("ancient");
+  });
+
+  it("re-keys a resolved lookup watch to its conversation and merges it with a watch already there", async () => {
+    const t = setup();
+    await saveWatch(
+      t.memory,
+      watch("lookup:3", { provider: "outlook", id: "outlook:lookup:3", seenIds: [] }),
+      1,
+    );
+    await saveWatch(
+      t.memory,
+      watch("conv-3", {
+        provider: "outlook",
+        id: "outlook:conv-3",
+        seenIds: ["earlier"],
+        sentAtMs: NOW.getTime() - HOUR,
+      }),
+      2,
+    );
+    t.seams.readThread.mockImplementation(async (value: ThreadWatch) =>
+      value.threadId.startsWith("lookup:")
+        ? {
+            ok: true as const,
+            messages: [own("conv-3")],
+            resolved: { threadId: "conv-3", ownId: "sent-3" },
+          }
+        : { ok: true as const, messages: [own("conv-3")] },
+    );
+    await t.run();
+    const watches = await listWatches(t.memory);
+    expect(watches.map((entry) => entry.id)).toEqual(["outlook:conv-3"]);
+    expect(watches[0]?.seenIds.toSorted()).toEqual(["earlier", "sent-3"]);
+    expect(watches[0]?.sentAtMs).toBe(NOW.getTime() - 5 * HOUR);
   });
 
   it("drops a watch whose thread is gone, and one older than a month", async () => {
@@ -636,7 +703,7 @@ describe("deadline countdown", () => {
     expect(t.texts).toEqual([]);
   });
 
-  it("counts a timed deadline down once it is close, even after the digest named it", async () => {
+  it("never counts a timed deadline down on a day the digest, brief or piggyback line already named it, however close it is", async () => {
     const t = setup();
     await seedMatter(t.memory);
     const id = await trackDeadline(t.memory, {
@@ -646,6 +713,20 @@ describe("deadline countdown", () => {
       dueTime: "14:00",
     });
     await markMentioned(t.memory, [id], "2026-10-27", NOW.getTime() - 3 * HOUR);
+    await t.run();
+    await t.run(new Date(NOW.getTime() + 90 * MINUTE));
+    expect(t.texts).toEqual([]);
+  });
+
+  it("counts a timed deadline down when nothing named it today", async () => {
+    const t = setup();
+    await seedMatter(t.memory);
+    await trackDeadline(t.memory, {
+      type: "hearing",
+      dueDate: "2026-10-27",
+      dueAtMs: Date.parse("2026-10-27T12:00:00.000Z"),
+      dueTime: "14:00",
+    });
     await t.run();
     expect(t.texts).toHaveLength(1);
     expect(t.texts[0]).toContain("hearing 2026-10-27 14:00 (today)");

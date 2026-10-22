@@ -309,6 +309,40 @@ describe("sending mail from Outlook needs the person's yes", () => {
       expect(await listWatches(memory)).toEqual([]);
     });
 
+    it("waits for a pass that can tell, rather than guess its own mail from the address, when the Sent Items folder cannot be read", async () => {
+      const memory = realStore(tempDirs.make("ada-outlook-watch-"), "anna");
+      vi.mocked(openAdaMemoryFromApi).mockResolvedValue(memory);
+      await executeAdaOutlookReply(
+        ANNA,
+        api(),
+        { messageId: "AAMk-anna-1", text: "Ricevuta, grazie.", confirmed: true },
+        undefined,
+        deps,
+      );
+      const [watching] = await listWatches(memory);
+      const withoutFolder = (input: RequestInfo | URL, init?: RequestInit) =>
+        (typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url
+        ).includes("/mailFolders/sentitems?")
+          ? Promise.resolve(new Response("{}", { status: 500 }))
+          : mock.fetch(input, init);
+      const blind = liveThreadReader(api(), ANNA, NOW, {
+        outlookDb: store.db,
+        fetchImpl: withoutFolder as typeof fetch,
+        env: OUTLOOK_ENV,
+      });
+      expect(await blind(watching as never)).toEqual({ ok: false, gone: false });
+      const sighted = liveThreadReader(api(), ANNA, NOW, {
+        outlookDb: store.db,
+        fetchImpl: mock.fetch,
+        env: OUTLOOK_ENV,
+      });
+      expect(await sighted(watching as never)).toMatchObject({ ok: true });
+    });
+
     it("sees the reply when it lands: the poll reads the conversation of the sent mail and finds the answer", async () => {
       const memory = realStore(tempDirs.make("ada-outlook-watch-"), "anna");
       vi.mocked(openAdaMemoryFromApi).mockResolvedValue(memory);

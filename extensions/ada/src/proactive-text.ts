@@ -92,7 +92,7 @@ const SNIPPET_CHARS = 200;
 const flat = (value: string) => value.replace(/\s+/gu, " ").trim();
 
 /** `Name <address>` shows as the name, a bare address as itself. */
-function senderName(from: string): string {
+export function senderName(from: string): string {
   const named = /^\s*"?([^"<]+?)"?\s*<[^>]*>\s*$/u.exec(from);
   return flat(named?.[1] ?? from) || from;
 }

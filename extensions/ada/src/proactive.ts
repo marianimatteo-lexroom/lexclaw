@@ -23,7 +23,7 @@ import {
   markCountdown,
   markMentioned,
   mentionedOn,
-  readMarker,
+  claimRequestTemplate,
   REMINDER_TTL_MS,
   removePrep,
   removeReminder,
@@ -32,11 +32,10 @@ import {
   saveReminder,
   saveWatch,
   WATCH_TTL_MS,
-  writeMarker,
   type PrepFacts,
   type PrepNotice,
 } from "./proactive-store.js";
-import { renderReadyNotices } from "./proactive-text.js";
+import { renderReadyNotices, senderName } from "./proactive-text.js";
 import { resolveLanguage } from "./research-link-outbound.js";
 import { effectiveTimeZone } from "./schedule.js";
 import { findReply } from "./thread-watch.js";
@@ -86,8 +85,6 @@ export const PREP_DAILY_CAP = 3;
 /** A countdown goes out between these local hours only. */
 const COUNTDOWN_FIRST_HOUR = 8;
 const COUNTDOWN_LAST_HOUR = 20;
-/** A timed deadline due today is counted down once it is this close, even if the day's digest named it. */
-const COUNTDOWN_CLOSE_MS = 3 * HOUR_MS;
 const COUNTDOWN_MAX_LINES = 3;
 const WATCHES_PER_PASS = 20;
 
@@ -146,50 +143,60 @@ async function promoteReminders(context: Context): Promise<void> {
   }
 }
 
-/** Looks at each mail Ada sent for the person; a reply from someone else makes the thread ready. */
+/**
+ * Looks at each mail Ada sent for the person; a reply from someone else makes the thread ready.
+ * Every watch past its time to live goes first, then the ones looked at longest ago are read, a
+ * bounded number a pass, so no watch starves behind newer ones.
+ */
 async function pollWatches(context: Context): Promise<void> {
-  const watches = (await listWatches(context.memory)).filter((watch) => watch.state === "pending");
-  let read = 0;
-  for (const watch of watches.toSorted((a, b) => b.sentAtMs - a.sentAtMs)) {
-    if (context.nowMs - watch.sentAtMs > WATCH_TTL_MS) {
-      await removeWatch(context.memory, watch.id);
+  const { memory, nowMs } = context;
+  let pending = (await listWatches(memory)).filter((watch) => watch.state === "pending");
+  for (const stale of pending.filter((watch) => nowMs - watch.sentAtMs > WATCH_TTL_MS)) {
+    await removeWatch(memory, stale.id);
+  }
+  pending = pending.filter((watch) => nowMs - watch.sentAtMs <= WATCH_TTL_MS);
+  const byTurn = pending.toSorted((a, b) => (a.polledAtMs ?? 0) - (b.polledAtMs ?? 0));
+  // A watch merged into another this pass is not read again with its old copy.
+  const merged = new Set<string>();
+  for (const watch of byTurn.slice(0, WATCHES_PER_PASS)) {
+    if (merged.has(watch.id)) {
       continue;
     }
-    if (read >= WATCHES_PER_PASS) {
-      break;
-    }
-    read += 1;
     const thread = await context.seams.readThread(watch);
     if (!thread.ok) {
       if (thread.gone) {
-        await removeWatch(context.memory, watch.id);
+        await removeWatch(memory, watch.id);
+      } else {
+        await saveWatch(memory, watch, nowMs);
       }
       continue;
     }
-    // A watch that waited for Sent Items keeps what the lookup found, so the next poll reads the
-    // conversation itself instead of searching the newest sent mail again.
-    const found = thread.resolved
-      ? {
-          ...watch,
-          threadId: thread.resolved.threadId,
-          seenIds: [...watch.seenIds, thread.resolved.ownId],
-        }
-      : watch;
-    const reply = findReply(found, thread.messages);
-    if (reply) {
-      await saveWatch(context.memory, { ...found, reply, state: "ready" }, context.nowMs);
-    } else if (thread.resolved) {
-      await saveWatch(context.memory, found, context.nowMs);
+    // A watch that waited for Sent Items takes the key of its conversation, so a later reply into
+    // the same conversation is the same watch and not a second one.
+    let found = watch;
+    if (thread.resolved) {
+      const id = `outlook:${thread.resolved.threadId}`;
+      const existing = pending.find((entry) => entry.id === id);
+      found = {
+        ...(existing ?? watch),
+        id,
+        threadId: thread.resolved.threadId,
+        sentAtMs: Math.min(watch.sentAtMs, existing?.sentAtMs ?? watch.sentAtMs),
+        seenIds: [
+          ...new Set([...watch.seenIds, ...(existing?.seenIds ?? []), thread.resolved.ownId]),
+        ],
+      };
+      await removeWatch(memory, watch.id);
+      merged.add(id);
     }
+    const reply = findReply(found, thread.messages);
+    await saveWatch(memory, reply ? { ...found, reply, state: "ready" } : found, nowMs);
   }
 }
 
 function prepId(eventId: string, startMs: number): string {
   return `${createHash("sha256").update(eventId).digest("base64url").slice(0, 24)}@${startMs}`;
 }
-
-const sender = (from: string) =>
-  (/^\s*"?([^"<]+?)"?\s*<[^>]*>\s*$/u.exec(from)?.[1] ?? from).replace(/\s+/gu, " ").trim();
 
 async function prepFacts(
   context: Context,
@@ -226,7 +233,7 @@ async function prepFacts(
       .filter((row) => matchMatterId(`${row.from} ${row.subject}`, aliases) === matterId)
       .toSorted((a, b) => b.internalDateMs - a.internalDateMs)
       .slice(0, 3)
-      .map((row) => `${sender(row.from)}: ${row.subject}`.slice(0, 160)),
+      .map((row) => `${senderName(row.from)}: ${row.subject}`.slice(0, 160)),
   };
 }
 
@@ -336,12 +343,9 @@ async function deliverReady(context: Context, windowOpen: boolean): Promise<void
     return;
   }
   const wake = await memory.readWake();
-  const lastTemplateMs = await readMarker(memory, "request_template");
-  if (lastTemplateMs !== null && lastTemplateMs >= (wake.lastLawyerInboundAtMs ?? 0)) {
+  if (!(await claimRequestTemplate(memory, wake.lastLawyerInboundAtMs, nowMs))) {
     return;
   }
-  // Claimed before the send, so a send Kapso accepted but reported late is never repeated.
-  await writeMarker(memory, "request_template", nowMs);
   const sent = await context.seams.sendTemplate();
   if (sent === "unset") {
     context.api.logger.warn(
@@ -370,9 +374,7 @@ async function runCountdown(context: Context): Promise<void> {
       if (item.status !== "tracked" || item.dueAtMs <= nowMs || daysLeft < 0 || daysLeft > 1) {
         return [];
       }
-      const close =
-        daysLeft === 0 && item.dueTime !== null && item.dueAtMs - nowMs <= COUNTDOWN_CLOSE_MS;
-      return !done.has(key) && (close || !mentioned.has(item.id)) ? [{ item, key, daysLeft }] : [];
+      return !done.has(key) && !mentioned.has(item.id) ? [{ item, key, daysLeft }] : [];
     })
     .toSorted((a, b) => a.item.dueAtMs - b.item.dueAtMs)
     .slice(0, COUNTDOWN_MAX_LINES);
