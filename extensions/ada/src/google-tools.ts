@@ -29,6 +29,7 @@ import {
 import { maskNumber } from "./inbound-log.js";
 import { openAdaMemoryIfExistsFromApi } from "./memory.js";
 import { DEFAULT_TIME_ZONE, validTimeZone } from "./schedule.js";
+import { recordSentThread } from "./thread-watch.js";
 
 type StoreApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger" | "config">;
 
@@ -143,7 +144,7 @@ export async function saveRefreshedAccount(
   return saved ? { refreshToken, connectedAtMs: account.connectedAtMs } : account;
 }
 
-async function accessForRead(params: {
+export async function accessForRead(params: {
   config: GoogleConnectConfig;
   store: GoogleAccountStore;
   now: Date;
@@ -272,7 +273,7 @@ export async function sendConnectedEmail(params: {
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
   log?: (message: string) => void;
-}): Promise<{ ok: true; email: string; id: string } | ToolFailure> {
+}): Promise<{ ok: true; email: string; id: string; threadId?: string } | ToolFailure> {
   if (params.confirmed !== true) {
     return {
       ok: false,
@@ -344,7 +345,12 @@ export async function sendConnectedEmail(params: {
     }
     return { ok: false, error: "Ada could not send the email. Try again shortly." };
   }
-  return { ok: true, email: access.email, id: sent.id };
+  return {
+    ok: true,
+    email: access.email,
+    id: sent.id,
+    ...(sent.threadId ? { threadId: sent.threadId } : {}),
+  };
 }
 
 export type CalendarEventArgs = {
@@ -619,18 +625,34 @@ export async function executeAdaSendEmail(
   api: StoreApi,
   input: { to: string; subject: string; text: string; confirmed: boolean },
   signal?: AbortSignal,
-): Promise<{ ok: true; email: string; id: string } | ToolFailure> {
+): Promise<{ ok: true; email: string; id: string; watching: boolean } | ToolFailure> {
   const store = await openStore(api, owner);
   if (isStoreFailure(store)) {
     return store;
   }
-  return await sendConnectedEmail({
+  const sent = await sendConnectedEmail({
     config,
     store,
     ...input,
     signal,
     log: (message) => api.logger.warn(`${message} owner=${maskNumber(owner)}`),
   });
+  if (!sent.ok) {
+    return sent;
+  }
+  // The person asked for this mail, so Ada watches the thread for the reply she promises to flag.
+  const { threadId, ...result } = sent;
+  const watching = threadId
+    ? await recordSentThread(api, owner, {
+        provider: "google",
+        threadId,
+        subject: input.subject.trim(),
+        to: input.to.trim(),
+        atMs: Date.now(),
+        ownId: sent.id,
+      })
+    : false;
+  return { ...result, watching };
 }
 
 export async function executeAdaReadInbox(

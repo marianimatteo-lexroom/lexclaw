@@ -1,5 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
+import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const openAdaLexroomAccountFromApi = vi.hoisted(() => vi.fn());
@@ -12,7 +13,8 @@ vi.mock("./src/google-account.js", () => ({
   openAdaGoogleAccountFromApi,
   openAdaGoogleAccountDbFromApi: vi.fn(),
 }));
-vi.mock("./src/memory.js", () => ({
+vi.mock("./src/memory.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./src/memory.js")>()),
   openAdaMemoryFromApi: vi.fn(),
   openAdaMemoryIfExistsFromApi,
   openAdaRegistryFromApi: vi.fn(),
@@ -23,6 +25,9 @@ vi.mock("./src/service.js", async (importOriginal) => ({
 }));
 
 import plugin from "./index.js";
+import { openAdaMemoryFromApi } from "./src/memory.js";
+import { realStore } from "./src/preference-test-support.js";
+import { listWatches } from "./src/proactive-store.js";
 import {
   clearInboundLanguages,
   inboundLanguage,
@@ -66,6 +71,7 @@ type RegisteredHook = {
 };
 
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 /** Every text Ada sent through the fake Kapso adapter: research results go to the asking number. */
 const pushed: string[] = [];
@@ -662,6 +668,7 @@ describe("ada_send_email confirmation gate", () => {
       ok: true,
       email: "lawyer@example.com",
       id: "gmail-msg-1",
+      watching: false,
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] ?? [];
@@ -675,6 +682,43 @@ describe("ada_send_email confirmation gate", () => {
     expect(raw).toContain("To: paolo@example.com");
     expect(raw).toContain("Subject: Update");
     expect(raw).toContain("Ciao Paolo.");
+  });
+
+  it("watches the thread of a mail it sent, so the reply can be flagged, and promises that only then", async () => {
+    useGoogleAccount(googleAccount());
+    const memory = realStore(tempDirs.make("ada-send-watch-"), "lawyer");
+    vi.mocked(openAdaMemoryFromApi).mockResolvedValue(memory);
+    fetchMock.mockImplementation(async () => json({ id: "gmail-msg-1", threadId: "thread-9" }));
+    const { callTool } = registerAda();
+
+    expect(await callTool("ada_send_email", { ...email, confirmed: true })).toEqual({
+      ok: true,
+      email: "lawyer@example.com",
+      id: "gmail-msg-1",
+      watching: true,
+    });
+
+    expect(await listWatches(memory)).toMatchObject([
+      {
+        id: "google:thread-9",
+        provider: "google",
+        subject: "Update",
+        to: "paolo@example.com",
+        seenIds: ["gmail-msg-1"],
+        state: "pending",
+      },
+    ]);
+  });
+
+  it("watches nothing for a mail that was not sent", async () => {
+    useGoogleAccount(googleAccount());
+    const memory = realStore(tempDirs.make("ada-send-watch-"), "lawyer");
+    vi.mocked(openAdaMemoryFromApi).mockResolvedValue(memory);
+    const { callTool } = registerAda();
+    await callTool("ada_send_email", { ...email, confirmed: false });
+    fetchMock.mockImplementation(async () => json({}, 500));
+    await callTool("ada_send_email", { ...email, confirmed: true });
+    expect(await listWatches(memory)).toEqual([]);
   });
 
   it("does not send when the saved connection lacks the send scope", async () => {

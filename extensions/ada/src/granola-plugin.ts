@@ -22,6 +22,7 @@ import { registerAdaHttpRoute } from "./http-paths.js";
 import { ownerToolFactory } from "./owner-tool.js";
 import { resolveLanguage } from "./research-link-outbound.js";
 import { openWakeWindow } from "./service.js";
+import { mirrorSentText } from "./transcript-mirror.js";
 
 /** The model-facing tools that connect, read and disconnect one person's own Granola. */
 export const adaGranolaTools = {
@@ -70,13 +71,11 @@ export function registerAdaGranolaCallback(api: OpenClawPluginApi): void {
           log: api.logger,
           notifyConnected: async (owner) => {
             await openWakeWindow(api, owner);
-            const sent = await sendAdaWhatsAppText({
-              api,
-              to: `+${owner}`,
-              text: granolaConnectedText(await resolveLanguage("", undefined, owner)),
-            });
+            const text = granolaConnectedText(await resolveLanguage("", undefined, owner));
+            const sent = await sendAdaWhatsAppText({ api, to: `+${owner}`, text });
             if (sent.ok) {
               noteConnectOffer(owner, "first_look", Date.now(), "granola");
+              await mirrorSentText(api, owner, text, `ada-connected:granola:${Date.now()}`);
             }
             return sent;
           },

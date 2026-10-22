@@ -57,6 +57,7 @@ import {
   type MemoryTodo,
   type NewFeedback,
   type Preference,
+  type ProactiveRow,
   type RevisionReason,
   type SetPreferenceResult,
   type AdaMemoryOperations,
@@ -272,6 +273,16 @@ CREATE TABLE IF NOT EXISTS vera_preferences (
   updated_at_ms INTEGER NOT NULL
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS vera_proactive (
+  kind TEXT NOT NULL,
+  id TEXT NOT NULL,
+  due_at_ms INTEGER,
+  status TEXT NOT NULL,
+  data_json TEXT NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (kind, id)
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS vera_feedback (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   number TEXT NOT NULL,
@@ -299,6 +310,7 @@ CREATE TABLE IF NOT EXISTS vera_announcement_deliveries (
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS vera_feedback_at ON vera_feedback (at_ms);
+CREATE INDEX IF NOT EXISTS vera_proactive_due ON vera_proactive (kind, due_at_ms);
 CREATE INDEX IF NOT EXISTS vera_deadlines_due ON vera_deadlines (due_at_ms);
 CREATE INDEX IF NOT EXISTS vera_deadlines_matter ON vera_deadlines (matter_id);
 CREATE INDEX IF NOT EXISTS vera_records_matter ON vera_records (matter_id);
@@ -420,6 +432,14 @@ type AdaMemoryDatabase = {
     text: string;
     updated_at_ms: number;
   };
+  vera_proactive: {
+    kind: string;
+    id: string;
+    due_at_ms: number | null;
+    status: string;
+    data_json: string;
+    updated_at_ms: number;
+  };
   vera_feedback: {
     id: number;
     number: string;
@@ -444,6 +464,10 @@ type AdaMemoryDatabase = {
   };
 };
 
+const PROACTIVE_KIND = /^[a-z_]{1,32}$/u;
+const PROACTIVE_ID = /^\S{1,300}$/u;
+const PROACTIVE_MAX_DATA_CHARS = 20_000;
+const PROACTIVE_LIST_LIMIT = 500;
 const DEADLINE_SCAN_RETENTION_MS = 21 * 24 * 60 * 60 * 1000;
 const OPEN_DEADLINE_STATUSES = ["candidate", "tracked"];
 
@@ -840,6 +864,79 @@ class AdaMemoryDatabaseStore {
     const result = executeSqliteQuerySync(
       this.db,
       this.query.deleteFrom("vera_preferences").where("key", "=", key),
+    );
+    return (result.numAffectedRows ?? 0n) > 0n;
+  }
+
+  putProactive(row: ProactiveRow): undefined {
+    if (!PROACTIVE_KIND.test(row.kind) || !PROACTIVE_ID.test(row.id)) {
+      throw new Error("proactive key is invalid");
+    }
+    const status = assertText(row.status, "proactive status", 40);
+    if (row.data.length > PROACTIVE_MAX_DATA_CHARS || !Number.isFinite(row.updatedAtMs)) {
+      throw new Error("proactive row is invalid");
+    }
+    runSqliteImmediateTransactionSync(
+      this.db,
+      () => {
+        executeSqliteQuerySync(
+          this.db,
+          this.query
+            .deleteFrom("vera_proactive")
+            .where("kind", "=", row.kind)
+            .where("id", "=", row.id),
+        );
+        executeSqliteQuerySync(
+          this.db,
+          this.query.insertInto("vera_proactive").values({
+            kind: row.kind,
+            id: row.id,
+            due_at_ms: row.dueAtMs,
+            status,
+            data_json: row.data,
+            updated_at_ms: row.updatedAtMs,
+          }),
+        );
+      },
+      {
+        busyTimeoutMs: 5000,
+        databaseLabel: "ada memory",
+        operationLabel: "ada.memory.proactive.put",
+      },
+    );
+    return undefined;
+  }
+
+  listProactive(kind: string): ProactiveRow[] {
+    if (!PROACTIVE_KIND.test(kind)) {
+      throw new Error("proactive kind is invalid");
+    }
+    return Array.from(
+      iterateSqliteQuerySync(
+        this.db,
+        this.query
+          .selectFrom("vera_proactive")
+          .selectAll()
+          .where("kind", "=", kind)
+          .orderBy("due_at_ms", "asc")
+          .orderBy("updated_at_ms", "asc")
+          .limit(PROACTIVE_LIST_LIMIT),
+      ),
+      (row) => ({
+        kind: row.kind,
+        id: row.id,
+        dueAtMs: row.due_at_ms,
+        status: row.status,
+        data: row.data_json,
+        updatedAtMs: row.updated_at_ms,
+      }),
+    );
+  }
+
+  removeProactive(kind: string, id: string): boolean {
+    const result = executeSqliteQuerySync(
+      this.db,
+      this.query.deleteFrom("vera_proactive").where("kind", "=", kind).where("id", "=", id),
     );
     return (result.numAffectedRows ?? 0n) > 0n;
   }
@@ -1956,6 +2053,12 @@ export function createSqliteWorkerBackend(
           return database.setPreference(command.input.key, command.input.text, command.input.atMs);
         case "removePreference":
           return database.removePreference(command.input.key);
+        case "putProactive":
+          return database.putProactive(command.input.row);
+        case "listProactive":
+          return database.listProactive(command.input.kind);
+        case "removeProactive":
+          return database.removeProactive(command.input.kind, command.input.id);
         case "addFeedback":
           return database.addFeedback(command.input);
         case "listFeedback":

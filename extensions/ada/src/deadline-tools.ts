@@ -1,6 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import {
   deadlineDueLabel,
+  parkedDeadlineTodoId,
   readDeadlineIntakeConfig,
   reminderFireAtMs,
   seedReminders,
@@ -128,6 +129,14 @@ export async function executeAdaDeadlineList(
   };
 }
 
+/** An answer settles the open-loop todo a long-unanswered candidate was parked as. */
+async function closeParkedTodo(memory: MemoryStore, deadlineId: string, nowMs: number) {
+  const todo = await memory.getTodo(parkedDeadlineTodoId(deadlineId));
+  if (todo && todo.status !== "done") {
+    await memory.upsertTodo({ ...todo, status: "done", updatedAtMs: nowMs });
+  }
+}
+
 function resolveRef(items: readonly DeadlineItem[], ref: string): DeadlineItem | null {
   const text = ref.trim().replace(/^#/u, "");
   if (/^\d{1,3}$/u.test(text)) {
@@ -179,6 +188,7 @@ export async function executeAdaDeadlineReply(
   if (params.action === "dismiss" || params.action === "done") {
     const status: DeadlineStatus = params.action === "dismiss" ? "dismissed" : "done";
     const closed = await memory.updateDeadline(found.id, { status }, nowMs);
+    await closeParkedTodo(memory, found.id, nowMs);
     return { ok: true as const, item: view(closed ?? found, label, settings, nowMs) };
   }
 
@@ -205,6 +215,7 @@ export async function executeAdaDeadlineReply(
       error: "That date has already passed.",
     };
   }
+  await closeParkedTodo(memory, found.id, nowMs);
   const tracked =
     (await memory.updateDeadline(
       found.id,

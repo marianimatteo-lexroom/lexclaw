@@ -2,6 +2,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it } from "vitest";
+import type { ProactiveRow } from "./memory-contract.js";
 import { createSqliteWorkerBackend } from "./memory.worker.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -421,6 +422,99 @@ describe("ada preferences and feedback storage", () => {
       }
     } finally {
       void registry.close();
+    }
+  });
+
+  it("keeps proactive rows by kind and id, soonest due first, and replaces a row it already has", () => {
+    const backend = openBackend();
+    try {
+      const put = (id: string, dueAtMs: number | null, status = "pending") =>
+        backend.execute({
+          type: "putProactive",
+          input: {
+            row: { kind: "reminder", id, dueAtMs, status, data: `{"id":"${id}"}`, updatedAtMs: 1 },
+          },
+        });
+      put("late", 300);
+      put("soon", 100);
+      put("none", null);
+      put("soon", 100, "ready");
+      backend.execute({
+        type: "putProactive",
+        input: {
+          row: {
+            kind: "watch",
+            id: "w1",
+            dueAtMs: null,
+            status: "pending",
+            data: "{}",
+            updatedAtMs: 1,
+          },
+        },
+      });
+      const reminders = backend.execute({
+        type: "listProactive",
+        input: { kind: "reminder" },
+      }) as ProactiveRow[];
+      expect(reminders.map((row) => [row.id, row.status])).toEqual([
+        ["none", "pending"],
+        ["soon", "ready"],
+        ["late", "pending"],
+      ]);
+      expect(backend.execute({ type: "listProactive", input: { kind: "watch" } })).toHaveLength(1);
+      expect(
+        backend.execute({ type: "removeProactive", input: { kind: "reminder", id: "soon" } }),
+      ).toBe(true);
+      expect(
+        backend.execute({ type: "removeProactive", input: { kind: "reminder", id: "soon" } }),
+      ).toBe(false);
+    } finally {
+      void backend.close();
+    }
+  });
+
+  it("refuses a proactive row with a bad key, an empty status or too much data", () => {
+    const backend = openBackend();
+    try {
+      const row = {
+        kind: "reminder",
+        id: "r1",
+        dueAtMs: 1,
+        status: "pending",
+        data: "{}",
+        updatedAtMs: 1,
+      };
+      for (const bad of [
+        { ...row, kind: "Bad Kind" },
+        { ...row, id: "has space" },
+        { ...row, status: " " },
+        { ...row, data: "x".repeat(20_001) },
+      ]) {
+        expect(() => backend.execute({ type: "putProactive", input: { row: bad } })).toThrow();
+      }
+      expect(() => backend.execute({ type: "listProactive", input: { kind: "No!" } })).toThrow();
+      expect(backend.execute({ type: "listProactive", input: { kind: "reminder" } })).toEqual([]);
+    } finally {
+      void backend.close();
+    }
+  });
+
+  it("adds the proactive table to a database from before it existed, without touching what is in it", () => {
+    const dir = tempDirs.make("ada-proactive-upgrade-");
+    const databasePath = path.join(dir, "memory.sqlite");
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(
+      "CREATE TABLE vera_preferences (key TEXT PRIMARY KEY, text TEXT NOT NULL, updated_at_ms INTEGER NOT NULL) STRICT; INSERT INTO vera_preferences VALUES ('tone', 'Formal.', 1);",
+    );
+    legacy.close();
+    const backend = createSqliteWorkerBackend(undefined, { databasePath });
+    try {
+      expect(backend.execute({ type: "listPreferences", input: undefined })).toMatchObject([
+        { key: "tone", text: "Formal." },
+      ]);
+      expect(backend.execute({ type: "listProactive", input: { kind: "reminder" } })).toEqual([]);
+    } finally {
+      void backend.close();
     }
   });
 });

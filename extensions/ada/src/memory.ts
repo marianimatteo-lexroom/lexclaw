@@ -24,6 +24,7 @@ import type {
   MemoryTodo,
   NewFeedback,
   Preference,
+  ProactiveRow,
   RevisionReason,
   SetPreferenceResult,
   AdaMemoryOperations,
@@ -40,6 +41,9 @@ export type MemoryStore = {
   listPreferences(): Promise<Preference[]>;
   setPreference(key: string, text: string, atMs: number): Promise<SetPreferenceResult>;
   removePreference(key: string): Promise<boolean>;
+  putProactive(row: ProactiveRow): Promise<void>;
+  listProactive(kind: string): Promise<ProactiveRow[]>;
+  removeProactive(kind: string, id: string): Promise<boolean>;
   addFeedback(feedback: NewFeedback): Promise<number>;
   listFeedback(sinceMs: number): Promise<FeedbackEntry[]>;
   setFeedbackStatus(id: number, status: FeedbackStatus): Promise<FeedbackEntry | null>;
@@ -110,6 +114,15 @@ export function wrapMemoryWorker(worker: SqliteWorkerStore<AdaMemoryOperations>)
     },
     removePreference(key) {
       return worker.execute({ type: "removePreference", input: { key } });
+    },
+    putProactive(row) {
+      return worker.execute({ type: "putProactive", input: { row } });
+    },
+    listProactive(kind) {
+      return worker.execute({ type: "listProactive", input: { kind } });
+    },
+    removeProactive(kind, id) {
+      return worker.execute({ type: "removeProactive", input: { kind, id } });
     },
     addFeedback(feedback) {
       return worker.execute({ type: "addFeedback", input: feedback });
@@ -363,6 +376,19 @@ function locationOf(api: MemoryApi): MemoryLocation {
 /** One number's memory, created on first use. Every number sees only its own. */
 export function openAdaMemoryFromApi(api: MemoryApi, owner: string): Promise<MemoryStore> {
   return openAdaMemory({ ...locationOf(api), owner, lawyer: lawyerOwner(api.config) });
+}
+
+/** Every number that has a memory file of its own, so a poll can reach people who connected no account. */
+export function listAdaMemoryOwners(api: MemoryApi): string[] {
+  const { stateDir } = locationOf(api);
+  try {
+    return fs
+      .readdirSync(adaStatePath(stateDir, "memory"))
+      .flatMap((name) => /^(\d{6,20})\.sqlite$/u.exec(name)?.[1] ?? [])
+      .toSorted();
+  } catch {
+    return [];
+  }
 }
 
 /** One number's memory, or null when it has none yet; never creates a database. */

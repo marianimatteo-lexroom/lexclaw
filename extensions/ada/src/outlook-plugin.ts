@@ -33,6 +33,7 @@ import {
 import { ownerToolFactory, type OwnerToolRun } from "./owner-tool.js";
 import { resolveLanguage } from "./research-link-outbound.js";
 import { openWakeWindow } from "./service.js";
+import { mirrorSentText } from "./transcript-mirror.js";
 
 type Definition<P extends TSchema> = {
   name: string;
@@ -99,13 +100,16 @@ export function registerAdaOutlookCallback(api: OpenClawPluginApi): void {
       try {
         const textOwner = async (
           owner: string,
+          kind: string,
           text: (language: Awaited<ReturnType<typeof resolveLanguage>>) => string,
-        ) =>
-          await sendAdaWhatsAppText({
-            api,
-            to: `+${owner}`,
-            text: text(await resolveLanguage("", undefined, owner)),
-          });
+        ) => {
+          const body = text(await resolveLanguage("", undefined, owner));
+          const sent = await sendAdaWhatsAppText({ api, to: `+${owner}`, text: body });
+          if (sent.ok) {
+            await mirrorSentText(api, owner, body, `ada-connected:${kind}:${Date.now()}`);
+          }
+          return sent;
+        };
         return await handleAdaOutlookCallback(req, res, {
           config: outlookConnectConfigFrom(api.pluginConfig),
           now: () => new Date(),
@@ -114,7 +118,7 @@ export function registerAdaOutlookCallback(api: OpenClawPluginApi): void {
           notifyConnected: async (owner) => {
             await openWakeWindow(api, owner);
             const firstLook = !takeRequestConnect(owner, "outlook");
-            const sent = await textOwner(owner, (language) =>
+            const sent = await textOwner(owner, "outlook", (language) =>
               outlookConnectedText(language, firstLook),
             );
             if (sent.ok && firstLook) {
@@ -124,7 +128,7 @@ export function registerAdaOutlookCallback(api: OpenClawPluginApi): void {
           },
           notifyAdminConsent: async (owner) => {
             await openWakeWindow(api, owner);
-            return await textOwner(owner, outlookAdminConsentText);
+            return await textOwner(owner, "outlook-consent", outlookAdminConsentText);
           },
         });
       } catch (error) {

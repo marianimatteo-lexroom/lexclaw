@@ -3,6 +3,7 @@ import type {
   CalendarEventInput,
   CalendarGuest,
   InboxMessage,
+  ThreadMessage,
 } from "./google-api.js";
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
@@ -242,6 +243,141 @@ export async function replyToOutlookMessage(
     body: { comment: params.text },
   });
   return sent.ok ? { ok: true } : sent;
+}
+
+/** The conversation a message belongs to, which Graph keeps for every reply in the thread. */
+export async function readOutlookConversationId(
+  params: GraphCall & { messageId: string },
+): Promise<{ ok: true; conversationId: string; subject: string } | GraphFailure> {
+  const read = await graph({
+    ...params,
+    path: `/me/messages/${encodeURIComponent(params.messageId)}?$select=id,conversationId,subject`,
+  });
+  if (!read.ok) {
+    return read;
+  }
+  const record = read.value as { conversationId?: unknown; subject?: unknown } | null;
+  return typeof record?.conversationId === "string" && record.conversationId
+    ? {
+        ok: true,
+        conversationId: record.conversationId,
+        subject: typeof record.subject === "string" ? clip(record.subject, 300) : "",
+      }
+    : { ok: false, status: 0 };
+}
+
+/**
+ * The mail just sent, found in Sent Items: `sendMail` answers with no id, so the conversation a
+ * reply will land in is looked up by subject and recipient among the latest sent messages.
+ */
+export async function findOutlookSentConversation(
+  params: GraphCall & { subject: string; to: string; sinceMs: number },
+): Promise<{ ok: true; conversationId: string; messageId: string } | GraphFailure> {
+  const listed = await graph({
+    ...params,
+    path: `/me/mailFolders/sentitems/messages?${queryString({
+      $top: "10",
+      $orderby: "sentDateTime desc",
+      $select: "id,conversationId,subject,toRecipients,sentDateTime",
+    })}`,
+  });
+  if (!listed.ok) {
+    return listed;
+  }
+  const items = (listed.value as { value?: unknown } | null)?.value;
+  for (const item of Array.isArray(items) ? items : []) {
+    const record = item as {
+      id?: unknown;
+      conversationId?: unknown;
+      subject?: unknown;
+      toRecipients?: unknown;
+      sentDateTime?: unknown;
+    };
+    const sentAtMs =
+      typeof record.sentDateTime === "string" ? Date.parse(record.sentDateTime) : NaN;
+    const recipients = Array.isArray(record.toRecipients)
+      ? record.toRecipients.flatMap((entry) => address(entry)?.email.toLowerCase() ?? [])
+      : [];
+    if (
+      typeof record.id === "string" &&
+      record.id &&
+      typeof record.conversationId === "string" &&
+      record.conversationId &&
+      record.subject === params.subject &&
+      recipients.includes(params.to.toLowerCase()) &&
+      Number.isFinite(sentAtMs) &&
+      sentAtMs >= params.sinceMs
+    ) {
+      return { ok: true, conversationId: record.conversationId, messageId: record.id };
+    }
+  }
+  return { ok: false, status: 404 };
+}
+
+/** The id of the Sent Items folder, which tells the person's own messages from everyone else's. */
+export async function readOutlookSentFolderId(
+  params: GraphCall,
+): Promise<{ ok: true; folderId: string } | GraphFailure> {
+  const read = await graph({ ...params, path: "/me/mailFolders/sentitems?$select=id" });
+  const id = read.ok ? (read.value as { id?: unknown } | null)?.id : undefined;
+  return typeof id === "string" && id ? { ok: true, folderId: id } : { ok: false, status: 0 };
+}
+
+/**
+ * The messages of one Outlook conversation. A message is the person's own when it sits in Sent
+ * Items (`sentFolderId`) or comes from `selfEmail`: the sign-in name is often a UPN, not the SMTP
+ * address the mail carries, so the address alone would miss Ada's own sent mail.
+ */
+export async function readOutlookConversation(
+  params: GraphCall & { conversationId: string; selfEmail: string; sentFolderId?: string },
+): Promise<{ ok: true; messages: ThreadMessage[] } | GraphFailure> {
+  const listed = await graph({
+    ...params,
+    path: `/me/messages?${queryString({
+      $filter: `conversationId eq '${params.conversationId.replaceAll("'", "''")}'`,
+      $select: "id,subject,from,receivedDateTime,sentDateTime,bodyPreview,isDraft,parentFolderId",
+      $top: "25",
+    })}`,
+  });
+  if (!listed.ok) {
+    return listed;
+  }
+  const items = (listed.value as { value?: unknown } | null)?.value;
+  const messages: ThreadMessage[] = [];
+  for (const item of Array.isArray(items) ? items : []) {
+    const record = item as {
+      id?: unknown;
+      subject?: unknown;
+      from?: unknown;
+      receivedDateTime?: unknown;
+      sentDateTime?: unknown;
+      bodyPreview?: unknown;
+      isDraft?: unknown;
+      parentFolderId?: unknown;
+    };
+    const when = record.receivedDateTime ?? record.sentDateTime;
+    const atMs = typeof when === "string" ? Date.parse(when) : NaN;
+    const sender = address(record.from);
+    if (
+      typeof record.id !== "string" ||
+      !record.id ||
+      record.isDraft === true ||
+      !Number.isFinite(atMs)
+    ) {
+      continue;
+    }
+    messages.push({
+      id: record.id,
+      from: formatSender(record.from),
+      subject: typeof record.subject === "string" ? clip(record.subject, 300) : "",
+      snippet: typeof record.bodyPreview === "string" ? clip(record.bodyPreview, 240) : "",
+      atMs,
+      own:
+        (params.sentFolderId !== undefined && record.parentFolderId === params.sentFolderId) ||
+        sender?.email.toLowerCase() === params.selfEmail.toLowerCase(),
+    });
+  }
+  return { ok: true, messages };
 }
 
 /** Event times are asked for in UTC, so every start and end is one unambiguous instant. */

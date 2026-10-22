@@ -91,7 +91,7 @@ function researchResultLine(detail: string | undefined): string {
     ? " If a bare yes or a follow-up could mean more than one of them, ask which one first, then use the ids of that one."
     : "";
   const withIds = many ? " with the ids of that research" : researchIds(only ?? {});
-  return `- You sent them ${sent}. That text is not in the conversation and you cannot read it, so never claim to know what it said.${which} If their message says yes in any form, start that draft: ask in one short question for what is missing, and call ada_draft${withIds}, with confirmed true only after they agree. If they ask a follow-up about a result, either ask what they need to know, or, for a new question on the same matter, call ada_research${withIds}; never research without a question from them. If their message is about something else, answer that.`;
+  return `- You sent them ${sent}. If that text is not in the conversation above and you cannot read it, never claim to know what it said.${which} If their message says yes in any form, start that draft: ask in one short question for what is missing, and call ada_draft${withIds}, with confirmed true only after they agree. If they ask a follow-up about a result, either ask what they need to know, or, for a new question on the same matter, call ada_research${withIds}; never research without a question from them. If their message is about something else, answer that.`;
 }
 
 type Offer = { at: number; detail?: string; consumedByRunId?: string };

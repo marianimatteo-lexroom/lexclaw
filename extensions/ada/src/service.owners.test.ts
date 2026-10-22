@@ -42,7 +42,11 @@ vi.mock("./memory.js", () => {
     memories.opened.push(owner);
     return memories.byOwner.get(owner);
   };
-  return { openAdaMemoryFromApi: open, openAdaMemoryIfExistsFromApi: open };
+  return {
+    openAdaMemoryFromApi: open,
+    openAdaMemoryIfExistsFromApi: open,
+    listAdaMemoryOwners: () => [],
+  };
 });
 
 const LAWYER = "390000000000";

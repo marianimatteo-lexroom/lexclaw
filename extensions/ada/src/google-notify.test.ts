@@ -28,7 +28,11 @@ describe("sendGoogleConnectedNotice", () => {
       email: "anna@example.com",
       loadAdapter: async () => ({ sendText }),
     });
-    expect(result).toEqual({ ok: true });
+    // The text goes back to the caller as well, so it can be written into the conversation.
+    expect(result).toEqual({
+      ok: true,
+      text: (sendText.mock.calls[0] as unknown as [{ text: string }])[0].text,
+    });
     expect(sendText).toHaveBeenCalledExactlyOnceWith({
       cfg: config,
       to: `+${owner}`,
@@ -99,7 +103,7 @@ describe("sendAdaWhatsAppText", () => {
       to: "+393331111111",
       text: "Ciao",
     });
-    expect(result).toEqual({ ok: true });
+    expect(result).toEqual({ ok: true, text: "Ciao" });
     expect(sendText).toHaveBeenCalledWith({ cfg: config, to: "+393331111111", text: "Ciao" });
   });
 

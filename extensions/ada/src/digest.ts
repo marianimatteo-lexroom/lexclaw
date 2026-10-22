@@ -86,6 +86,8 @@ export type DigestDeadlineInput = {
   confidence: number;
   source: string;
   moved?: boolean;
+  /** The third and final time this unanswered decision is listed; after it the item moves to open loops. */
+  lastReminder?: boolean;
   briefReady: boolean;
   /** Set when a reminder step is due; `covers` lists steps this message settles. */
   reminder?: { step: string; covers: string[] };

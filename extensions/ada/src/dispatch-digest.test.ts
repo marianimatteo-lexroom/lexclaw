@@ -55,7 +55,7 @@ function setup(profiles: Record<string, { language: string; timezone: string } |
   });
   openAdaMemoryIfExistsFromApi.mockImplementation(async (_api: unknown, owner: string) => {
     const profile = profiles[owner];
-    return profile ? { readProfile: async () => profile } : null;
+    return profile ? { readProfile: async () => profile, listPreferences: async () => [] } : null;
   });
   const api = {
     config: { channels: { "kapso-whatsapp": { defaultTo: `+${LAWYER}` } } },
@@ -127,6 +127,7 @@ describe("dispatchDigest", () => {
   it("sends the quiet-day brief to its owner, in the language of their latest message", async () => {
     const { api, sent } = setup({ [FABIO]: { language: "Italian", timezone: "Asia/Shanghai" } });
     const brief = {
+      agenda: true,
       alertedToday: false,
       events: [{ time: "09:30", summary: "Hearing" }],
       unreadMail: 0,
@@ -141,7 +142,7 @@ describe("dispatchDigest", () => {
     expect(sent).toEqual([
       {
         to: `+${FABIO}`,
-        text: "Good morning. Nothing urgent today.\n\nToday's agenda:\n• 09:30 Hearing",
+        text: "Good morning. Here is what is on today:\n\nToday's agenda:\n• 09:30 Hearing",
       },
     ]);
     expect(takeConnectOffers(FABIO, { runId: "r", inboundAtMs: Date.now() })).toEqual([]);

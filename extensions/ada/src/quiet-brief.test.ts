@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderQuietBriefText } from "./digest-text.js";
 import type { DigestDeadlineInput } from "./digest.js";
 import type { CalendarEvent, InboxMessage } from "./google-api.js";
-import { buildQuietBrief, type QuietBrief } from "./quiet-brief.js";
+import { buildQuietBrief, quietBriefHasContent, type QuietBrief } from "./quiet-brief.js";
 
 const ALIASES = [{ matterId: "rossi", alias: "Rossi", title: "Rossi SRL" }];
 
@@ -140,6 +140,7 @@ describe("buildQuietBrief", () => {
 
 describe("renderQuietBriefText", () => {
   const full: QuietBrief = {
+    agenda: true,
     alertedToday: false,
     events: [
       { time: null, summary: "Ferie" },
@@ -148,9 +149,12 @@ describe("renderQuietBriefText", () => {
     unreadMail: 3,
     unreadMailCapped: false,
     mailHighlights: [{ matter: "Rossi SRL", subject: "Memoria" }],
-    deadlines: [{ matter: "Rossi SRL", type: "hearing", due: "2026-10-17 09:30", daysLeft: 3 }],
+    deadlines: [
+      { id: "d1", matter: "Rossi SRL", type: "hearing", due: "2026-10-17 09:30", daysLeft: 3 },
+    ],
   };
   const empty: QuietBrief = {
+    agenda: true,
     alertedToday: false,
     events: [],
     unreadMail: 0,
@@ -159,10 +163,10 @@ describe("renderQuietBriefText", () => {
     deadlines: [],
   };
 
-  it("writes the full brief in Italian, short, with the nothing-urgent line first", () => {
+  it("writes the full brief in Italian, short, with a neutral first line that does not say nothing is urgent", () => {
     expect(renderQuietBriefText(full, "it")).toBe(
       [
-        "Buongiorno. Niente di urgente per oggi.",
+        "Buongiorno. Ecco cosa c'è oggi:",
         "Agenda di oggi:\n• tutto il giorno Ferie\n• 09:30 Udienza Rossi",
         "Posta: 3 email non lette.\n• Rossi SRL: Memoria",
         "Udienze e scadenze:\n• Rossi SRL: udienza 2026-10-17 09:30 (tra 3 giorni)",
@@ -172,10 +176,10 @@ describe("renderQuietBriefText", () => {
 
   it("says there is nothing scheduled and leaves out mail and deadlines when there are none", () => {
     expect(renderQuietBriefText(empty, "it")).toBe(
-      "Buongiorno. Niente di urgente per oggi.\n\nAgenda di oggi: nessun impegno.",
+      "Buongiorno. Ecco cosa c'è oggi:\n\nAgenda di oggi: nessun impegno.",
     );
     expect(renderQuietBriefText(empty, "en")).toBe(
-      "Good morning. Nothing urgent today.\n\nToday's agenda: nothing scheduled.",
+      "Good morning. Here is what is on today:\n\nToday's agenda: nothing scheduled.",
     );
   });
 
@@ -187,9 +191,9 @@ describe("renderQuietBriefText", () => {
       renderQuietBriefText({ ...full, unreadMailCapped: true, unreadMail: 10 }, "en"),
     ).toContain("Mail: 10+ unread emails.");
     for (const [language, intro] of [
-      ["es", "Buenos días. Nada urgente para hoy."],
-      ["fr", "Bonjour. Rien d'urgent aujourd'hui."],
-      ["de", "Guten Morgen. Heute nichts Dringendes."],
+      ["es", "Buenos días. Esto es lo que hay hoy:"],
+      ["fr", "Bonjour. Voici ce qui vous attend aujourd'hui :"],
+      ["de", "Guten Morgen. Das steht heute an:"],
     ] as const) {
       expect(renderQuietBriefText(full, language).startsWith(intro)).toBe(true);
     }
@@ -215,6 +219,20 @@ describe("renderQuietBriefText", () => {
     }
   });
 
+  it("never says nothing is urgent, in any language", () => {
+    for (const language of ["it", "en", "es", "fr", "de"] as const) {
+      expect(renderQuietBriefText(full, language)).not.toMatch(
+        /niente di urgente|nothing urgent|nada urgente|rien d'urgent|nichts dringendes/iu,
+      );
+    }
+  });
+
+  it("leaves the agenda line out when the person asked to skip the agenda", () => {
+    const text = renderQuietBriefText({ ...full, agenda: false, events: [] }, "it");
+    expect(text).not.toContain("Agenda");
+    expect(text).toContain("Posta: 3 email non lette.");
+  });
+
   it("caps a long agenda", () => {
     const events = Array.from({ length: 9 }, (_, index) => ({
       time: `${String(8 + index).padStart(2, "0")}:00`,
@@ -224,5 +242,73 @@ describe("renderQuietBriefText", () => {
     expect(text).toContain("• 13:00 Impegno 6");
     expect(text).not.toContain("Impegno 7");
     expect(text).toContain("• …e altri 3");
+  });
+});
+
+describe("quiet mornings", () => {
+  const base = {
+    inboxLimit: 10,
+    aliases: ALIASES,
+    now: new Date("2026-10-14T05:40:00.000Z"),
+    timeZone: "Europe/Rome",
+  };
+  const rossiHearing = event("e1", "Udienza Rossi", "2026-10-14T07:30:00.000Z");
+
+  it("has nothing worth saying when there is no event, no mail about a matter and no deadline, whatever the unread count", () => {
+    const quiet = buildQuietBrief({
+      ...base,
+      events: [],
+      inbox: [mail("a", "Newsletter"), mail("b", "Promo")],
+    });
+    expect(quiet.unreadMail).toBe(2);
+    expect(quietBriefHasContent(quiet)).toBe(false);
+  });
+
+  it("has something worth saying for an event today, mail about a matter, or a deadline", () => {
+    expect(
+      quietBriefHasContent(buildQuietBrief({ ...base, events: [rossiHearing], inbox: [] })),
+    ).toBe(true);
+    expect(
+      quietBriefHasContent(
+        buildQuietBrief({ ...base, events: [], inbox: [mail("a", "Rossi: memoria")] }),
+      ),
+    ).toBe(true);
+    expect(
+      quietBriefHasContent(
+        buildQuietBrief({ ...base, events: [], inbox: [], deadlines: [deadline("d", 2)] }),
+      ),
+    ).toBe(true);
+  });
+
+  it("applies the person's preferences before deciding: skipping agenda and mail can leave nothing to say", () => {
+    const input = {
+      ...base,
+      events: [rossiHearing],
+      inbox: [mail("a", "Rossi: memoria")],
+    };
+    const prefs = { short: false, skipAgenda: true, skipMail: true };
+    const brief = buildQuietBrief({ ...input, prefs });
+    expect(brief).toMatchObject({ agenda: false, events: [], unreadMail: 0, mailHighlights: [] });
+    expect(quietBriefHasContent(brief)).toBe(false);
+    expect(
+      quietBriefHasContent(buildQuietBrief({ ...input, deadlines: [deadline("d", 1)], prefs })),
+    ).toBe(true);
+  });
+
+  it("shortens the brief for a person who asked for shorter texts", () => {
+    const events = Array.from({ length: 5 }, (_, index) =>
+      event(`e${index}`, `Impegno ${index}`, `2026-10-14T0${index + 6}:00:00.000Z`),
+    );
+    const inbox = ["Rossi: uno", "Rossi: due"].map((subject, index) => mail(`m${index}`, subject));
+    const brief = buildQuietBrief({
+      ...base,
+      events,
+      inbox,
+      deadlines: [deadline("a", 1), deadline("b", 2)],
+      prefs: { short: true, skipAgenda: false, skipMail: false },
+    });
+    expect(brief.events).toHaveLength(3);
+    expect(brief.mailHighlights).toHaveLength(1);
+    expect(brief.deadlines).toHaveLength(1);
   });
 });

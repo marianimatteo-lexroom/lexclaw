@@ -1,5 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { noteConnectOffer } from "./connect-offers.js";
+import { localIsoDate } from "./deadline-time.js";
 import {
   digestOfferDetail,
   renderDigestText,
@@ -11,9 +12,12 @@ import { googleConnectConfigFrom } from "./google-connect.js";
 import { sendAdaWhatsAppText } from "./google-notify.js";
 import { executeAdaGoogleConnect } from "./google-tools.js";
 import { openAdaMemoryIfExistsFromApi } from "./memory.js";
+import { markMentioned } from "./proactive-store.js";
 import type { QuietBrief } from "./quiet-brief.js";
 import { resolveLanguage } from "./research-link-outbound.js";
 import { effectiveTimeZone } from "./schedule.js";
+import { readTextPrefs } from "./text-prefs.js";
+import { mirrorSentText } from "./transcript-mirror.js";
 
 export type DigestDispatchRequest = {
   /** The WhatsApp number this digest is for: the only number it is ever sent to. */
@@ -67,6 +71,7 @@ export async function dispatchDigest(
   }
   const memory = await openAdaMemoryIfExistsFromApi(api, request.owner);
   const profile = await memory?.readProfile();
+  const timeZone = effectiveTimeZone(profile?.timezone);
   const language = await resolveLanguage("", async () => profile?.language, request.owner);
   let text: string;
   if (request.connectOnly) {
@@ -84,7 +89,8 @@ export async function dispatchDigest(
       request.reconnect ? "expired" : "connect",
     );
   } else if (request.plan.deliver) {
-    text = renderDigestText(request.plan, language, effectiveTimeZone(profile?.timezone));
+    const prefs = readTextPrefs((await memory?.listPreferences()) ?? []);
+    text = renderDigestText(request.plan, language, timeZone, prefs);
   } else if (request.brief) {
     text = renderQuietBriefText(request.brief, language);
   } else {
@@ -98,5 +104,29 @@ export async function dispatchDigest(
   if (!request.connectOnly && request.plan.deliver) {
     noteConnectOffer(request.owner, "digest", Date.now(), digestOfferDetail(request.plan));
   }
+  await mirrorSentText(api, request.owner, text, `ada-digest:${key}`);
+  await recordMentions(memory, request, timeZone, nowMs).catch((error: unknown) => {
+    api.logger.warn(
+      `ada digest mentions not recorded: ${error instanceof Error ? error.message : "unknown"}`,
+    );
+  });
   return { ok: true };
+}
+
+/** The deadlines the text named are told for today, so no nudge or piggyback repeats them. */
+async function recordMentions(
+  memory: Awaited<ReturnType<typeof openAdaMemoryIfExistsFromApi>>,
+  request: DigestDispatchRequest,
+  timeZone: string,
+  nowMs: number,
+): Promise<void> {
+  if (!memory || request.connectOnly) {
+    return;
+  }
+  const ids = request.plan.deliver
+    ? (request.plan.deadlines ?? []).map((line) => line.id)
+    : (request.brief?.deadlines ?? []).map((line) => line.id);
+  if (ids.length > 0) {
+    await markMentioned(memory, ids, localIsoDate(nowMs, timeZone), nowMs);
+  }
 }

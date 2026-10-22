@@ -136,22 +136,19 @@ export async function sendLexroomConnectedNotice(params: {
   if (!send) {
     return { ok: false, error: "kapso-whatsapp outbound is unavailable" };
   }
+  const text = lexroomConnectedText(
+    await resolveLanguage("", undefined, params.owner),
+    params.firstLook !== false,
+  );
   try {
-    await send({
-      cfg: params.config,
-      to,
-      text: lexroomConnectedText(
-        await resolveLanguage("", undefined, params.owner),
-        params.firstLook !== false,
-      ),
-    });
+    await send({ cfg: params.config, to, text });
   } catch (error) {
     return {
       ok: false,
       error: error instanceof Error ? error.message : "whatsapp send failed",
     };
   }
-  return { ok: true };
+  return { ok: true, text };
 }
 
 type Failure = LexroomFailure;

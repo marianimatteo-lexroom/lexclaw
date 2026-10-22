@@ -6,6 +6,7 @@ const USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";
 const GMAIL_PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile";
 const GMAIL_LIST_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages";
 const CALENDAR_EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+const GMAIL_THREADS_URL = "https://gmail.googleapis.com/gmail/v1/users/me/threads";
 const GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send";
 const GMAIL_WATCH_URL = "https://gmail.googleapis.com/gmail/v1/users/me/watch";
 const ACCESS_SKEW_MS = 60_000;
@@ -424,7 +425,7 @@ export async function sendGmailMessage(params: {
   text: string;
   fetchImpl?: FetchLike;
   signal?: AbortSignal;
-}): Promise<{ ok: true; id: string } | { ok: false; status: number }> {
+}): Promise<{ ok: true; id: string; threadId?: string } | { ok: false; status: number }> {
   const fetchImpl = params.fetchImpl ?? fetch;
   let response: Response;
   try {
@@ -458,7 +459,59 @@ export async function sendGmailMessage(params: {
   if (!id) {
     return { ok: false, status: response.status };
   }
-  return { ok: true, id };
+  const threadId = (payload as { threadId?: unknown }).threadId;
+  return { ok: true, id, ...(typeof threadId === "string" && threadId ? { threadId } : {}) };
+}
+
+/** One message of a mail thread, with what a reply watch needs to tell the person's own from others. */
+export type ThreadMessage = {
+  id: string;
+  from: string;
+  subject: string;
+  snippet: string;
+  atMs: number;
+  /** Written by the person themselves (Gmail's SENT label, Outlook's own address). */
+  own: boolean;
+};
+
+/** The messages of one Gmail thread, headers only. 404: the thread is gone. */
+export async function readGmailThread(params: {
+  accessToken: string;
+  threadId: string;
+  fetchImpl?: FetchLike;
+  signal?: AbortSignal;
+}): Promise<{ ok: true; messages: ThreadMessage[] } | { ok: false; status: number }> {
+  const url = new URL(`${GMAIL_THREADS_URL}/${encodeURIComponent(params.threadId)}`);
+  url.searchParams.set("format", "metadata");
+  url.searchParams.append("metadataHeaders", "From");
+  url.searchParams.append("metadataHeaders", "Subject");
+  const read = await authorizedGet(
+    url.toString(),
+    params.accessToken,
+    params.fetchImpl ?? fetch,
+    params.signal,
+  );
+  if (!read.ok) {
+    return read;
+  }
+  const items = (read.value as { messages?: unknown } | null)?.messages;
+  const messages: ThreadMessage[] = [];
+  for (const item of Array.isArray(items) ? items : []) {
+    const message = parseGmailMessage(item);
+    const record = item as { labelIds?: unknown; internalDate?: unknown };
+    const atMs = Number(record.internalDate);
+    if (message && Number.isFinite(atMs)) {
+      messages.push({
+        id: message.id,
+        from: message.from,
+        subject: message.subject,
+        snippet: message.snippet,
+        atMs,
+        own: Array.isArray(record.labelIds) && record.labelIds.includes("SENT"),
+      });
+    }
+  }
+  return { ok: true, messages };
 }
 
 export async function loadAccessToken(params: {

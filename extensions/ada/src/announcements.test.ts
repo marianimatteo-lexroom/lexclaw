@@ -37,20 +37,20 @@ import {
   ANNOUNCEMENT_SETTLE_MS,
   deliverAnnouncement,
   deliverToRecipients,
-  listAnnouncementRecipients,
   liveAnnouncementDeps,
   parseAnnouncementInput,
+  personalMatter,
   registerAnnouncementRelease,
   releasePendingAnnouncement,
   resolveAnnouncementText,
   type AnnouncementDeps,
-  type AnnouncementRecipient,
 } from "./announcements.js";
 import { ANNOUNCEMENTS_OFF_KEY, type Announcement } from "./memory-contract.js";
 import { realStore } from "./preference-test-support.js";
 import { executeAdaSetPreference } from "./preference-tools.js";
 import { clearInboundLanguages, recordInboundLanguage } from "./research-link-outbound.js";
 import { clearHeldResearch, recordSenderInbound } from "./research-push.js";
+import { listWhatsAppSessions, type WhatsAppSession } from "./transcript-mirror.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const NOW = Date.parse("2026-10-20T09:00:00.000Z");
@@ -59,7 +59,7 @@ const PAOLO = "393331111111";
 const ANNA = "393332222222";
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 
-const recipient = (owner: string): AnnouncementRecipient => ({
+const recipient = (owner: string): WhatsAppSession => ({
   owner,
   sessionKey: `agent:main:kapso-whatsapp:direct:${owner}`,
   sessionId: `session-${owner}`,
@@ -98,6 +98,7 @@ function makeDeps(overrides: Partial<AnnouncementDeps> = {}) {
     optedOut: vi.fn<AnnouncementDeps["optedOut"]>(overrides.optedOut ?? (async () => false)),
     hasFeature: vi.fn<AnnouncementDeps["hasFeature"]>(overrides.hasFeature ?? (async () => false)),
     language: vi.fn<AnnouncementDeps["language"]>(overrides.language ?? (async () => "it")),
+    matter: vi.fn<NonNullable<AnnouncementDeps["matter"]>>(overrides.matter ?? (async () => null)),
     send: vi.fn<AnnouncementDeps["send"]>(overrides.send ?? (async () => ({ ok: true }))),
     recordInHistory: vi.fn<AnnouncementDeps["recordInHistory"]>(
       overrides.recordInHistory ?? (async () => true),
@@ -585,7 +586,7 @@ describe("excluded numbers", () => {
   });
 });
 
-describe("listAnnouncementRecipients", () => {
+describe("listWhatsAppSessions", () => {
   it("lists each agent's sessions, one per WhatsApp number, the most recent first", () => {
     const calls: Array<Record<string, unknown>> = [];
     const runtime = {
@@ -611,10 +612,211 @@ describe("listAnnouncementRecipients", () => {
         },
       },
     };
-    const recipients = listAnnouncementRecipients({ runtime, config: {} } as never);
+    const recipients = listWhatsAppSessions({ runtime, config: {} } as never);
     expect(calls).toEqual([{ agentId: "main", readOnly: true, includeParticipants: false }]);
     expect(recipients).toEqual([
       { owner: PAOLO, sessionKey: `agent:main:kapso-whatsapp:direct:${PAOLO}`, sessionId: "new" },
     ]);
+  });
+});
+
+describe("personal announcements", () => {
+  const PERSONAL: Announcement = {
+    id: "recap",
+    feature: null,
+    createdAtMs: NOW - HOUR,
+    texts: {
+      it: "Novità: ora posso prepararti un riepilogo prima di ogni udienza.",
+      en: "New: I can now send you a recap before each hearing.",
+      "it:personal":
+        "Novità: prima della prossima udienza di {matter} posso prepararti un riepilogo.",
+      "en:personal": "New: before your next hearing in {matter} I can send you a recap.",
+    },
+  };
+
+  it("names a matter from the recipient's own data, in the recipient's language", async () => {
+    const deps = makeDeps({ matter: async () => "Rossi SRL", language: async () => "en" });
+    const result = await deliverAnnouncement(deps, PERSONAL, recipient(PAOLO), undefined);
+    // The admin view keeps the template; the matter is in the message the number receives.
+    expect(result).toMatchObject({
+      status: "sent",
+      text: "New: before your next hearing in {matter} I can send you a recap.",
+    });
+    expect(deps.send).toHaveBeenCalledWith(
+      PAOLO,
+      "New: before your next hearing in Rossi SRL I can send you a recap.",
+    );
+    expect(deps.recordInHistory).toHaveBeenCalledWith(
+      recipient(PAOLO),
+      "recap",
+      "New: before your next hearing in Rossi SRL I can send you a recap.",
+    );
+  });
+
+  it("gives every recipient their own matter, and the plain text to one who has none", async () => {
+    const matters: Record<string, string | null> = {
+      [PAOLO]: "Rossi SRL",
+      [ANNA]: "Bianchi",
+      "393333333333": null,
+    };
+    const deps = makeDeps({ matter: async (owner) => matters[owner] ?? null });
+    const results = await deliverToRecipients(deps, PERSONAL, [
+      recipient(PAOLO),
+      recipient(ANNA),
+      recipient("393333333333"),
+    ]);
+    // What each number received names its own matter; what the admin gets back names none.
+    expect(deps.send.mock.calls.map(([, text]) => text)).toEqual([
+      "Novità: prima della prossima udienza di Rossi SRL posso prepararti un riepilogo.",
+      "Novità: prima della prossima udienza di Bianchi posso prepararti un riepilogo.",
+      "Novità: ora posso prepararti un riepilogo prima di ogni udienza.",
+    ]);
+    const shown = results.map(({ outcome }) => outcome.text);
+    expect(shown).toEqual([
+      "Novità: prima della prossima udienza di {matter} posso prepararti un riepilogo.",
+      "Novità: prima della prossima udienza di {matter} posso prepararti un riepilogo.",
+      "Novità: ora posso prepararti un riepilogo prima di ogni udienza.",
+    ]);
+    expect(JSON.stringify(shown)).not.toMatch(/Rossi|Bianchi/u);
+  });
+
+  it("shows the template, not a matter name, in a dry run and for a number still waiting for its window", async () => {
+    const dry = await deliverToRecipients(
+      makeDeps({ matter: async () => "Rossi SRL" }),
+      PERSONAL,
+      [recipient(PAOLO)],
+      { dryRun: true },
+    );
+    expect(dry[0]?.outcome).toMatchObject({ status: "would_send" });
+    expect(dry[0]?.outcome.text).toContain("{matter}");
+    expect(dry[0]?.outcome.text).not.toContain("Rossi");
+    const waiting = await deliverAnnouncement(
+      makeDeps({ windowOpen: async () => false, matter: async () => "Rossi SRL" }),
+      PERSONAL,
+      recipient(ANNA),
+      undefined,
+    );
+    expect(waiting).toMatchObject({ status: "pending", reason: "window_closed" });
+    expect(waiting.text).not.toContain("Rossi");
+  });
+
+  it("uses the plain text of a language that has no personal variant", () => {
+    expect(resolveAnnouncementText(PERSONAL, "es", "Rossi SRL")).toBe(PERSONAL.texts.it);
+    expect(resolveAnnouncementText(PERSONAL, "en", null)).toBe(PERSONAL.texts.en);
+  });
+
+  it("clips and flattens a long matter name taken from the recipient's data", () => {
+    const text = resolveAnnouncementText(PERSONAL, "en", `Rossi\n  SRL ${"x".repeat(200)}`);
+    expect(text).toContain("hearing in Rossi SRL xxx");
+    expect(text).not.toContain("\n");
+    expect(text.length).toBeLessThan(180);
+  });
+
+  it("is still held for a closed window and sent once the number has answered, like any announcement", async () => {
+    const closed = makeDeps({ windowOpen: async () => false, matter: async () => "Rossi SRL" });
+    expect(await deliverAnnouncement(closed, PERSONAL, recipient(PAOLO), undefined)).toMatchObject({
+      status: "pending",
+      reason: "window_closed",
+      text: expect.stringContaining("{matter}"),
+    });
+    expect(closed.send).not.toHaveBeenCalled();
+    const open = makeDeps({ matter: async () => "Rossi SRL" });
+    expect(await deliverAnnouncement(open, PERSONAL, recipient(PAOLO), undefined)).toMatchObject({
+      status: "sent",
+    });
+  });
+
+  it("asks for the matter only when the variant of the recipient's language exists", async () => {
+    const deps = makeDeps({ matter: async () => "Rossi SRL", language: async () => "es" });
+    await deliverAnnouncement(deps, PERSONAL, recipient(PAOLO), undefined);
+    expect(deps.matter).not.toHaveBeenCalled();
+  });
+
+  it("takes a personal variant only for a supported language, and only with {matter} in it", () => {
+    const base = { id: "recap", texts: { it: "Ciao", en: "Hi" } };
+    expect(
+      parseAnnouncementInput(
+        { ...base, texts: { ...base.texts, "it:personal": "Per {matter}" } },
+        NOW,
+      ),
+    ).toMatchObject({ ok: true, announcement: { texts: { "it:personal": "Per {matter}" } } });
+    for (const personal of [{ "it:personal": "Per tutti" }, { "pt:personal": "Para {matter}" }]) {
+      expect(
+        parseAnnouncementInput({ ...base, texts: { ...base.texts, ...personal } }, NOW).ok,
+      ).toBe(false);
+    }
+  });
+});
+
+describe("the matter a personal announcement names", () => {
+  const rossi = {
+    id: "rossi-one-pager",
+    matterId: "rossi",
+    title: "Rossi SRL",
+    aliases: ["Rossi"],
+  };
+  const bianchi = {
+    id: "b-one-pager",
+    matterId: "bianchi",
+    title: "Bianchi",
+    aliases: [] as string[],
+  };
+
+  async function seed(memory: MemoryStore) {
+    for (const matter of [rossi, bianchi]) {
+      await memory.upsertRecord(
+        {
+          ...matter,
+          folder: "workstreams/active",
+          type: "workstream",
+          body: "- Matter",
+          validFromMs: 1,
+          validToMs: null,
+          supersededBy: null,
+        },
+        "create",
+        1,
+      );
+    }
+  }
+
+  it("is the matter of the nearest open deadline, else of an open todo, else the first known matter, else none", async () => {
+    const memory = realStore(tempDirs.make("ada-personal-"), "one");
+    expect(await personalMatter(memory, NOW)).toBeNull();
+    await seed(memory);
+    expect(await personalMatter(memory, NOW)).toBe("Rossi SRL");
+    await memory.upsertTodo({
+      id: "t1",
+      matterId: "bianchi",
+      owner: "lawyer",
+      title: "Call",
+      status: "pending",
+      detail: "",
+      updatedAtMs: 1,
+    });
+    expect(await personalMatter(memory, NOW)).toBe("Bianchi");
+    const candidate = (matterId: string, dueAtMs: number) => ({
+      matterId,
+      type: "hearing" as const,
+      title: "Udienza",
+      dueAtMs,
+      dueDate: new Date(dueAtMs).toISOString().slice(0, 10),
+      dueTime: null,
+      timeZone: "Europe/Rome",
+      confidence: 0.9,
+      source: { kind: "email" as const, ref: matterId, label: "x", excerpt: "x" },
+    });
+    await memory.upsertDeadlines(
+      [candidate("bianchi", NOW + 9 * 24 * HOUR), candidate("rossi", NOW + 3 * 24 * HOUR)],
+      1,
+    );
+    expect(await personalMatter(memory, NOW)).toBe("Rossi SRL");
+  });
+
+  it("never reads another number's data: each number's own store answers for it", async () => {
+    const one = realStore(tempDirs.make("ada-personal-"), "one");
+    const two = realStore(tempDirs.make("ada-personal-"), "two");
+    await seed(one);
+    expect(await personalMatter(two, NOW)).toBeNull();
   });
 });

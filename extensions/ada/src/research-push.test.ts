@@ -573,7 +573,7 @@ describe("the live window check", () => {
     expect(await livePushDeps(api, vi.fn(), "390000000043").windowOpen()).toBeNull();
   });
 
-  it("nudges a held result with the utility template, and with the digest template when that is all there is", async () => {
+  it("nudges a held result with the utility template only, never with the digest template", async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ messages: [{ id: "w" }] })));
     vi.stubGlobal("fetch", fetchImpl);
     try {
@@ -605,9 +605,9 @@ describe("the live window check", () => {
       expect(
         await withTemplates({ digestReadyTemplate: digest, requestReadyTemplate: request }).nudge(),
       ).toBe("sent");
-      expect(await withTemplates({ digestReadyTemplate: digest }).nudge()).toBe("sent");
+      expect(await withTemplates({ digestReadyTemplate: digest }).nudge()).toBe("unset");
       expect(await withTemplates({}).nudge()).toBe("unset");
-      expect(names()).toEqual(["ada_request_ready", "ada_digest_ready"]);
+      expect(names()).toEqual(["ada_request_ready"]);
 
       fetchImpl.mockImplementation(async () => new Response("{}", { status: 400 }));
       expect(await withTemplates({ requestReadyTemplate: request }).nudge()).toBe("failed");
@@ -928,5 +928,58 @@ describe("the research PDF", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("a delivered result is written into the conversation", () => {
+  const mirrorDeps = () => {
+    const mirror = vi.fn(async (_text: string, _jobId: string) => true);
+    return { mirror, ...makeDeps({ mirror }) };
+  };
+
+  it("mirrors exactly the text that went out, once, for a live delivery", async () => {
+    const { deps, sent, mirror } = mirrorDeps();
+    await pushResearchResult(
+      { jobId: "job-1", startedAtMs: 0, result: outcome(), query: "q" },
+      deps,
+    );
+    expect(mirror).toHaveBeenCalledExactlyOnceWith(sent[0], "job-1");
+  });
+
+  it("mirrors nothing while the result is held, and the text once it is released", async () => {
+    const { deps, sent, mirror } = mirrorDeps();
+    deps.windowOpen = async () => false;
+    await pushResearchResult(
+      { jobId: "job-2", startedAtMs: 0, result: outcome(), query: "q" },
+      deps,
+    );
+    expect(mirror).not.toHaveBeenCalled();
+    await releaseHeldResearch(deps);
+    expect(mirror).toHaveBeenCalledExactlyOnceWith(sent[0], "job-2");
+  });
+
+  it("mirrors a text cut to the delivery limit, never the whole long answer", async () => {
+    const { deps, mirror } = mirrorDeps();
+    const answer = Array.from({ length: 200 }, (_, i) => `${ITALIAN} Paragrafo ${i}.`).join("\n\n");
+    await pushResearchResult(
+      { jobId: "job-3", startedAtMs: 0, result: outcome({ answer }), query: "q" },
+      deps,
+    );
+    const [text] = mirror.mock.calls[0] ?? [];
+    expect(text?.length).toBeLessThanOrEqual(RESEARCH_TEXT_LIMIT);
+    expect(RESEARCH_TEXT_LIMIT).toBeLessThanOrEqual(4000);
+  });
+
+  it("is still delivered when the conversation cannot be written", async () => {
+    const mirror = vi.fn(async () => {
+      throw new Error("no session");
+    });
+    const { deps } = makeDeps({ mirror });
+    expect(
+      await pushResearchResult(
+        { jobId: "job-4", startedAtMs: 0, result: outcome(), query: "q" },
+        deps,
+      ),
+    ).toBe("sent");
   });
 });

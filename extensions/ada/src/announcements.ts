@@ -1,7 +1,5 @@
-import { listAgentIds } from "openclaw/plugin-sdk/agent-scope-runtime";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { resolveAgentIdFromSessionKey } from "openclaw/plugin-sdk/session-key-runtime";
-import { appendAssistantMirrorMessageByIdentity } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { whatsappWindowOpen } from "./collector.js";
 import { adminNumberView } from "./feedback.js";
 import { openAdaGoogleAccountFromApi } from "./google-account.js";
@@ -24,6 +22,7 @@ import { sessionKeyOwner, toOwner } from "./owner.js";
 import { resolveLanguage, type Language } from "./research-link-outbound.js";
 import { lastSenderInboundAt } from "./research-push.js";
 import { stripTrailingSignature } from "./signature.js";
+import { mirrorToSession, type WhatsAppSession } from "./transcript-mirror.js";
 import { ADA_WHATSAPP_CHANNEL } from "./whatsapp-number.js";
 
 /**
@@ -40,6 +39,15 @@ import { ADA_WHATSAPP_CHANNEL } from "./whatsapp-number.js";
  */
 
 export const ANNOUNCEMENT_LANGUAGES: readonly Language[] = ["it", "en", "es", "fr", "de"];
+/**
+ * A text key `<language>:personal` holds a variant for numbers whose own data names a matter: it
+ * has `{matter}` where that matter goes. Numbers with no matter, and languages without a variant,
+ * get the plain text. The variant lives in `texts`, so announcements saved before it existed read
+ * as they always did.
+ */
+export const PERSONAL_SUFFIX = ":personal";
+export const MATTER_PLACEHOLDER = "{matter}";
+const MAX_MATTER_CHARS = 60;
 export const ANNOUNCEMENT_MAX_TEXT_CHARS = 1500;
 const ID = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
 const MAX_EXCLUDED = 1000;
@@ -74,18 +82,22 @@ export function parseAnnouncementInput(body: unknown, nowMs: number): Announceme
   const rawTexts =
     input.texts && typeof input.texts === "object" ? (input.texts as Record<string, unknown>) : {};
   const texts: Record<string, string> = {};
-  for (const [language, value] of Object.entries(rawTexts)) {
+  for (const [key, value] of Object.entries(rawTexts)) {
+    const language = key.endsWith(PERSONAL_SUFFIX) ? key.slice(0, -PERSONAL_SUFFIX.length) : key;
     if (!(ANNOUNCEMENT_LANGUAGES as readonly string[]).includes(language)) {
-      return { ok: false, error: `texts.${language} is not a supported language` };
+      return { ok: false, error: `texts.${key} is not a supported language` };
     }
     const text = typeof value === "string" ? value.trim() : "";
     if (!text || text.length > ANNOUNCEMENT_MAX_TEXT_CHARS) {
       return {
         ok: false,
-        error: `texts.${language} must be 1 to ${ANNOUNCEMENT_MAX_TEXT_CHARS} characters`,
+        error: `texts.${key} must be 1 to ${ANNOUNCEMENT_MAX_TEXT_CHARS} characters`,
       };
     }
-    texts[language] = text;
+    if (key !== language && !text.includes(MATTER_PLACEHOLDER)) {
+      return { ok: false, error: `texts.${key} must contain ${MATTER_PLACEHOLDER}` };
+    }
+    texts[key] = text;
   }
   if (!texts.it || !texts.en) {
     return { ok: false, error: "texts needs at least it and en" };
@@ -120,9 +132,6 @@ export function parseAnnouncementInput(body: unknown, nowMs: number): Announceme
   };
 }
 
-/** A conversation Ada has with one number: where the announcement is sent and written down. */
-export type AnnouncementRecipient = { owner: string; sessionKey: string; sessionId: string };
-
 type DeliveryApi = Pick<
   OpenClawPluginApi,
   "config" | "logger" | "runtime" | "runtimeSource" | "pluginConfig"
@@ -136,26 +145,40 @@ export type AnnouncementDeps = {
   optedOut: (owner: string) => Promise<boolean>;
   hasFeature: (feature: string, owner: string) => Promise<boolean>;
   language: (owner: string) => Promise<Language>;
+  /** A matter from the number's own data to name in a personal variant; null when it has none. */
+  matter?: (owner: string) => Promise<string | null>;
   send: (owner: string, text: string) => Promise<{ ok: boolean; error?: string }>;
   recordInHistory: (
-    recipient: AnnouncementRecipient,
+    recipient: WhatsAppSession,
     announcementId: string,
     text: string,
   ) => Promise<boolean>;
   log: Pick<OpenClawPluginApi["logger"], "error" | "info">;
 };
 
-/** The words of `announcement` for `language`, Italian when it has none for it, without a signature. */
-export function resolveAnnouncementText(announcement: Announcement, language: Language): string {
-  const text = announcement.texts[language] ?? announcement.texts.it ?? "";
-  return stripTrailingSignature(text);
+/**
+ * The words of `announcement` for `language`, Italian when it has none for it, without a
+ * signature. With a `matter` from the number's data and a personal variant in that language, the
+ * variant names the matter.
+ */
+export function resolveAnnouncementText(
+  announcement: Announcement,
+  language: Language,
+  matter?: string | null,
+): string {
+  const label = matter?.replace(/\s+/gu, " ").trim().slice(0, MAX_MATTER_CHARS);
+  const personal = announcement.texts[`${language}${PERSONAL_SUFFIX}`];
+  if (label && personal) {
+    return stripTrailingSignature(personal.replaceAll(MATTER_PLACEHOLDER, label));
+  }
+  return stripTrailingSignature(announcement.texts[language] ?? announcement.texts.it ?? "");
 }
 
 export type AnnouncementOutcome = {
   status: "sent" | "skipped" | "pending" | "would_send";
   reason: string | null;
   language: string | null;
-  /** The message for the number, present while it is still to be sent or was just sent. */
+  /** The message for the number, with a personal matter left as `{matter}`: it is filled only in what the number receives. */
   text: string | null;
   recordedInHistory?: boolean;
 };
@@ -175,7 +198,7 @@ const recorded = (delivery: AnnouncementDelivery): AnnouncementOutcome => ({
 export async function deliverAnnouncement(
   deps: AnnouncementDeps,
   announcement: Announcement,
-  recipient: AnnouncementRecipient,
+  recipient: WhatsAppSession,
   earlier: AnnouncementDelivery | undefined,
   options: { dryRun?: boolean; exclude?: ReadonlySet<string> } = {},
 ): Promise<AnnouncementOutcome> {
@@ -206,18 +229,23 @@ export async function deliverAnnouncement(
     return await skip("feature_connected");
   }
   const language = await deps.language(owner);
-  const text = resolveAnnouncementText(announcement, language);
+  const hasPersonal = `${language}${PERSONAL_SUFFIX}` in announcement.texts;
+  const matter = hasPersonal ? ((await deps.matter?.(owner)) ?? null) : null;
+  const text = resolveAnnouncementText(announcement, language, matter);
+  // The admin views show the template with the matter left unfilled: a matter name comes from one
+  // number's own data and is filled in only in the message that number receives.
+  const shown = matter ? resolveAnnouncementText(announcement, language, MATTER_PLACEHOLDER) : text;
   const pending = (reason: string): AnnouncementOutcome => ({
     status: "pending",
     reason,
     language,
-    text,
+    text: shown,
   });
   if (!(await deps.windowOpen(owner))) {
     return pending("window_closed");
   }
   if (options.dryRun) {
-    return { status: "would_send", reason: null, language, text };
+    return { status: "would_send", reason: null, language, text: shown };
   }
   const claimed = await registry.claimAnnouncementDelivery({
     announcementId: announcement.id,
@@ -245,7 +273,7 @@ export async function deliverAnnouncement(
       );
       return false;
     });
-  return { status: "sent", reason: null, language, text, recordedInHistory };
+  return { status: "sent", reason: null, language, text: shown, recordedInHistory };
 }
 
 /** The delivery rows by announcement id and number. */
@@ -264,7 +292,7 @@ export function indexDeliveries(deliveries: readonly AnnouncementDelivery[]) {
 export async function deliverToRecipients(
   deps: AnnouncementDeps,
   announcement: Announcement,
-  recipients: readonly AnnouncementRecipient[],
+  recipients: readonly WhatsAppSession[],
   options: { dryRun?: boolean; exclude?: readonly string[] } = {},
 ) {
   const deliveryOf = indexDeliveries(await (await deps.registry()).listAnnouncementDeliveries());
@@ -278,7 +306,7 @@ export async function deliverToRecipients(
       .toSorted()
       .map((owner) => ({ owner, sessionKey: "", sessionId: "" })),
   ];
-  const results: Array<{ recipient: AnnouncementRecipient; outcome: AnnouncementOutcome }> = [];
+  const results: Array<{ recipient: WhatsAppSession; outcome: AnnouncementOutcome }> = [];
   for (const recipient of everyone) {
     const outcome = await deliverAnnouncement(
       deps,
@@ -307,34 +335,31 @@ export function outcomeView(owner: string, outcome: AnnouncementOutcome) {
 }
 
 /**
- * The numbers Ada has a private WhatsApp conversation with: one per direct session of the channel,
- * the most recently used when a number has several.
+ * The matter a personal announcement names, from the number's own data only: the matter of its
+ * nearest open deadline, else of its newest open todo, else its first known matter.
  */
-export function listAnnouncementRecipients(
-  api: Pick<OpenClawPluginApi, "runtime" | "config">,
-): AnnouncementRecipient[] {
-  const latest = new Map<string, AnnouncementRecipient & { updatedAt: number }>();
-  // The session store is per agent and refuses a listing that names none.
-  const entries = listAgentIds(api.config).flatMap((agentId) =>
-    api.runtime.agent.session.listSessionEntries({
-      agentId,
-      readOnly: true,
-      includeParticipants: false,
-    }),
-  );
-  for (const { sessionKey, entry } of entries) {
-    const owner = sessionKeyOwner(sessionKey);
-    if (!owner || !sessionKey.split(":").includes(ADA_WHATSAPP_CHANNEL) || !entry.sessionId) {
-      continue;
-    }
-    const updatedAt = entry.updatedAt ?? 0;
-    if (updatedAt >= (latest.get(owner)?.updatedAt ?? -1)) {
-      latest.set(owner, { owner, sessionKey, sessionId: entry.sessionId, updatedAt });
-    }
+export async function personalMatter(
+  memory: Pick<MemoryStore, "listDeadlines" | "listTodos" | "listMatterAliases">,
+  nowMs: number,
+): Promise<string | null> {
+  const aliases = await memory.listMatterAliases();
+  const label = (matterId: string) =>
+    aliases.find((entry) => entry.matterId === matterId)?.title ?? null;
+  const deadline = (await memory.listDeadlines())
+    .filter(
+      (item) => (item.status === "tracked" || item.status === "candidate") && item.dueAtMs > nowMs,
+    )
+    .toSorted((a, b) => a.dueAtMs - b.dueAtMs)
+    .map((item) => label(item.matterId))
+    .find((title) => title !== null);
+  if (deadline) {
+    return deadline;
   }
-  return [...latest.values()]
-    .toSorted((a, b) => a.owner.localeCompare(b.owner))
-    .map(({ owner, sessionKey, sessionId }) => ({ owner, sessionKey, sessionId }));
+  const todo = (await memory.listTodos())
+    .filter((item) => item.status !== "done")
+    .map((item) => label(item.matterId))
+    .find((title) => title !== null);
+  return todo ?? aliases[0]?.title ?? null;
 }
 
 /** Delivery wired to the running Ada: her WhatsApp channel, per-number memory and sessions. */
@@ -361,18 +386,13 @@ export function liveAnnouncementDeps(api: DeliveryApi): AnnouncementDeps {
           (await (await openAdaMemoryIfExistsFromApi(api, owner))?.readProfile())?.language,
         owner,
       ),
-    send: (owner, text) => sendAdaWhatsAppText({ api, to: `+${owner}`, text }),
-    recordInHistory: async ({ sessionKey, sessionId }, announcementId, text) => {
-      const result = await appendAssistantMirrorMessageByIdentity({
-        agentId: resolveAgentIdFromSessionKey(sessionKey),
-        sessionKey,
-        sessionId,
-        text,
-        idempotencyKey: `ada-announcement:${announcementId}`,
-        updateMode: "none",
-      });
-      return result.ok;
+    matter: async (owner) => {
+      const memory = await openAdaMemoryIfExistsFromApi(api, owner);
+      return memory ? await personalMatter(memory, Date.now()) : null;
     },
+    send: (owner, text) => sendAdaWhatsAppText({ api, to: `+${owner}`, text }),
+    recordInHistory: (session, announcementId, text) =>
+      mirrorToSession(session, text, `ada-announcement:${announcementId}`),
     log: api.logger,
   };
 }
@@ -384,7 +404,7 @@ export function liveAnnouncementDeps(api: DeliveryApi): AnnouncementDeps {
  */
 export async function releasePendingAnnouncement(
   deps: AnnouncementDeps,
-  recipient: AnnouncementRecipient,
+  recipient: WhatsAppSession,
 ): Promise<void> {
   const registry = await deps.registry();
   const [announcements, deliveries] = await Promise.all([

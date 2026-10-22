@@ -2,12 +2,17 @@ import { Type } from "typebox";
 import { DEADLINE_REPLY_ACTIONS } from "./deadline-tools.js";
 import {
   ANNOUNCEMENTS_OFF_KEY,
+  BRIEF_SKIP_AGENDA_KEY,
+  BRIEF_SKIP_MAIL_KEY,
   FEEDBACK_CATEGORIES,
   FEEDBACK_MAX_TEXT_CHARS,
   MEMORY_FOLDERS,
   PREFERENCE_LIMITS,
+  PREP_ON_KEY,
   QUIET_BRIEF_OFF_KEY,
+  SHORT_TEXTS_KEY,
 } from "./memory-contract.js";
+import { REMINDER_TEXT_MAX } from "./proactive-store.js";
 
 /**
  * The model-facing definitions of every tool that acts on one person's accounts or data. None
@@ -79,7 +84,7 @@ export const adaSendEmailDefinition = {
   name: "ada_send_email",
   label: "Send email from connected Gmail",
   description:
-    "Send one plain-text email from the Gmail account the person asking connected. Set confirmed true only after they agree in the chat to that exact message. Any other value returns confirmation_required and does not send.",
+    "Send one plain-text email from the Gmail account the person asking connected. Set confirmed true only after they agree in the chat to that exact message. Any other value returns confirmation_required and does not send. When the result says watching true, Ada keeps an eye on the thread and tells the person once when someone replies; say so in your one-line confirmation, and promise nothing when watching is false.",
   parameters: Type.Object(
     {
       to: Type.String({ minLength: 3, description: "One recipient email address." }),
@@ -198,7 +203,7 @@ export const adaSetTimezoneDefinition = {
 export const adaSetPreferenceDefinition = {
   name: "ada_set_preference",
   label: "Save my preference",
-  description: `Save a standing preference of the person asking, so you follow it from now on in every chat with them. Call it whenever they tell you, in any words, how they want you to behave: style, length, tone, formality, language, emoji, signatures, how to address them, what the morning brief should contain, what to alert them about. Use a short snake_case topic as key (signature, length, tone, language, emoji, address_form, brief_content, alerts). Look at the standing preferences already in your context: when one covers the same topic, reuse its key so the new text replaces it. Write text as one standing instruction in your own words, at most ${PREFERENCE_LIMITS.maxTextChars} characters. To stop the short morning brief on quiet days use the key ${QUIET_BRIEF_OFF_KEY}. When they do not want product news or what's-new messages from Ada, use the key ${ANNOUNCEMENTS_OFF_KEY}. Not for time zones (use ada_set_timezone) and not for complaints about the product (use ada_report_feedback). At most ${PREFERENCE_LIMITS.maxCount} are kept; past that it returns the list so you can ask which to drop. Afterwards confirm in one short natural sentence in their language.`,
+  description: `Save a standing preference of the person asking, so you follow it from now on in every chat with them. Call it whenever they tell you, in any words, how they want you to behave: style, length, tone, formality, language, emoji, signatures, how to address them, what the morning brief should contain, what to alert them about. Use a short snake_case topic as key (signature, length, tone, language, emoji, address_form, brief_content, alerts). Look at the standing preferences already in your context: when one covers the same topic, reuse its key so the new text replaces it. Write text as one standing instruction in your own words, at most ${PREFERENCE_LIMITS.maxTextChars} characters. Code writes the morning brief and digest itself, so for these use exactly these keys: ${QUIET_BRIEF_OFF_KEY} (no morning brief at all), ${BRIEF_SKIP_AGENDA_KEY} (leave today's agenda out of the brief), ${BRIEF_SKIP_MAIL_KEY} (leave mail out of the brief), ${SHORT_TEXTS_KEY} (shorter brief and digest). When they want a recap before their hearings and meetings use ${PREP_ON_KEY} (it is sent only while the chat is open, so a recap that comes due while it is closed waits for their next message). When they do not want product news or what's-new messages from Ada, use the key ${ANNOUNCEMENTS_OFF_KEY}. Not for time zones (use ada_set_timezone) and not for complaints about the product (use ada_report_feedback). At most ${PREFERENCE_LIMITS.maxCount} are kept; past that it returns the list so you can ask which to drop. Afterwards confirm in one short natural sentence in their language.`,
   parameters: Type.Object(
     {
       key: Type.String({ minLength: 1, description: "Short snake_case topic, such as signature." }),
@@ -211,7 +216,7 @@ export const adaSetPreferenceDefinition = {
 export const adaForgetPreferenceDefinition = {
   name: "ada_forget_preference",
   label: "Forget my preference",
-  description: `Remove a saved standing preference of the person asking, by its key, when they take it back or ask you to stop doing it. Returns what is still saved. For ${QUIET_BRIEF_OFF_KEY} it turns the quiet-day brief back on, and for ${ANNOUNCEMENTS_OFF_KEY} product news. Confirm in one short natural sentence in their language.`,
+  description: `Remove a saved standing preference of the person asking, by its key, when they take it back or ask you to stop doing it. Returns what is still saved. For ${QUIET_BRIEF_OFF_KEY} it turns the morning brief back on, for ${ANNOUNCEMENTS_OFF_KEY} product news, and for the brief, brevity and recap keys it undoes them. Confirm in one short natural sentence in their language.`,
   parameters: Type.Object(
     { key: Type.String({ minLength: 1, description: "Key of a saved preference." }) },
     { additionalProperties: false },
@@ -333,6 +338,42 @@ export const adaGranolaCallDefinition = {
         Type.Integer({ minimum: 0, description: "Start of the next part of a long result." }),
       ),
     },
+    { additionalProperties: false },
+  ),
+};
+
+export const adaSetReminderDefinition = {
+  name: "ada_set_reminder",
+  label: "Set a reminder",
+  description: `Set a reminder that Ada sends the person asking on WhatsApp at the time they name. Call it when they ask to be reminded of something ("remind me Thursday at 9", "ricordamelo domani alle 15"). Pass at as the local date and time in their own time zone, as YYYY-MM-DDTHH:MM, and text as the reminder itself, at most ${REMINDER_TEXT_MAX} characters, written in the language they used. Reminders are checked every 15 minutes, so one can arrive up to about 15 minutes late: say so plainly, in one short sentence, together with the time you set. If they have not written for 24 hours WhatsApp does not let Ada send the reminder itself: it reaches them when they next write, and Ada may send a short notice to prompt them; mention that only if it applies. Not for deadlines or hearings from their mail and calendar: those already have reminders of their own.`,
+  parameters: Type.Object(
+    {
+      at: Type.String({
+        minLength: 10,
+        description:
+          "Local date and time in the person's own zone, YYYY-MM-DDTHH:MM. An offset or Z is also accepted.",
+      }),
+      text: Type.String({ minLength: 1, description: "The reminder, in the person's language." }),
+    },
+    { additionalProperties: false },
+  ),
+};
+
+export const adaListRemindersDefinition = {
+  name: "ada_list_reminders",
+  label: "List my reminders",
+  description:
+    "List the reminders the person asking has set and that have not been delivered yet, with their ids and local times. Call it when they ask what you will remind them of, or before you cancel one.",
+  parameters: Type.Object({}, { additionalProperties: false }),
+};
+
+export const adaCancelReminderDefinition = {
+  name: "ada_cancel_reminder",
+  label: "Cancel a reminder",
+  description:
+    "Cancel one reminder of the person asking, by the id that ada_list_reminders returned. Call it when they ask to drop or cancel a reminder; confirm in one short sentence.",
+  parameters: Type.Object(
+    { id: Type.String({ minLength: 1, description: "Id of a reminder from ada_list_reminders." }) },
     { additionalProperties: false },
   ),
 };

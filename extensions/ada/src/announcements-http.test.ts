@@ -8,9 +8,10 @@ vi.mock("openclaw/plugin-sdk/session-transcript-runtime", () => ({
 }));
 
 import { handleAdaAnnouncementsAdmin } from "./announcements-http.js";
-import type { AnnouncementDeps, AnnouncementRecipient } from "./announcements.js";
+import type { AnnouncementDeps } from "./announcements.js";
 import type { MemoryStore } from "./memory.js";
 import { realStore } from "./preference-test-support.js";
+import type { WhatsAppSession } from "./transcript-mirror.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const TOKEN = "admin-token-0123456789";
@@ -38,7 +39,7 @@ beforeEach(() => {
   };
 });
 
-const recipients = (): AnnouncementRecipient[] =>
+const recipients = (): WhatsAppSession[] =>
   [PAOLO, ANNA].map((owner) => ({
     owner,
     sessionKey: `agent:main:kapso-whatsapp:direct:${owner}`,

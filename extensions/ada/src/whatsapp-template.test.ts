@@ -254,46 +254,32 @@ describe("sendRequestReadyNotice", () => {
     expect(sentTemplates(fetchImpl)).toEqual(["ada_request_ready"]);
   });
 
-  it("falls back to the digest template when the request template is not configured", async () => {
-    const fetchImpl = vi.fn(async () => jsonResponse(200, {}));
-    expect(await run({ digestReadyTemplate: BOTH.digestReadyTemplate }, fetchImpl)).toEqual({
-      ok: true,
-    });
-    expect(sentTemplates(fetchImpl)).toEqual(["ada_digest_ready"]);
-  });
-
-  it("falls back to the digest template when Kapso refuses the request template", async () => {
+  it("never falls back to the digest template: with no request template nothing is sent, and the gap is logged once per plugin instance", async () => {
+    const fetchImpl = vi.fn();
     const log = logger();
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse(400))
-      .mockResolvedValueOnce(jsonResponse(200, {}));
-    expect(await run(BOTH, fetchImpl, log)).toEqual({ ok: true });
-    expect(sentTemplates(fetchImpl)).toEqual(["ada_request_ready", "ada_digest_ready"]);
-    expect(log.warn).toHaveBeenCalledWith(
-      "ada request-ready template not sent: kapso template returned HTTP 400",
-    );
+    const api = {
+      config: config as never,
+      pluginConfig: { digestReadyTemplate: BOTH.digestReadyTemplate } as never,
+      logger: log,
+    };
+    expect(await sendRequestReadyNotice({ api, to: "+393331111111" })).toBeNull();
+    expect(await sendRequestReadyNotice({ api, to: "+393331111111" })).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledOnce();
+    expect(log.warn.mock.calls[0]?.[0]).toContain("requestReadyTemplate");
   });
 
-  it("reports the last refusal when neither template goes out, and sends nothing when none is set", async () => {
-    const refused = vi.fn(async () => jsonResponse(400));
-    expect(await run(BOTH, refused)).toEqual({
-      ok: false,
-      error: "kapso template returned HTTP 400",
-    });
-    expect(refused).toHaveBeenCalledTimes(2);
-    const none = vi.fn();
-    expect(await run({}, none)).toBeNull();
-    expect(none).not.toHaveBeenCalled();
-  });
-
-  it("returns the refusal, not null, when the request template fails and there is no digest template", async () => {
+  it("returns Kapso's refusal and does not try the digest template when it refuses the request template", async () => {
+    const log = logger();
     const fetchImpl = vi.fn(async () => jsonResponse(400));
-    expect(await run({ requestReadyTemplate: BOTH.requestReadyTemplate }, fetchImpl)).toEqual({
+    expect(await run(BOTH, fetchImpl, log)).toEqual({
       ok: false,
       error: "kapso template returned HTTP 400",
     });
     expect(sentTemplates(fetchImpl)).toEqual(["ada_request_ready"]);
+    expect(log.warn).toHaveBeenCalledWith(
+      "ada request-ready template not sent: kapso template returned HTTP 400",
+    );
   });
 });
 

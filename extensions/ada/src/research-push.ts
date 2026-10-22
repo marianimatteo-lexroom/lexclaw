@@ -1,4 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { runCollectExclusive } from "./collect-lock.js";
 import { whatsappWindowOpen } from "./collector.js";
 import {
   noteConnectOffer,
@@ -13,8 +14,10 @@ import { formatSources } from "./lexroom-citations.js";
 import type { LexroomFailure, ResearchOutcome } from "./lexroom-client.js";
 import { lexroomLogger, type LexroomLog } from "./lexroom-log.js";
 import { openAdaMemoryIfExistsFromApi } from "./memory.js";
+import { claimRequestTemplate } from "./proactive-store.js";
 import { researchLinkLine, resolveLanguage, type Language } from "./research-link-outbound.js";
 import { buildResearchPdf, type ResearchPdf } from "./research-pdf.js";
+import { mirrorSentText } from "./transcript-mirror.js";
 import { normalizeWhatsAppNumber } from "./whatsapp-number.js";
 import { sendRequestReadyNotice } from "./whatsapp-template.js";
 
@@ -56,12 +59,14 @@ export type PushDeps = {
   /** Whether the recipient's 24-hour window is open; null when Ada has no inbound from them. */
   windowOpen: () => Promise<boolean | null>;
   /** The ready-template nudge that asks the recipient to write, or why it was not sent. */
-  nudge: () => Promise<"sent" | "unset" | "failed">;
+  nudge: () => Promise<"sent" | "unset" | "failed" | "skipped">;
   readProfileLanguage?: () => Promise<string | undefined>;
   /** The delivered message asked the person whether to (re)connect Lexroom; remember it for their next turn. */
   offerConnect?: (kind: ConnectOfferKind) => void;
   /** A finished research reached the person with a next-step question; remember what it answered. */
   noteResult?: (note: ResearchResultNote) => void;
+  /** Writes a delivered result into the person's conversation, so a follow-up reaches a model that has read it. */
+  mirror?: (text: string, jobId: string) => Promise<unknown>;
   log: LexroomLog;
   now?: () => number;
   retryDelayMs?: number;
@@ -306,6 +311,16 @@ function pruneHeld(nowMs: number): void {
   }
 }
 
+/**
+ * When `owner` last wrote: the later of this process's record and the stored one. A number's first
+ * message arrives before it has a memory file, so the stored value alone can still be empty while
+ * the window is open.
+ */
+export function lastInboundOf(owner: string, stored: number | null): number | null {
+  const arrived = lastInboundAtMs.get(owner);
+  return arrived === undefined ? stored : Math.max(arrived, stored ?? 0);
+}
+
 /** Forgets every held result and window. For tests: this state is shared by the whole process. */
 export function clearHeldResearch(): void {
   held.clear();
@@ -316,6 +331,11 @@ const sleep = (ms: number) =>
   new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
   });
+
+/** Writes a delivered result into the conversation; a failure there never undoes the delivery. */
+async function mirror(deps: PushDeps, text: string, jobId: string): Promise<void> {
+  await deps.mirror?.(text, jobId)?.catch(() => undefined);
+}
 
 /** Sends the text, retrying once after a failure. */
 async function sendText(text: string, deps: PushDeps): Promise<SendResult> {
@@ -439,6 +459,7 @@ export async function pushResearchResult(
   if (open !== false) {
     const sent = await sendText(text, deps);
     if (sent.ok) {
+      await mirror(deps, text, params.jobId);
       if (offer) {
         deps.offerConnect?.(offer);
       }
@@ -509,6 +530,7 @@ export async function releaseHeldResearch(deps: PushDeps): Promise<number> {
     }
     queue.shift();
     released += 1;
+    await mirror(deps, next.text, next.jobId);
     if (next.offer) {
       deps.offerConnect?.(next.offer);
     }
@@ -551,23 +573,39 @@ export function livePushDeps(
         bytes: document.bytes,
       }),
     windowOpen: async () => {
-      let seen = lastInboundAtMs.get(recipient) ?? null;
-      if (seen === null) {
-        try {
-          seen = (await (await memory())?.readWake())?.lastLawyerInboundAtMs ?? null;
-        } catch {
-          seen = null;
-        }
-      }
+      const stored = await (async () =>
+        (await (await memory())?.readWake())?.lastLawyerInboundAtMs ?? null)().catch(() => null);
+      const seen = lastInboundOf(recipient, stored);
       return seen === null ? null : whatsappWindowOpen(seen, Date.now());
     },
-    nudge: async () => {
-      const result = await sendRequestReadyNotice({ api, to });
-      return result === null ? "unset" : result.ok ? "sent" : "failed";
-    },
+    nudge: () =>
+      // One request-ready template per closed window, shared with the reminders and watched
+      // replies held for the same number, so the claim and the send run under their lock.
+      runCollectExclusive(
+        async () => {
+          const store = await memory().catch(() => null);
+          const lastInbound = lastInboundOf(
+            recipient,
+            store ? (await store.readWake()).lastLawyerInboundAtMs : null,
+          );
+          // A template only reopens a closed window. A result whose text failed inside an open
+          // window is held until the person's next message (in memory only, lost on a restart),
+          // with no nudge and no retry.
+          if (whatsappWindowOpen(lastInbound, Date.now())) {
+            return "skipped";
+          }
+          if (store && !(await claimRequestTemplate(store, lastInbound, Date.now()))) {
+            return "skipped";
+          }
+          const result = await sendRequestReadyNotice({ api, to });
+          return result === null ? "unset" : result.ok ? "sent" : "failed";
+        },
+        { key: `proactive:${recipient}` },
+      ),
     readProfileLanguage: async () => (await (await memory())?.readProfile())?.language,
     offerConnect: (kind) => noteConnectOffer(recipient, kind),
     noteResult: (note) => noteResearchResult(recipient, note),
+    mirror: (text, jobId) => mirrorSentText(api, recipient, text, `ada-research:${jobId}`),
     log,
   };
 }
