@@ -28,7 +28,11 @@ vi.mock("./google-account.js", () => ({
 }));
 vi.mock("./memory.js", () => {
   const open = async (_api: unknown, owner: string) => memories.byOwner.get(owner) ?? null;
-  return { openAdaMemoryFromApi: open, openAdaMemoryIfExistsFromApi: open };
+  return {
+    openAdaMemoryFromApi: open,
+    openAdaMemoryIfExistsFromApi: open,
+    listAdaMemoryOwners: () => [],
+  };
 });
 
 const LAWYER = "390000000000";

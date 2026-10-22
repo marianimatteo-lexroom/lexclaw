@@ -151,6 +151,13 @@ export const EMPTY_WAKE_STATE: WakeState = {
   openTodoIdsJson: null,
 };
 
+/**
+ * A todo whose id starts with this was parked in open loops after a digest decision went
+ * unanswered three times. It shows in the open loops and in "what is open", but the collector
+ * never turns it into a digest signal again.
+ */
+export const PARKED_TODO_PREFIX = "parked-";
+
 export const DEADLINE_TYPES = ["deadline", "hearing"] as const;
 export type DeadlineType = (typeof DEADLINE_TYPES)[number];
 
@@ -249,6 +256,25 @@ export const PREFERENCE_LIMITS = { maxCount: 30, maxKeyChars: 40, maxTextChars: 
 export const QUIET_BRIEF_OFF_KEY = "quiet_brief_off";
 
 /**
+ * Preferences that code reads when it writes a text on its own (the morning brief and digest),
+ * which the model's standing-preference note cannot reach. The person sets them in their own
+ * words and the model saves them under these keys with ada_set_preference.
+ */
+export const SHORT_TEXTS_KEY = "short_texts";
+export const BRIEF_SKIP_AGENDA_KEY = "brief_skip_agenda";
+export const BRIEF_SKIP_MAIL_KEY = "brief_skip_mail";
+
+/**
+ * The person asked for a recap before their hearings and meetings. The second key also lets
+ * Ada use the request-ready template for it while the WhatsApp window is closed.
+ */
+export const PREP_ON_KEY = "meeting_prep_on";
+export const PREP_TEMPLATE_ON_KEY = "meeting_prep_template_on";
+
+/** What Ada learned about how the person works, saved only after they said yes to it. */
+export const WORK_PROFILE_KEY = "work_profile";
+
+/**
  * Saved (through ada_set_preference) when a person declines the offer to connect Lexroom. Code
  * reads its time as a cooldown, not as a standing instruction, so the brief does not show it.
  */
@@ -325,6 +351,21 @@ export type AnnouncementDelivery = {
 
 export type SetPreferenceResult = { ok: true; replaced: boolean } | { ok: false; reason: "limit" };
 
+/**
+ * One piece of a number's proactive state: a watched thread, a reminder, a held notice, or a
+ * once-a-day log line. `kind` and `id` are the key; `data` is JSON that `proactive-store.ts` reads
+ * back with a check, so a row written by an older build cannot crash a newer one.
+ */
+export type ProactiveRow = {
+  kind: string;
+  id: string;
+  /** When the row is due (a reminder's time, an event's start); null when it has none. */
+  dueAtMs: number | null;
+  status: string;
+  data: string;
+  updatedAtMs: number;
+};
+
 export type EmbeddingCandidate = { id: string; text: string };
 export type EmbeddingItem = EmbeddingCandidate & { vector: number[] };
 
@@ -343,6 +384,12 @@ export type AdaMemoryOperations = {
   setPreference: Operation<{ key: string; text: string; atMs: number }, SetPreferenceResult>;
   /** True when the key existed. */
   removePreference: Operation<{ key: string }, boolean>;
+  /** Saves or replaces the row under `kind` and `id`. */
+  putProactive: Operation<{ row: ProactiveRow }, undefined>;
+  /** Every row of one kind, soonest due first. */
+  listProactive: Operation<{ kind: string }, ProactiveRow[]>;
+  /** True when the row existed. */
+  removeProactive: Operation<{ kind: string; id: string }, boolean>;
   addFeedback: Operation<NewFeedback, number>;
   /** Entries at or after `sinceMs`, oldest first. */
   listFeedback: Operation<{ sinceMs: number }, FeedbackEntry[]>;

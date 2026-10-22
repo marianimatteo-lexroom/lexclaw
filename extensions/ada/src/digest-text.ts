@@ -1,6 +1,7 @@
 import type { DigestDeadlineLine, DigestPlan, RankedDigestItem } from "./digest.js";
 import type { QuietBrief } from "./quiet-brief.js";
 import type { Language } from "./research-link-outbound.js";
+import { NO_TEXT_PREFS, type TextPrefs } from "./text-prefs.js";
 
 type DeliverablePlan = Extract<DigestPlan, { deliver: true }>;
 
@@ -26,6 +27,10 @@ type Words = {
   toConfirm: string;
   researchReady: string;
   movedTag: string;
+  /** Tag on the third and final time an unanswered decision is listed. */
+  lastReminder: string;
+  /** Opens the nudge for a confirmed deadline that is due today or tomorrow. */
+  countdownIntro: string;
   /** Said once, after the question, when more than one item is open. */
   orPick: string;
   /** The one closing question: what Ada proposes to do first. */
@@ -63,6 +68,8 @@ const WORDS: Record<Language, Words> = {
     toConfirm: "da confermare",
     researchReady: "ricerca già pronta",
     movedTag: "data cambiata",
+    lastReminder: "ultimo promemoria",
+    countdownIntro: "In arrivo:",
     askResearch: (label) => `Partirei dalla ricerca su Lexroom per ${label}: la avvio?`,
     askBrief: (label) => `Ti rimando la ricerca già pronta per ${label}?`,
     orPick: "Se preferisci un'altra voce, o saltarla, dimmelo.",
@@ -75,7 +82,7 @@ const WORDS: Record<Language, Words> = {
       `Posso leggere Gmail e Google Calendar, ma non ancora inviare email.\nApri questo link e consenti l'invio:\n${url}`,
     connectExpired: (url) =>
       `Il collegamento al tuo Gmail è scaduto: ecco il link per ricollegarlo (vale 30 minuti)\n${url}`,
-    quietIntro: "Buongiorno. Niente di urgente per oggi.",
+    quietIntro: "Buongiorno. Ecco cosa c'è oggi:",
     quietIntroAfterAlert: "Buongiorno. Nient'altro di nuovo da segnalare.",
     quietAgenda: "Agenda di oggi:",
     quietNoEvents: "Agenda di oggi: nessun impegno.",
@@ -100,6 +107,8 @@ const WORDS: Record<Language, Words> = {
     toConfirm: "to be confirmed",
     researchReady: "research already done",
     movedTag: "date changed",
+    lastReminder: "last reminder",
+    countdownIntro: "Coming up:",
     askResearch: (label) => `I'd start with the Lexroom research for ${label}. Shall I run it?`,
     askBrief: (label) => `Shall I send you the research already done for ${label}?`,
     orPick: "Tell me if you would rather take another item, or skip it.",
@@ -112,7 +121,7 @@ const WORDS: Record<Language, Words> = {
       `I can read Gmail and Google Calendar, but I cannot send email yet.\nOpen this link and approve sending:\n${url}`,
     connectExpired: (url) =>
       `The connection to your Gmail has expired: here is the link to connect it again (it is valid for 30 minutes)\n${url}`,
-    quietIntro: "Good morning. Nothing urgent today.",
+    quietIntro: "Good morning. Here is what is on today:",
     quietIntroAfterAlert: "Good morning. Nothing else new to report.",
     quietAgenda: "Today's agenda:",
     quietNoEvents: "Today's agenda: nothing scheduled.",
@@ -137,6 +146,8 @@ const WORDS: Record<Language, Words> = {
     toConfirm: "por confirmar",
     researchReady: "investigación ya lista",
     movedTag: "fecha cambiada",
+    lastReminder: "último recordatorio",
+    countdownIntro: "En breve:",
     askResearch: (label) => `Empezaría por la investigación en Lexroom para ${label}: ¿la inicio?`,
     askBrief: (label) => `¿Te reenvío la investigación que ya está lista para ${label}?`,
     orPick: "Si prefieres otro punto, o omitirlo, dímelo.",
@@ -149,7 +160,7 @@ const WORDS: Record<Language, Words> = {
       `Puedo leer Gmail y Google Calendar, pero todavía no puedo enviar correos.\nAbre este enlace y autoriza el envío:\n${url}`,
     connectExpired: (url) =>
       `La conexión con tu Gmail ha caducado: aquí tienes el enlace para volver a conectarlo (vale 30 minutos)\n${url}`,
-    quietIntro: "Buenos días. Nada urgente para hoy.",
+    quietIntro: "Buenos días. Esto es lo que hay hoy:",
     quietIntroAfterAlert: "Buenos días. Nada más nuevo que señalar.",
     quietAgenda: "Agenda de hoy:",
     quietNoEvents: "Agenda de hoy: ningún compromiso.",
@@ -174,6 +185,8 @@ const WORDS: Record<Language, Words> = {
     toConfirm: "à confirmer",
     researchReady: "recherche déjà prête",
     movedTag: "date modifiée",
+    lastReminder: "dernier rappel",
+    countdownIntro: "À venir :",
     askResearch: (label) =>
       `Je commencerais par la recherche sur Lexroom pour ${label} : je la lance ?`,
     askBrief: (label) => `Je vous renvoie la recherche déjà prête pour ${label} ?`,
@@ -187,7 +200,7 @@ const WORDS: Record<Language, Words> = {
       `Je peux lire Gmail et Google Agenda, mais pas encore envoyer d'e-mails.\nOuvrez ce lien et autorisez l'envoi :\n${url}`,
     connectExpired: (url) =>
       `La connexion à votre Gmail a expiré : voici le lien pour la reconnecter (valable 30 minutes)\n${url}`,
-    quietIntro: "Bonjour. Rien d'urgent aujourd'hui.",
+    quietIntro: "Bonjour. Voici ce qui vous attend aujourd'hui :",
     quietIntroAfterAlert: "Bonjour. Rien d'autre de nouveau à signaler.",
     quietAgenda: "Agenda du jour :",
     quietNoEvents: "Agenda du jour : aucun rendez-vous.",
@@ -212,6 +225,8 @@ const WORDS: Record<Language, Words> = {
     toConfirm: "noch zu bestätigen",
     researchReady: "Recherche liegt vor",
     movedTag: "Datum geändert",
+    lastReminder: "letzte Erinnerung",
+    countdownIntro: "Demnächst:",
     askResearch: (label) =>
       `Ich würde mit der Lexroom-Recherche zu ${label} beginnen: Soll ich sie starten?`,
     askBrief: (label) =>
@@ -227,7 +242,7 @@ const WORDS: Record<Language, Words> = {
       `Ich kann Gmail und Google Kalender lesen, aber noch keine E-Mails senden.\nÖffnen Sie diesen Link und erlauben Sie das Senden:\n${url}`,
     connectExpired: (url) =>
       `Die Verbindung zu Ihrem Gmail ist abgelaufen: Hier ist der Link zum erneuten Verbinden (30 Minuten gültig)\n${url}`,
-    quietIntro: "Guten Morgen. Heute nichts Dringendes.",
+    quietIntro: "Guten Morgen. Das steht heute an:",
     quietIntroAfterAlert: "Guten Morgen. Sonst nichts Neues zu melden.",
     quietAgenda: "Termine heute:",
     quietNoEvents: "Termine heute: keine.",
@@ -247,7 +262,7 @@ const LOCALES: Record<Language, string> = {
   de: "de-DE",
 };
 
-function whenLabel(iso: string, language: Language, timeZone: string): string {
+export function whenLabel(iso: string, language: Language, timeZone: string): string {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) {
     return iso;
@@ -328,6 +343,9 @@ function deadlineLine(line: DigestDeadlineLine, words: Words): string {
   }
   if (line.status === "candidate") {
     parts.push(`${capitalized(words.toConfirm)}.`);
+    if (line.lastReminder) {
+      parts.push(`${capitalized(words.lastReminder)}.`);
+    }
   } else if (line.briefReady) {
     parts.push(`${capitalized(words.researchReady)}.`);
   }
@@ -351,6 +369,7 @@ export function renderDigestText(
   plan: DeliverablePlan,
   language: Language,
   timeZone: string,
+  prefs: TextPrefs = NO_TEXT_PREFS,
 ): string {
   const words = WORDS[language];
   const [research] = plan.nextSteps;
@@ -370,22 +389,23 @@ export function renderDigestText(
   const ask = stored
     ? words.askBrief(research.matterLabel)
     : words.askResearch(research.matterLabel);
-  blocks.push(open.size > 1 ? `${ask} ${words.orPick}` : ask);
+  blocks.push(open.size > 1 && !prefs.short ? `${ask} ${words.orPick}` : ask);
   return blocks.join("\n\n");
 }
 
 const QUIET_EVENTS_MAX = 6;
 
 /**
- * The morning brief for a quiet day: one short message with the agenda, unread mail and the
- * hearings and deadlines coming up, and no offers to reply to.
+ * The morning brief for a day with something to tell: one short message with the agenda, unread
+ * mail and the hearings and deadlines coming up, and no offers to reply to. A day with nothing
+ * to tell gets no message (`quietBriefHasContent`).
  */
 export function renderQuietBriefText(brief: QuietBrief, language: Language): string {
   const words = WORDS[language];
   const blocks = [brief.alertedToday ? words.quietIntroAfterAlert : words.quietIntro];
-  if (brief.events.length === 0) {
+  if (brief.agenda && brief.events.length === 0) {
     blocks.push(words.quietNoEvents);
-  } else {
+  } else if (brief.events.length > 0) {
     const shown = brief.events.slice(0, QUIET_EVENTS_MAX).map((event) => {
       const when = event.time ?? words.allDay;
       return `• ${when} ${event.summary || words.untitled}`;
@@ -411,6 +431,25 @@ export function renderQuietBriefText(brief: QuietBrief, language: Language): str
     blocks.push(`${words.deadlines}\n${lines.join("\n")}`);
   }
   return blocks.join("\n\n");
+}
+
+export type CountdownLine = {
+  matterLabel: string;
+  type: "deadline" | "hearing";
+  due: string;
+  daysLeft: number;
+};
+
+/** The one message that tells a number what confirmed hearings and deadlines fall today or tomorrow. */
+export function renderCountdownText(lines: readonly CountdownLine[], language: Language): string {
+  const words = WORDS[language];
+  return [
+    words.countdownIntro,
+    ...lines.map((line) => {
+      const kind = line.type === "hearing" ? words.hearing : words.deadline;
+      return `• ${line.matterLabel}: ${kind} ${line.due} (${daysLabel(line.daysLeft, words)})`;
+    }),
+  ].join("\n");
 }
 
 const OFFER_LABEL_MAX = 80;

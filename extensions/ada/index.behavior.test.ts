@@ -662,6 +662,7 @@ describe("ada_send_email confirmation gate", () => {
       ok: true,
       email: "lawyer@example.com",
       id: "gmail-msg-1",
+      watching: false,
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] ?? [];

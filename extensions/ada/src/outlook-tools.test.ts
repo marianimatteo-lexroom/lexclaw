@@ -200,7 +200,7 @@ describe("sending mail from Outlook needs the person's yes", () => {
       undefined,
       deps,
     );
-    expect(result).toEqual({ ok: true, email: "anna@contoso.example" });
+    expect(result).toMatchObject({ ok: true, email: "anna@contoso.example" });
     expect(mock.sent).toEqual([{ user: "anna", ...mail }]);
   });
 
@@ -226,7 +226,7 @@ describe("sending mail from Outlook needs the person's yes", () => {
     expect(mock.replies).toEqual([]);
     expect(
       await executeAdaOutlookReply(ANNA, api(), { ...reply, confirmed: true }, undefined, deps),
-    ).toEqual({ ok: true, email: "anna@contoso.example" });
+    ).toMatchObject({ ok: true, email: "anna@contoso.example" });
     expect(mock.replies).toEqual([
       { user: "anna", id: "AAMk-anna-1", text: "Ricevuta, grazie.", all: false },
     ]);

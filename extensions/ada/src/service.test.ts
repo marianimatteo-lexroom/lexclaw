@@ -79,6 +79,7 @@ describe("decideDigestDelivery", () => {
         forceMorning: true,
         morningPass: false,
         briefedToday: false,
+        briefWorthSaying: true,
         timeZone: "Europe/Rome",
         now: new Date("2026-10-06T05:40:00.000Z"),
         lastLawyerInboundAtMs: Date.now(),
@@ -93,6 +94,7 @@ describe("decideDigestDelivery", () => {
         forceMorning: false,
         morningPass: false,
         briefedToday: false,
+        briefWorthSaying: true,
         timeZone: "Europe/Rome",
         now: new Date("2026-10-06T12:00:00.000Z"),
         lastLawyerInboundAtMs: Date.now(),
@@ -108,6 +110,7 @@ describe("decideDigestDelivery", () => {
         forceMorning: true,
         morningPass: false,
         briefedToday: false,
+        briefWorthSaying: true,
         timeZone: "Europe/Rome",
         now,
         lastLawyerInboundAtMs: now.getTime() - 30 * 60 * 60 * 1000,
@@ -123,6 +126,7 @@ describe("decideDigestDelivery", () => {
         forceMorning: false,
         morningPass: false,
         briefedToday: false,
+        briefWorthSaying: true,
         timeZone: "Europe/Rome",
         now,
         lastLawyerInboundAtMs: now.getTime() - 60 * 60 * 1000,
@@ -143,6 +147,7 @@ describe("decideDigestDelivery on a quiet morning", () => {
     forceMorning: true,
     morningPass: true,
     briefedToday: false,
+    briefWorthSaying: true,
     timeZone: "Europe/Rome",
     now: at,
     lastLawyerInboundAtMs: at.getTime() - 60 * 60 * 1000,
@@ -248,6 +253,7 @@ describe("runAdaCollectPass", () => {
       },
     } as unknown as MemoryStore;
     const dispatched: DigestDispatchRequest[] = [];
+    const nudge = vi.fn(async () => ({ ok: true }));
     const run = (
       overrides: {
         dispatchOk?: boolean;
@@ -263,6 +269,7 @@ describe("runAdaCollectPass", () => {
         forceMorning: overrides.trigger === "morning" || overrides.trigger === "inbound",
         trigger: overrides.trigger ?? "poll",
         catchUp: overrides.catchUp,
+        sendDigestReadyNotice: nudge,
         dispatchDigestTurn: async (request) => {
           dispatched.push(request);
           return overrides.dispatchOk === false
@@ -272,7 +279,7 @@ describe("runAdaCollectPass", () => {
       });
     const events = (): AdaCollectLogEvent[] =>
       info.mock.calls.map(([line]) => JSON.parse(String(line)) as AdaCollectLogEvent);
-    return { run, events, error, dispatched, wake: () => wake };
+    return { run, events, error, dispatched, nudge, wake: () => wake };
   }
 
   beforeEach(() => {
@@ -501,7 +508,7 @@ describe("runAdaCollectPass", () => {
       const first = new Date("2026-10-14T15:30:00.000Z");
       const second = new Date("2026-10-14T16:30:00.000Z");
       google.events = [];
-      google.messages = [];
+      google.messages = [unreadVerdi];
 
       const rome = setup({ wake: open, timezone: "Europe/Rome" });
       await rome.run({ trigger: "morning", at: first });
@@ -534,7 +541,7 @@ describe("runAdaCollectPass", () => {
 
     it("sends the brief from a catch-up before 11:00 local time, and skips it from 11:00 on", async () => {
       google.events = [];
-      google.messages = [];
+      google.messages = [unreadVerdi];
       // Rome is UTC+2 on 14 October: 08:59Z is 10:59 local, 09:00Z is 11:00.
       const early = setup({ wake: open, timezone: "Europe/Rome" });
       await early.run({ trigger: "morning", catchUp: true, at: new Date("2026-10-14T08:59:00Z") });
@@ -568,7 +575,7 @@ describe("runAdaCollectPass", () => {
 
     it("still sends the regular 07:40 pass whatever the hour, and an urgent plan from a late catch-up", async () => {
       google.events = [];
-      google.messages = [];
+      google.messages = [unreadVerdi];
       const regular = setup({ wake: open, timezone: "Europe/Rome" });
       await regular.run({ trigger: "morning", at: new Date("2026-10-14T15:00:00Z") });
       expect(regular.dispatched).toHaveLength(1);
@@ -604,7 +611,7 @@ describe("runAdaCollectPass", () => {
 
     it("does not say nothing is urgent when an alert already went out earlier the same local day", async () => {
       google.events = [];
-      google.messages = [];
+      google.messages = [unreadVerdi];
       const earlier = Date.parse("2026-10-14T03:00:00.000Z");
       const alerted = setup({
         wake: { ...open, lastDigestAtMs: earlier },
@@ -662,6 +669,72 @@ describe("runAdaCollectPass", () => {
         delivered: false,
         windowOpen: false,
       });
+      expect(t.nudge).not.toHaveBeenCalled();
+    });
+
+    it("sends nothing on a quiet morning: no brief in the window, no hold and no template outside it", async () => {
+      google.events = [];
+      google.messages = [{ ...unreadVerdi, subject: "Newsletter" }, unreadVerdi].map((message) => ({
+        ...message,
+        from: "news@example.com",
+      }));
+      const inWindow = setup({ wake: open, timezone: "Europe/Rome" });
+      await inWindow.run({ trigger: "morning" });
+      expect(inWindow.dispatched).toEqual([]);
+      expect(inWindow.nudge).not.toHaveBeenCalled();
+      expect(inWindow.events()[0]).toMatchObject({ decision: "silent", delivered: false });
+      expect(inWindow.wake().lastMorningBriefAtMs).toBeNull();
+
+      const closed = setup({
+        wake: { lastLawyerInboundAtMs: now.getTime() - 30 * 60 * 60 * 1000 },
+        timezone: "Europe/Rome",
+      });
+      await closed.run({ trigger: "morning" });
+      expect(closed.dispatched).toEqual([]);
+      expect(closed.nudge).not.toHaveBeenCalled();
+      expect(closed.events()[0]).toMatchObject({ decision: "silent", held: false });
+      expect(closed.wake()).toMatchObject({ heldBriefDay: null, heldPlanJson: null });
+    });
+
+    it("sends nothing when the person's preferences leave out everything the brief had to say", async () => {
+      const t = setup({
+        wake: open,
+        timezone: "Europe/Rome",
+        preferences: ["brief_skip_agenda", "brief_skip_mail"],
+      });
+      await t.run({ trigger: "morning" });
+      expect(t.dispatched).toEqual([]);
+      expect(t.events()[0]).toMatchObject({ decision: "silent" });
+    });
+
+    it("keeps the agenda out and the brief short for a person who asked for that", async () => {
+      google.messages = [unreadVerdi];
+      const t = setup({
+        wake: open,
+        timezone: "Europe/Rome",
+        preferences: ["brief_skip_agenda", "short_texts"],
+      });
+      await t.run({ trigger: "morning" });
+      expect(t.dispatched[0]?.brief).toMatchObject({ agenda: false, events: [], unreadMail: 1 });
+    });
+
+    it("still alerts from a poll on a day whose morning was quiet", async () => {
+      google.events = [];
+      google.messages = [];
+      const t = setup({ wake: open, timezone: "Europe/Rome" });
+      await t.run({ trigger: "morning" });
+      expect(t.dispatched).toEqual([]);
+      google.events = [
+        {
+          id: "hearing",
+          summary: "Verdi hearing",
+          start: "2026-10-14T10:30:00.000Z",
+          end: "2026-10-14T11:30:00.000Z",
+          status: "confirmed",
+        },
+      ];
+      await t.run({ trigger: "poll", at: new Date("2026-10-14T09:15:00.000Z") });
+      expect(t.dispatched[0]).toMatchObject({ plan: { deliver: true } });
     });
 
     it("still holds an urgent plan when the window is closed at the morning pass", async () => {

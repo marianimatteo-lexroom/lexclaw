@@ -492,7 +492,7 @@ describe("sendLexroomConnectedNotice", () => {
       email: "anna@example.com",
       loadAdapter: async () => ({ sendText }),
     });
-    expect(result).toEqual({ ok: true });
+    expect(result).toMatchObject({ ok: true, text: expect.any(String) });
     expect(sendText).toHaveBeenCalledExactlyOnceWith({
       cfg: config,
       to: `+${owner}`,

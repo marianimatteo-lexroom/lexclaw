@@ -3,17 +3,16 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import {
   deliverToRecipients,
   indexDeliveries,
-  listAnnouncementRecipients,
   liveAnnouncementDeps,
   outcomeView,
   parseAnnouncementInput,
   type AnnouncementDeps,
-  type AnnouncementRecipient,
 } from "./announcements.js";
 import { denyAdminAccess, writeJson, writeText } from "./feedback-http.js";
 import { adminNumberView } from "./feedback.js";
 import { registerAdaHttpRoute } from "./http-paths.js";
 import type { Announcement, AnnouncementDelivery } from "./memory-contract.js";
+import { listWhatsAppSessions, type WhatsAppSession } from "./transcript-mirror.js";
 
 const MAX_BODY_BYTES = 16 * 1024;
 const ANNOUNCEMENTS_PATH = /^(?:\/(?:ada|vera))?\/admin\/announcements\/?$/u;
@@ -56,7 +55,7 @@ function deliveryRow(number: string, delivery: AnnouncementDelivery | undefined)
 }
 
 /** Every announcement with what each known number has had of it, from the delivery rows alone. */
-async function listView(deps: AnnouncementDeps, recipients: readonly AnnouncementRecipient[]) {
+async function listView(deps: AnnouncementDeps, recipients: readonly WhatsAppSession[]) {
   const registry = await deps.registry();
   const [announcements, deliveries] = await Promise.all([
     registry.listAnnouncements(),
@@ -96,7 +95,7 @@ export async function handleAdaAnnouncementsAdmin(
   deps: {
     env: NodeJS.ProcessEnv;
     delivery: AnnouncementDeps;
-    recipients: () => AnnouncementRecipient[];
+    recipients: () => WhatsAppSession[];
     log: { error: (message: string) => void };
   },
 ): Promise<boolean> {
@@ -161,7 +160,7 @@ export function registerAdaAnnouncementsAdmin(api: OpenClawPluginApi): void {
       handleAdaAnnouncementsAdmin(req, res, {
         env: process.env,
         delivery: liveAnnouncementDeps(api),
-        recipients: () => listAnnouncementRecipients(api),
+        recipients: () => listWhatsAppSessions(api),
         log: api.logger,
       }),
   } as const;

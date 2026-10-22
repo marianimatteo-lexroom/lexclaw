@@ -34,7 +34,12 @@ import { holdReconnectNote, takeHeldReconnectNote } from "./held-reconnect.js";
 import { maskNumber, logInboundSkip } from "./inbound-log.js";
 import { abortResearchJobs } from "./lexroom-jobs.js";
 import { QUIET_BRIEF_OFF_KEY } from "./memory-contract.js";
-import { openAdaMemoryFromApi, openAdaMemoryIfExistsFromApi, type MemoryStore } from "./memory.js";
+import {
+  listAdaMemoryOwners,
+  openAdaMemoryFromApi,
+  openAdaMemoryIfExistsFromApi,
+  type MemoryStore,
+} from "./memory.js";
 import { createMorningSchedule, createServiceTimers } from "./morning-schedule.js";
 import { openAdaOutlookAccountDbFromApi } from "./outlook-account.js";
 import { outlookEnabled } from "./outlook-oauth.js";
@@ -45,9 +50,11 @@ import {
   runOutlookKeepAlive,
 } from "./outlook-reminder.js";
 import { lawyerOwner, toOwner } from "./owner.js";
-import { buildQuietBrief } from "./quiet-brief.js";
+import { runProactivePass, releaseReadyNotices } from "./proactive.js";
+import { buildQuietBrief, quietBriefHasContent } from "./quiet-brief.js";
 import { buildDailyTimelineRecord, buildOnePagerRecord } from "./reconcile.js";
 import { DEFAULT_TIME_ZONE, effectiveTimeZone } from "./schedule.js";
+import { readTextPrefs } from "./text-prefs.js";
 import {
   readDigestReadyTemplate,
   sendDigestReadyNotice,
@@ -93,9 +100,11 @@ export type DigestDeliveryDecision =
   | { action: "dispatch"; plan: DeliverablePlan };
 
 /**
- * Decide after collectDigest: no model is involved. A quiet morning pass still earns the short
- * brief, but only inside the WhatsApp window and never a second time on the same local day. With
- * the window closed the brief is held for the number's reply instead of lost.
+ * Decide after collectDigest: no model is involved. A morning pass with nothing urgent sends the
+ * short brief only when the brief has something to tell (`briefWorthSaying`), only inside the
+ * WhatsApp window and never a second time on the same local day. A quiet morning sends nothing,
+ * inside the window or outside it. With the window closed a brief that has content is held for
+ * the number's reply instead of lost, and no template announces it: a template is for a digest.
  */
 export function decideDigestDelivery(params: {
   result: CollectResult;
@@ -104,13 +113,15 @@ export function decideDigestDelivery(params: {
   morningPass: boolean;
   /** A morning brief already went out on this local day and no held plan is owed. */
   briefedToday: boolean;
+  /** The brief this pass would send has an agenda, mail about a matter or a deadline to tell. */
+  briefWorthSaying: boolean;
   timeZone: string;
   now: Date;
   lastLawyerInboundAtMs: number | null;
 }): DigestDeliveryDecision {
   const plan = params.result.plan;
   if (!plan.deliver) {
-    const owed = params.morningPass && !params.briefedToday;
+    const owed = params.morningPass && !params.briefedToday && params.briefWorthSaying;
     if (!owed) {
       return { action: "silent" };
     }
@@ -538,12 +549,29 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
     held === null &&
     wake.lastMorningBriefAtMs !== null &&
     dayKey(new Date(wake.lastMorningBriefAtMs), timeZone) === day;
+  // Only a morning pass with nothing urgent can send the brief, so only it builds one.
+  const makeBrief = () =>
+    buildQuietBrief({
+      now: params.now,
+      timeZone,
+      events,
+      inbox: messages,
+      inboxLimit: INBOX_WINDOW,
+      inboxFull,
+      aliases,
+      deadlines: deadlineIntake?.digest.lines,
+      alertedToday:
+        wake.lastDigestAtMs !== null && dayKey(new Date(wake.lastDigestAtMs), timeZone) === day,
+      prefs: readTextPrefs(preferences),
+    });
+  const quietBrief = morningPass && !plan.deliver ? makeBrief() : null;
   const decision = decideDigestDelivery({
     // A held plan is already owed to the lawyer, so it skips the morning-or-urgent gate.
     result: { ...result, plan, urgent: result.urgent || (held !== null && plan.deliver) },
     forceMorning: params.forceMorning,
     morningPass,
     briefedToday,
+    briefWorthSaying: quietBrief !== null && quietBriefHasContent(quietBrief),
     timeZone,
     now: params.now,
     lastLawyerInboundAtMs: wake.lastLawyerInboundAtMs,
@@ -568,7 +596,7 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
       ...keptRows(previousCalendar, (row) => row.eventId),
     ]);
   };
-  /** One nudge template; the caller has already written its claim, and a failure is never retried. */
+  /** The digest nudge template; the caller has already written its claim, and a failure is never retried. */
   const sendNudge = async (template: KapsoTemplate) => {
     const send =
       params.sendDigestReadyNotice ??
@@ -623,18 +651,7 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
   }
 
   if (decision.action === "brief") {
-    const brief = buildQuietBrief({
-      now: params.now,
-      timeZone,
-      events,
-      inbox: messages,
-      inboxLimit: INBOX_WINDOW,
-      inboxFull,
-      aliases,
-      deadlines: deadlineIntake?.digest.lines,
-      alertedToday:
-        wake.lastDigestAtMs !== null && dayKey(new Date(wake.lastDigestAtMs), timeZone) === day,
-    });
+    const brief = quietBrief ?? makeBrief();
     const dispatch = await dispatchSafely(dispatchDigestTurn, {
       owner: params.owner,
       plan,
@@ -664,17 +681,8 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
   }
 
   if (decision.action === "hold_brief") {
-    // Held for the number's reply, which releases it the same local day. At most one template per
-    // number per local day, claimed (heldBriefDay) with the hold and before the send, so a crash or
-    // a timeout that Kapso actually accepted can never produce a second nudge.
-    const nudgedToday =
-      wake.heldBriefDay === day ||
-      (wake.heldPlanTemplateAttemptedAtMs !== null &&
-        dayKey(new Date(wake.heldPlanTemplateAttemptedAtMs), timeZone) === day);
-    const template = nudgedToday ? null : readDigestReadyTemplate(params.api.pluginConfig);
-    if (!nudgedToday && !template) {
-      warnDigestReadyTemplateUnset(params.api);
-    }
+    // Held for the number's reply, which releases it the same local day. Nothing is sent now: the
+    // brief is not urgent, so it never earns a template, and a number that writes anyway gets it.
     // Nothing urgent was dropped, so the baseline advances like in the brief itself.
     await commitSnapshots();
     await params.memory.writeWake({
@@ -682,9 +690,6 @@ async function collectPass(params: AdaCollectPassParams): Promise<AdaCollectOutc
       openTodoIdsJson: JSON.stringify(openTodoIds),
       heldBriefDay: day,
     });
-    if (template) {
-      await sendNudge(template);
-    }
     return {
       collected: true,
       delivered: false,
@@ -905,6 +910,21 @@ export function registerAdaService(deps: AdaServiceDeps): void {
           );
         }
       };
+      /** Reminders, watched replies, prep and countdowns of one number; none needs an account. */
+      const tickProactive = async (owner: string) => {
+        try {
+          const memory = await openAdaMemoryIfExistsFromApi(api, owner);
+          if (memory) {
+            await runCollectExclusive(() => runProactivePass({ api, owner, memory, now: now() }), {
+              key: `proactive:${owner}`,
+            });
+          }
+        } catch (error) {
+          api.logger.error(
+            `ada proactive tick failed owner=${maskNumber(owner)}: ${error instanceof Error ? error.message : "unknown"}`,
+          );
+        }
+      };
       /** Every number with a Google connection, and the lawyer, who is asked to connect. */
       const tickAll = async () => {
         let owners: string[] = [];
@@ -917,6 +937,9 @@ export function registerAdaService(deps: AdaServiceDeps): void {
         }
         for (const owner of owners) {
           await tickOwner(owner, false);
+        }
+        for (const owner of new Set([...owners, ...listAdaMemoryOwners(api)])) {
+          await tickProactive(owner);
         }
         try {
           await runGranolaKeepAlive(api, now());
@@ -1091,6 +1114,19 @@ export async function recordSenderInbound(params: {
     return;
   }
   await memory.writeWake({ lastLawyerInboundAtMs: params.atMs });
+  // What Ada held for this number while its window was closed goes out now that it is open. It runs
+  // beside the answer to the message that opened the window, never in front of it.
+  void runCollectExclusive(
+    () =>
+      releaseReadyNotices({ api: params.api, owner, memory, now: new Date(params.atMs) }).catch(
+        (error: unknown) => {
+          params.api.logger.error(
+            `ada held notices release failed owner=${maskNumber(owner)}: ${error instanceof Error ? error.message : "unknown"}`,
+          );
+        },
+      ),
+    { key: `proactive:${owner}` },
+  );
   // Read the held plan under the collect lock: a pass that is mid-hold has either written
   // its plan before this read or is not holding one, so the release is never stranded.
   await runCollectExclusive(

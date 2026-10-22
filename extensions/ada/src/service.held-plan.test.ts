@@ -27,7 +27,11 @@ vi.mock("./google-api.js", async (importOriginal) => ({
 
 const memoryModule = vi.hoisted(() => {
   const openAdaMemoryFromApi = vi.fn();
-  return { openAdaMemoryFromApi, openAdaMemoryIfExistsFromApi: openAdaMemoryFromApi };
+  return {
+    openAdaMemoryFromApi,
+    openAdaMemoryIfExistsFromApi: openAdaMemoryFromApi,
+    listAdaMemoryOwners: () => [],
+  };
 });
 
 vi.mock("./memory.js", () => memoryModule);
@@ -876,15 +880,24 @@ describe("morning brief held for a closed WhatsApp window", () => {
     });
   }
 
+  /** An event that matches no matter: the brief has an agenda to tell, and no plan clears the bar. */
+  const LUNCH = {
+    id: "e-lunch",
+    summary: "Pranzo con un collega",
+    start: "2026-10-06T10:30:00.000Z",
+    end: "2026-10-06T11:30:00.000Z",
+    status: "confirmed",
+  };
+
   beforeEach(() => {
     vi.clearAllMocks();
     clearSentDigests();
     google.loadAccessToken.mockResolvedValue({ ok: true, accessToken: "token" });
     google.watchGmailInbox.mockResolvedValue({ ok: false });
-    setGoogle({});
+    setGoogle({ events: [LUNCH] });
   });
 
-  it("holds the brief and sends one nudge template when the window is closed", async () => {
+  it("holds a brief that has an agenda and sends no template, because a template is for a digest", async () => {
     const store = createMemory(closedWindow);
     const notice = vi.fn(async () => ({ ok: true }));
     const dispatch = vi.fn(async () => ({ ok: true }));
@@ -898,8 +911,7 @@ describe("morning brief held for a closed WhatsApp window", () => {
       reason: "whatsapp_window_closed",
     });
     expect(dispatch).not.toHaveBeenCalled();
-    expect(notice).toHaveBeenCalledOnce();
-    expect(notice).toHaveBeenCalledWith({ name: "ada_digest_ready", language: "it" });
+    expect(notice).not.toHaveBeenCalled();
     expect(store.wake()).toMatchObject({
       heldBriefDay: "2026-10-06",
       lastMorningBriefAtMs: null,
@@ -907,7 +919,7 @@ describe("morning brief held for a closed WhatsApp window", () => {
     });
   });
 
-  it("sends no second template for a second pass the same day, and keeps the hold through polls", async () => {
+  it("sends no template for a second pass the same day either, and keeps the hold through polls", async () => {
     const store = createMemory(closedWindow);
     const notice = vi.fn(async () => ({ ok: true }));
 
@@ -915,21 +927,31 @@ describe("morning brief held for a closed WhatsApp window", () => {
     await morning(store.memory, { notice, now: new Date(MORNING.getTime() + 2 * HOUR_MS) });
     await pass(store.memory, { now: POLL_1, dispatch: async () => ({ ok: true }), api: briefApi });
 
-    expect(notice).toHaveBeenCalledOnce();
+    expect(notice).not.toHaveBeenCalled();
     expect(store.wake().heldBriefDay).toBe("2026-10-06");
   });
 
-  it("sends a new nudge on the next local day's morning pass", async () => {
+  it("holds a new brief on the next local day's morning pass, still with no template", async () => {
     const store = createMemory(closedWindow);
     const notice = vi.fn(async () => ({ ok: true }));
 
     await morning(store.memory, { notice });
+    setGoogle({
+      events: [
+        {
+          ...LUNCH,
+          id: "e-lunch-2",
+          start: "2026-10-07T10:30:00.000Z",
+          end: "2026-10-07T11:30:00.000Z",
+        },
+      ],
+    });
     await morning(store.memory, {
       notice,
       now: new Date(MORNING.getTime() + 24 * HOUR_MS),
     });
 
-    expect(notice).toHaveBeenCalledTimes(2);
+    expect(notice).not.toHaveBeenCalled();
     expect(store.wake().heldBriefDay).toBe("2026-10-07");
   });
 
@@ -943,7 +965,7 @@ describe("morning brief held for a closed WhatsApp window", () => {
     expect(sendText).toHaveBeenCalledWith(
       expect.objectContaining({
         to: LAWYER_NUMBER,
-        text: expect.stringContaining("Niente di urgente"),
+        text: expect.stringContaining("Pranzo con un collega"),
       }),
     );
     expect(store.wake()).toMatchObject({
@@ -1018,7 +1040,7 @@ describe("morning brief held for a closed WhatsApp window", () => {
     });
   });
 
-  it("leaves an urgent plan held after a brief nudge as on main: its own template, once", async () => {
+  it("leaves an urgent plan held after a held brief as on main: its own digest template, once", async () => {
     const store = createMemory(closedWindow);
     const notice = vi.fn(async () => ({ ok: true }));
     const dispatch = vi.fn(async () => ({ ok: true }));
@@ -1035,7 +1057,8 @@ describe("morning brief held for a closed WhatsApp window", () => {
     expect(urgent).toMatchObject({ decision: "hold", held: true });
     expect(store.wake()).toMatchObject({ heldPlanTemplateAttemptedAtMs: POLL_1.getTime() });
     expect(store.wake().heldPlanJson).not.toBeNull();
-    expect(notice).toHaveBeenCalledTimes(2);
+    expect(notice).toHaveBeenCalledOnce();
+    expect(notice).toHaveBeenCalledWith({ name: "ada_digest_ready", language: "it" });
 
     await reply(store, REPLY_AT);
     expect(sendText).toHaveBeenCalledOnce();
@@ -1045,20 +1068,7 @@ describe("morning brief held for a closed WhatsApp window", () => {
     expect(store.wake()).toMatchObject({ heldBriefDay: null, heldPlanJson: null });
   });
 
-  it("sends no brief template on a day an urgent held-plan template already went out", async () => {
-    const store = createMemory({
-      ...closedWindow,
-      heldPlanTemplateAttemptedAtMs: MORNING.getTime() - HOUR_MS,
-    });
-    const notice = vi.fn(async () => ({ ok: true }));
-
-    await morning(store.memory, { notice });
-
-    expect(notice).not.toHaveBeenCalled();
-    expect(store.wake().heldBriefDay).toBe("2026-10-06");
-  });
-
-  it("still holds the brief and warns once when no template is configured", async () => {
+  it("holds the brief without warning about a missing template, which a brief never needs", async () => {
     const store = createMemory(closedWindow);
     const notice = vi.fn(async () => ({ ok: true }));
     const bare = apiWith({});
@@ -1068,7 +1078,22 @@ describe("morning brief held for a closed WhatsApp window", () => {
 
     expect(notice).not.toHaveBeenCalled();
     expect(store.wake().heldBriefDay).toBe("2026-10-06");
-    expect(warn).toHaveBeenCalledOnce();
-    expect(warn.mock.calls[0]?.[0]).toContain("digestReadyTemplate");
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("holds and sends nothing on a quiet morning, with the window closed", async () => {
+    setGoogle({});
+    const store = createMemory(closedWindow);
+    const notice = vi.fn(async () => ({ ok: true }));
+    const dispatch = vi.fn(async () => ({ ok: true }));
+
+    const result = await morning(store.memory, { notice, dispatch });
+
+    expect(result).toMatchObject({ held: false, delivered: false, decision: "silent" });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(notice).not.toHaveBeenCalled();
+    expect(store.wake().heldBriefDay).toBeNull();
+    await reply(store, REPLY_AT);
+    expect(sendText).not.toHaveBeenCalled();
   });
 });

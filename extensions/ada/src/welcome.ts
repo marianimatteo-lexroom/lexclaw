@@ -12,6 +12,7 @@ import { openAdaRegistryFromApi } from "./memory.js";
 import { outlookEnabled } from "./outlook-oauth.js";
 import { detectLanguage, type Language } from "./research-link-outbound.js";
 import { senderNumber } from "./research-push.js";
+import { mirrorToSessionKey } from "./transcript-mirror.js";
 import { normalizeWhatsAppNumber } from "./whatsapp-number.js";
 
 /**
@@ -266,15 +267,12 @@ export function registerWelcomeHook(
       const text = event.content ?? event.body ?? "";
       const greeting = greetingLanguage(text);
       const language = greeting ?? detectLanguage(text) ?? "it";
-      const sent = await sendAdaWhatsAppText({
-        api,
-        to: `+${number}`,
-        text: welcomeText(language, {
-          outlook: outlookEnabled(),
-          reminders: readDeadlineIntakeConfig(api.pluginConfig).enabled,
-          question: greeting !== undefined,
-        }),
+      const welcome = welcomeText(language, {
+        outlook: outlookEnabled(),
+        reminders: readDeadlineIntakeConfig(api.pluginConfig).enabled,
+        question: greeting !== undefined,
       });
+      const sent = await sendAdaWhatsAppText({ api, to: `+${number}`, text: welcome });
       if (!sent.ok) {
         await memory.releaseWelcome(number);
         api.logger.warn(`ada welcome not sent sender=${maskNumber(number)}: ${sent.error}`);
@@ -283,6 +281,13 @@ export function registerWelcomeHook(
       api.logger.info(
         `ada welcome sent sender=${maskNumber(number)} language=${language} greeting=${greeting !== undefined}`,
       );
+      const sessionKey = ctx.sessionKey ?? event.sessionKey;
+      if (sessionKey) {
+        // A first message may not have a session yet; then there is nothing to write into.
+        await mirrorToSessionKey(api, sessionKey, welcome, `ada-welcome:${number}`).catch(
+          () => false,
+        );
+      }
       if (greeting === undefined) {
         return undefined;
       }

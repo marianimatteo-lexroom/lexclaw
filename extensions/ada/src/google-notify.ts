@@ -15,7 +15,8 @@ type TextSender = (params: {
   text: string;
 }) => Promise<unknown>;
 
-export type GoogleConnectedNotice = { ok: true } | { ok: false; error: string };
+/** `text` is what was sent, when the sender knows it, so the caller can write it into the conversation. */
+export type GoogleConnectedNotice = { ok: true; text?: string } | { ok: false; error: string };
 
 const GOOGLE_CONNECTED: Record<Language, { base: string; firstLook: string }> = {
   it: {
@@ -82,22 +83,19 @@ export async function sendGoogleConnectedNotice(params: {
   if (!send) {
     return { ok: false, error: "kapso-whatsapp outbound is unavailable" };
   }
+  const text = googleConnectedText(
+    await resolveLanguage("", undefined, params.owner),
+    params.firstLook !== false,
+  );
   try {
-    await send({
-      cfg: params.config,
-      to,
-      text: googleConnectedText(
-        await resolveLanguage("", undefined, params.owner),
-        params.firstLook !== false,
-      ),
-    });
+    await send({ cfg: params.config, to, text });
   } catch (error) {
     return {
       ok: false,
       error: error instanceof Error ? error.message : "whatsapp send failed",
     };
   }
-  return { ok: true };
+  return { ok: true, text };
 }
 
 const WHATSAPP_SEND_TIMEOUT_MS = 20_000;
@@ -123,7 +121,7 @@ export async function sendAdaWhatsAppText(params: {
           return { ok: false, error: "kapso-whatsapp outbound is unavailable" };
         }
         await adapter.sendText({ cfg: params.api.config, to, text: params.text });
-        return { ok: true };
+        return { ok: true, text: params.text };
       })(),
       limitMs,
       (): GoogleConnectedNotice => ({

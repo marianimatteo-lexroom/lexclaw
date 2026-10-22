@@ -135,6 +135,9 @@
       "ada_deadline_list",
       "ada_deadline_reply",
       "ada_set_timezone",
+      "ada_set_reminder",
+      "ada_list_reminders",
+      "ada_cancel_reminder",
       "ada_set_preference",
       "ada_forget_preference",
       "ada_report_feedback",
@@ -200,6 +203,15 @@
       "optional": true
     },
     "ada_set_timezone": {
+      "optional": true
+    },
+    "ada_set_reminder": {
+      "optional": true
+    },
+    "ada_list_reminders": {
+      "optional": true
+    },
+    "ada_cancel_reminder": {
       "optional": true
     },
     "ada_set_preference": {

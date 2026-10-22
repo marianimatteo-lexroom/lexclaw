@@ -19,7 +19,7 @@ import {
   readAttachmentBytes,
   readMessageContent,
 } from "./google-api.js";
-import type { DeadlineItem } from "./memory-contract.js";
+import { PARKED_TODO_PREFIX, type DeadlineItem } from "./memory-contract.js";
 import type { MemoryStore } from "./memory.js";
 import { parseRawMime } from "./mime-text.js";
 import { extractPdfText } from "./pdf-text.js";
@@ -40,7 +40,16 @@ export const DEFAULT_REMINDER_CADENCE = ["7d", "2d", "morning-of"] as const;
 const DEFAULT_HORIZON_DAYS = 60;
 const DEFAULT_MIN_CONFIDENCE = 0.6;
 
+/**
+ * An unanswered decision is listed this many times in all: the digest it first appears in, the
+ * next digest, and a final one that says it is the last reminder. After that it is parked in open
+ * loops. A hearing or deadline within 48 hours keeps being listed: it is an alert, not a nudge.
+ */
 const MAX_OFFERS = 3;
+
+/** The open-loop todo that stands for a candidate deadline nobody answered. */
+export const parkedDeadlineTodoId = (deadlineId: string) =>
+  `${PARKED_TODO_PREFIX}deadline-${deadlineId}`;
 const OFFER_HORIZON_DAYS = 30;
 const TRACKED_HORIZON_DAYS = 21;
 const MAX_DIGEST_LINES = 6;
@@ -442,6 +451,9 @@ export async function prepareDeadlineIntake(params: {
             confidence: item.confidence,
             source: item.sources[0]?.label ?? "",
             ...(movedUnannounced ? { moved: true } : {}),
+            ...(item.status === "candidate" && item.offeredCount === MAX_OFFERS - 1
+              ? { lastReminder: true }
+              : {}),
             briefReady: item.researchStatus === "done",
             ...(reminder ? { reminder: { step: reminder.step.id, covers: reminder.covers } } : {}),
           },
@@ -474,6 +486,18 @@ export async function prepareDeadlineIntake(params: {
             ),
             nowMs,
           );
+          // The last reminder went out: the decision moves to open loops and stops coming back.
+          for (const line of plan.deadlines.filter((entry) => entry.lastReminder)) {
+            await params.memory.upsertTodo({
+              id: parkedDeadlineTodoId(line.id),
+              matterId: line.matterId,
+              owner: "lawyer",
+              title: `Confirm tracking: ${line.title} (${line.due})`,
+              status: "pending",
+              detail: "Listed in three digests without an answer, so it was parked here.",
+              updatedAtMs: nowMs,
+            });
+          }
         } catch (error) {
           log(
             `could not record the delivered digest: ${error instanceof Error ? error.message : "unknown"}`,

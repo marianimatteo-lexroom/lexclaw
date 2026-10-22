@@ -28,7 +28,7 @@ describe("sendGoogleConnectedNotice", () => {
       email: "anna@example.com",
       loadAdapter: async () => ({ sendText }),
     });
-    expect(result).toEqual({ ok: true });
+    expect(result).toMatchObject({ ok: true, text: expect.any(String) });
     expect(sendText).toHaveBeenCalledExactlyOnceWith({
       cfg: config,
       to: `+${owner}`,
@@ -99,7 +99,7 @@ describe("sendAdaWhatsAppText", () => {
       to: "+393331111111",
       text: "Ciao",
     });
-    expect(result).toEqual({ ok: true });
+    expect(result).toEqual({ ok: true, text: "Ciao" });
     expect(sendText).toHaveBeenCalledWith({ cfg: config, to: "+393331111111", text: "Ciao" });
   });
 

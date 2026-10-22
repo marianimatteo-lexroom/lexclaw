@@ -26,6 +26,7 @@ import {
 } from "./outlook-graph.js";
 import { loadOutlookAccess, type OutlookAccess } from "./outlook-session.js";
 import { DEFAULT_TIME_ZONE, validTimeZone } from "./schedule.js";
+import { readReplyTarget, recordOutlookThread, recordSentThread } from "./thread-watch.js";
 
 type ToolApi = Pick<OpenClawPluginApi, "runtimeSource" | "runtime" | "logger" | "config">;
 
@@ -268,7 +269,7 @@ export async function executeAdaOutlookSend(
   input: MailInput & { confirmed: boolean },
   signal?: AbortSignal,
   deps: OutlookToolDeps = {},
-): Promise<{ ok: true; email: string } | ToolFailure> {
+): Promise<{ ok: true; email: string; watching: boolean } | ToolFailure> {
   if (input.confirmed !== true) {
     return {
       ok: false,
@@ -282,14 +283,25 @@ export async function executeAdaOutlookSend(
     return mail;
   }
   return await guarded(base, "send the email", async () => {
-    const sent = await viaGraph(base, (accessToken) =>
-      sendOutlookMail({ accessToken, ...mail, fetchImpl: deps.fetchImpl, signal }),
-    );
+    let token = "";
+    const sentAtMs = (deps.now ?? new Date()).getTime();
+    const sent = await viaGraph(base, (accessToken) => {
+      token = accessToken;
+      return sendOutlookMail({ accessToken, ...mail, fetchImpl: deps.fetchImpl, signal });
+    });
     if ("failure" in sent) {
       return sent.failure;
     }
     if (sent.result.ok) {
-      return { ok: true as const, email: sent.email };
+      // The person asked for this mail, so Ada watches the conversation for the reply.
+      const watching = await recordOutlookThread(api, owner, {
+        accessToken: token,
+        subject: mail.subject,
+        to: mail.to,
+        atMs: sentAtMs,
+        fetchImpl: deps.fetchImpl,
+      }).catch(() => false);
+      return { ok: true as const, email: sent.email, watching };
     }
     return {
       ok: false as const,
@@ -307,7 +319,7 @@ export async function executeAdaOutlookReply(
   input: { messageId: string; text: string; replyAll?: boolean; confirmed: boolean },
   signal?: AbortSignal,
   deps: OutlookToolDeps = {},
-): Promise<{ ok: true; email: string } | ToolFailure> {
+): Promise<{ ok: true; email: string; watching: boolean } | ToolFailure> {
   if (input.confirmed !== true) {
     return { ok: false, reason: "confirmation_required", error: REPLY_CONFIRMATION };
   }
@@ -324,21 +336,34 @@ export async function executeAdaOutlookReply(
     return { ok: false, error: "The reply is empty or too long." };
   }
   return await guarded(base, "send the reply", async () => {
-    const sent = await viaGraph(base, (accessToken) =>
-      replyToOutlookMessage({
+    const answered: { to: Awaited<ReturnType<typeof readReplyTarget>> } = { to: null };
+    const sentAtMs = (deps.now ?? new Date()).getTime();
+    const sent = await viaGraph(base, async (accessToken) => {
+      // Read before replying: the conversation is what a later answer is matched by.
+      answered.to = await readReplyTarget(accessToken, messageId, deps.fetchImpl);
+      return await replyToOutlookMessage({
         accessToken,
         messageId,
         text,
         replyAll: input.replyAll === true,
         fetchImpl: deps.fetchImpl,
         signal,
-      }),
-    );
+      });
+    });
     if ("failure" in sent) {
       return sent.failure;
     }
     if (sent.result.ok) {
-      return { ok: true as const, email: sent.email };
+      const watching = answered.to
+        ? await recordSentThread(api, owner, {
+            provider: "outlook",
+            threadId: answered.to.conversationId,
+            subject: answered.to.subject,
+            to: "",
+            atMs: sentAtMs,
+          })
+        : false;
+      return { ok: true as const, email: sent.email, watching };
     }
     return {
       ok: false as const,

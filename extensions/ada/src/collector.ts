@@ -3,12 +3,13 @@ import { localIsoDate, localTimeLabel, parseIsoDate, zonedTimeToUtcMs } from "./
 import type { DigestDeadlineInput, DigestPlan, DigestSignal } from "./digest.js";
 import { planDigest } from "./digest.js";
 import type { CalendarEvent, InboxMessage } from "./google-api.js";
-import type {
-  CalendarSnapshotRow,
-  DeadlineCandidate,
-  DeadlineSource,
-  GmailSnapshotRow,
-  MemoryTodo,
+import {
+  PARKED_TODO_PREFIX,
+  type CalendarSnapshotRow,
+  type DeadlineCandidate,
+  type DeadlineSource,
+  type GmailSnapshotRow,
+  type MemoryTodo,
 } from "./memory-contract.js";
 import { matchMatterId } from "./memory-render.js";
 
@@ -165,7 +166,11 @@ export function collectDigest(input: CollectInput): CollectResult {
   }
 
   for (const todo of input.todos) {
-    if (todo.owner !== "lawyer" || todo.status === "done") {
+    if (
+      todo.owner !== "lawyer" ||
+      todo.status === "done" ||
+      todo.id.startsWith(PARKED_TODO_PREFIX)
+    ) {
       continue;
     }
     if (!input.forceMorning && previousOpenTodos.has(todo.id)) {

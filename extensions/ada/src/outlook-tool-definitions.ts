@@ -57,7 +57,7 @@ export const adaOutlookSendEmailDefinition = {
   name: "ada_outlook_send_email",
   label: "Send email from connected Outlook",
   description:
-    "Send one plain-text email from the Outlook account the person asking connected. Set confirmed true only after they agree in the chat to that exact message. Any other value returns confirmation_required and does not send.",
+    "Send one plain-text email from the Outlook account the person asking connected. Set confirmed true only after they agree in the chat to that exact message. Any other value returns confirmation_required and does not send. When the result says watching true, Ada keeps an eye on the thread and tells the person once when someone replies; say so in your one-line confirmation, and promise nothing when watching is false.",
   parameters: Type.Object(
     { ...mailFields, confirmed: Type.Boolean() },
     { additionalProperties: false },
@@ -68,7 +68,7 @@ export const adaOutlookReplyDefinition = {
   name: "ada_outlook_reply",
   label: "Reply to an Outlook message",
   description:
-    "Reply to one message in the Outlook account the person asking connected; the reply goes to its sender (or to everyone with replyAll) and keeps the thread. Get messageId from ada_outlook_read_inbox. First read the message, tell the person who the reply goes to and quote what you will say, and ask if it is right. Set confirmed true only after they agree in the chat to that exact reply. Any other value returns confirmation_required and sends nothing.",
+    "Reply to one message in the Outlook account the person asking connected; the reply goes to its sender (or to everyone with replyAll) and keeps the thread. Get messageId from ada_outlook_read_inbox. First read the message, tell the person who the reply goes to and quote what you will say, and ask if it is right. Set confirmed true only after they agree in the chat to that exact reply. Any other value returns confirmation_required and sends nothing. When the result says watching true, Ada keeps an eye on the thread and tells the person once when someone replies; say so in your one-line confirmation, and promise nothing when watching is false.",
   parameters: Type.Object(
     {
       messageId: Type.String({ minLength: 1 }),

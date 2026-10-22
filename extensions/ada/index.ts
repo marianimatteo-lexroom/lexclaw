@@ -7,12 +7,14 @@ import {
 } from "openclaw/plugin-sdk/tool-plugin";
 import { Type } from "typebox";
 import {
+  adaCancelReminderDefinition,
   adaCreateCalendarEventDefinition,
   adaDeadlineListDefinition,
   adaDeadlineReplyDefinition,
   adaDraftDefinition,
   adaGoogleConnectDefinition,
   adaLexroomConnectDefinition,
+  adaListRemindersDefinition,
   adaMemoryGetDefinition,
   adaMemoryHistoryDefinition,
   adaMemoryListDefinition,
@@ -20,6 +22,7 @@ import {
   adaReadCalendarDefinition,
   adaReadInboxDefinition,
   adaSendEmailDefinition,
+  adaSetReminderDefinition,
   adaSetTimezoneDefinition,
   adaTodoGetDefinition,
   adaTodoListDefinition,
@@ -83,6 +86,11 @@ import { ownerToolFactory } from "./src/owner-tool.js";
 import { lawyerOwner, resolveHookTurnOwner } from "./src/owner.js";
 import { ADA_PERSONA } from "./src/persona.js";
 import { adaPreferenceTools } from "./src/preference-tools.js";
+import {
+  executeAdaCancelReminder,
+  executeAdaListReminders,
+  executeAdaSetReminder,
+} from "./src/reminder-tools.js";
 import { recordInboundLanguage, registerResearchLinkHooks } from "./src/research-link-outbound.js";
 import {
   lastSenderInboundAt,
@@ -101,6 +109,8 @@ import { handleAdaShortLink } from "./src/short-links-http.js";
 import { registerStatusReactionHooks } from "./src/status-reactions.js";
 import { handleAdaStatus } from "./src/status.js";
 import { executeAdaSetTimezone } from "./src/timezone-tool.js";
+import { mirrorSentText } from "./src/transcript-mirror.js";
+import { registerTurnNotes } from "./src/turn-notes.js";
 import { handleAdaGoogleNotify } from "./src/watch.js";
 import { registerWelcomeHook } from "./src/welcome.js";
 import {
@@ -413,6 +423,27 @@ const tools = defineToolPlugin({
         executeAdaSetTimezone(api, owner, args),
       ),
     }),
+    tool({
+      ...adaSetReminderDefinition,
+      optional: true,
+      factory: ownerToolFactory(adaSetReminderDefinition, (args, { owner, api }) =>
+        executeAdaSetReminder(api, owner, args),
+      ),
+    }),
+    tool({
+      ...adaListRemindersDefinition,
+      optional: true,
+      factory: ownerToolFactory(adaListRemindersDefinition, (_args, { owner, api }) =>
+        executeAdaListReminders(api, owner),
+      ),
+    }),
+    tool({
+      ...adaCancelReminderDefinition,
+      optional: true,
+      factory: ownerToolFactory(adaCancelReminderDefinition, (args, { owner, api }) =>
+        executeAdaCancelReminder(api, owner, args),
+      ),
+    }),
     tool(adaPreferenceTools.set),
     tool(adaPreferenceTools.forget),
     tool(adaPreferenceTools.reportFeedback),
@@ -599,6 +630,7 @@ const entry = definePluginEntry({
     });
 
     registerLexroomNudge(api);
+    registerTurnNotes(api);
 
     api.on(
       "before_prompt_build",
@@ -667,6 +699,9 @@ const entry = definePluginEntry({
               });
               if (sent.ok && firstLook) {
                 noteConnectOffer(owner, "first_look", Date.now(), "google");
+              }
+              if (sent.ok && sent.text) {
+                await mirrorSentText(api, owner, sent.text, `ada-connected:google:${Date.now()}`);
               }
               return sent;
             },
@@ -748,6 +783,9 @@ const entry = definePluginEntry({
               });
               if (sent.ok && firstLook) {
                 noteConnectOffer(owner, "first_look", Date.now(), "lexroom");
+              }
+              if (sent.ok && sent.text) {
+                await mirrorSentText(api, owner, sent.text, `ada-connected:lexroom:${Date.now()}`);
               }
               return sent;
             },

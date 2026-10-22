@@ -15,6 +15,7 @@ import { lexroomLogger, type LexroomLog } from "./lexroom-log.js";
 import { openAdaMemoryIfExistsFromApi } from "./memory.js";
 import { researchLinkLine, resolveLanguage, type Language } from "./research-link-outbound.js";
 import { buildResearchPdf, type ResearchPdf } from "./research-pdf.js";
+import { mirrorSentText } from "./transcript-mirror.js";
 import { normalizeWhatsAppNumber } from "./whatsapp-number.js";
 import { sendRequestReadyNotice } from "./whatsapp-template.js";
 
@@ -62,6 +63,8 @@ export type PushDeps = {
   offerConnect?: (kind: ConnectOfferKind) => void;
   /** A finished research reached the person with a next-step question; remember what it answered. */
   noteResult?: (note: ResearchResultNote) => void;
+  /** Writes a delivered result into the person's conversation, so a follow-up reaches a model that has read it. */
+  mirror?: (text: string, jobId: string) => Promise<unknown>;
   log: LexroomLog;
   now?: () => number;
   retryDelayMs?: number;
@@ -439,6 +442,7 @@ export async function pushResearchResult(
   if (open !== false) {
     const sent = await sendText(text, deps);
     if (sent.ok) {
+      await deps.mirror?.(text, params.jobId);
       if (offer) {
         deps.offerConnect?.(offer);
       }
@@ -509,6 +513,7 @@ export async function releaseHeldResearch(deps: PushDeps): Promise<number> {
     }
     queue.shift();
     released += 1;
+    await deps.mirror?.(next.text, next.jobId);
     if (next.offer) {
       deps.offerConnect?.(next.offer);
     }
@@ -568,6 +573,7 @@ export function livePushDeps(
     readProfileLanguage: async () => (await (await memory())?.readProfile())?.language,
     offerConnect: (kind) => noteConnectOffer(recipient, kind),
     noteResult: (note) => noteResearchResult(recipient, note),
+    mirror: (text, jobId) => mirrorSentText(api, recipient, text, `ada-research:${jobId}`),
     log,
   };
 }

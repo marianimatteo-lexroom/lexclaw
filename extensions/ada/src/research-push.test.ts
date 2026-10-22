@@ -573,7 +573,7 @@ describe("the live window check", () => {
     expect(await livePushDeps(api, vi.fn(), "390000000043").windowOpen()).toBeNull();
   });
 
-  it("nudges a held result with the utility template, and with the digest template when that is all there is", async () => {
+  it("nudges a held result with the utility template only, never with the digest template", async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ messages: [{ id: "w" }] })));
     vi.stubGlobal("fetch", fetchImpl);
     try {
@@ -605,9 +605,9 @@ describe("the live window check", () => {
       expect(
         await withTemplates({ digestReadyTemplate: digest, requestReadyTemplate: request }).nudge(),
       ).toBe("sent");
-      expect(await withTemplates({ digestReadyTemplate: digest }).nudge()).toBe("sent");
+      expect(await withTemplates({ digestReadyTemplate: digest }).nudge()).toBe("unset");
       expect(await withTemplates({}).nudge()).toBe("unset");
-      expect(names()).toEqual(["ada_request_ready", "ada_digest_ready"]);
+      expect(names()).toEqual(["ada_request_ready"]);
 
       fetchImpl.mockImplementation(async () => new Response("{}", { status: 400 }));
       expect(await withTemplates({ requestReadyTemplate: request }).nudge()).toBe("failed");

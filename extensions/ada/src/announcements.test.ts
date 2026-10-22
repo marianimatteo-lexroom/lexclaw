@@ -37,20 +37,19 @@ import {
   ANNOUNCEMENT_SETTLE_MS,
   deliverAnnouncement,
   deliverToRecipients,
-  listAnnouncementRecipients,
   liveAnnouncementDeps,
   parseAnnouncementInput,
   registerAnnouncementRelease,
   releasePendingAnnouncement,
   resolveAnnouncementText,
   type AnnouncementDeps,
-  type AnnouncementRecipient,
 } from "./announcements.js";
 import { ANNOUNCEMENTS_OFF_KEY, type Announcement } from "./memory-contract.js";
 import { realStore } from "./preference-test-support.js";
 import { executeAdaSetPreference } from "./preference-tools.js";
 import { clearInboundLanguages, recordInboundLanguage } from "./research-link-outbound.js";
 import { clearHeldResearch, recordSenderInbound } from "./research-push.js";
+import { listWhatsAppSessions, type WhatsAppSession } from "./transcript-mirror.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const NOW = Date.parse("2026-10-20T09:00:00.000Z");
@@ -59,7 +58,7 @@ const PAOLO = "393331111111";
 const ANNA = "393332222222";
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 
-const recipient = (owner: string): AnnouncementRecipient => ({
+const recipient = (owner: string): WhatsAppSession => ({
   owner,
   sessionKey: `agent:main:kapso-whatsapp:direct:${owner}`,
   sessionId: `session-${owner}`,
@@ -585,7 +584,7 @@ describe("excluded numbers", () => {
   });
 });
 
-describe("listAnnouncementRecipients", () => {
+describe("listWhatsAppSessions", () => {
   it("lists each agent's sessions, one per WhatsApp number, the most recent first", () => {
     const calls: Array<Record<string, unknown>> = [];
     const runtime = {
@@ -611,7 +610,7 @@ describe("listAnnouncementRecipients", () => {
         },
       },
     };
-    const recipients = listAnnouncementRecipients({ runtime, config: {} } as never);
+    const recipients = listWhatsAppSessions({ runtime, config: {} } as never);
     expect(calls).toEqual([{ agentId: "main", readOnly: true, includeParticipants: false }]);
     expect(recipients).toEqual([
       { owner: PAOLO, sessionKey: `agent:main:kapso-whatsapp:direct:${PAOLO}`, sessionId: "new" },
